@@ -411,8 +411,26 @@ export function LiveDashboard() {
     setPaperHistoryTotal(0);
     setPaperHistoryOffset(0);
     setPaperHistorySummary(null);
-    await loadPaperTradeSummary();
-    await loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: 0 });
+    await Promise.all([
+      loadPaperTradeSummary(),
+      loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: 0 }),
+    ]);
+
+    try {
+      const [snap, hist, paper, backtest] = await Promise.all([
+        loadSnapshot(),
+        loadHistory(),
+        loadPaperStatus(),
+        loadBacktestStatus(),
+      ]);
+      setSnapshot(snap);
+      setHistory(hist);
+      setPaperStatus(paper);
+      setBacktestStatus(backtest);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Refresh failed after reset");
+    }
   }
 
   async function runBacktest() {

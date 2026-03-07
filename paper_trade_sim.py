@@ -51,8 +51,13 @@ PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
 PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
 PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
 PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.12"))
-PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
-PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "180"))
+PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "75"))
+PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
+PAPER_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
+PAPER_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "180"))
+PAPER_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "24"))
+PAPER_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
+PAPER_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
 # Dynamic minimum trade gap:
 # - base gap is permissive enough to allow a strong signal in the next 5m window
 # - adaptive gap expands toward target gap when performance deteriorates
@@ -260,6 +265,59 @@ def _equity_drawdown_pct(conn, initial_capital: float) -> float:
     return max_dd
 
 
+def _window_sample_counts(conn, window_start: int, now_ts: float) -> tuple[int, int]:
+    tick_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?""",
+        (float(window_start), float(now_ts)),
+    )
+    odds_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM poly_odds
+           WHERE window_start = ? AND ts <= ?""",
+        (int(window_start), float(now_ts)),
+    )
+    tick_cnt = int(tick_row[0] or 0) if tick_row else 0
+    odds_cnt = int(odds_row[0] or 0) if odds_row else 0
+    return tick_cnt, odds_cnt
+
+
+def _recent_move_pct(conn, window_start: int, now_ts: float, lookback_sec: float) -> float | None:
+    lo_ts = max(float(window_start), float(now_ts) - max(1.0, float(lookback_sec)))
+    hi_ts = float(now_ts)
+    first_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts ASC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    last_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts DESC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    if not first_row or not last_row:
+        return None
+    try:
+        p0 = float(first_row[0])
+        p1 = float(last_row[0])
+        if p0 <= 0.0:
+            return None
+        return ((p1 - p0) / p0) * 100.0
+    except Exception:
+        return None
+
+
 def _price_at_or_near(conn, ts: float, *, prefer_before: bool) -> float | None:
     if prefer_before:
         row = fetch_one(
@@ -364,11 +422,28 @@ def open_trade_if_signal(
         return False
     if window_start is None or window_end is None:
         return False
+    now_ts = time.time()
     seconds_elapsed = window.get("seconds_elapsed")
     if seconds_elapsed is None:
         return False
     seconds_elapsed = float(seconds_elapsed)
+    seconds_remaining = max(0.0, float(window_end) - now_ts)
     if seconds_elapsed < PAPER_ENTRY_START_SEC or seconds_elapsed > PAPER_ENTRY_END_SEC:
+        return False
+    if seconds_remaining < PAPER_MIN_SECONDS_REMAINING:
+        return False
+
+    tick_samples, odds_samples = _window_sample_counts(conn, int(window_start), now_ts)
+    if tick_samples < PAPER_MIN_TICK_SAMPLES or odds_samples < PAPER_MIN_ODDS_SAMPLES:
+        logger.warning(
+            "Skip low sample window ws=%s: ticks=%s/%s odds=%s/%s elapsed=%.1fs",
+            window_start,
+            tick_samples,
+            PAPER_MIN_TICK_SAMPLES,
+            odds_samples,
+            PAPER_MIN_ODDS_SAMPLES,
+            seconds_elapsed,
+        )
         return False
 
     exists = fetch_one(
@@ -398,6 +473,33 @@ def open_trade_if_signal(
     support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
     confidence = float(signal.get("avg_confidence") or 0.0)
+    recent_move_pct = _recent_move_pct(
+        conn,
+        int(window_start),
+        now_ts=now_ts,
+        lookback_sec=PAPER_RECENT_MOVE_LOOKBACK_SEC,
+    )
+    if recent_move_pct is None:
+        return False
+    if direction == "UP" and recent_move_pct < PAPER_MIN_RECENT_MOVE_PCT:
+        logger.warning(
+            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% < +%.4f%%",
+            window_start,
+            direction,
+            recent_move_pct,
+            PAPER_MIN_RECENT_MOVE_PCT,
+        )
+        return False
+    if direction == "DOWN" and recent_move_pct > -PAPER_MIN_RECENT_MOVE_PCT:
+        logger.warning(
+            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% > -%.4f%%",
+            window_start,
+            direction,
+            recent_move_pct,
+            PAPER_MIN_RECENT_MOVE_PCT,
+        )
+        return False
+
     gate = evaluate_entry_gate(
         direction=direction,
         entry_price=float(entry_price),
@@ -433,7 +535,6 @@ def open_trade_if_signal(
         max(PAPER_BASE_TRADE_GAP_SEC, PAPER_TARGET_TRADE_GAP_SEC) - PAPER_BASE_TRADE_GAP_SEC
     )
     dynamic_gap = max(0.0, dynamic_gap)
-    now_ts = time.time()
     last_opened_at = _last_opened_at(conn)
     since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
     high_quality_override = (
@@ -754,13 +855,19 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
     if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
         mode = "adaptive"
     logger.warning(
-        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f gap=%.0f~%.0fs unanim=%s",
+        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f "
+        "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s",
         initial_capital,
         mode,
         risk_fraction,
         PAPER_MIN_EXPECTED_ROI * 100.0,
         PAPER_MIN_SUPPORT_RATIO * 100.0,
         PAPER_MAX_ENTRY_PRICE,
+        PAPER_ENTRY_START_SEC,
+        PAPER_ENTRY_END_SEC,
+        PAPER_MIN_SECONDS_REMAINING,
+        PAPER_MIN_TICK_SAMPLES,
+        PAPER_MIN_ODDS_SAMPLES,
         PAPER_BASE_TRADE_GAP_SEC,
         PAPER_TARGET_TRADE_GAP_SEC,
         PAPER_REQUIRE_UNANIMOUS,
