@@ -225,8 +225,28 @@ def init_market_schema(conn):
                 down_token_id TEXT
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                ts_utc TEXT NOT NULL,
+                window_start INTEGER,
+                window_end INTEGER,
+                slug TEXT,
+                direction TEXT NOT NULL,
+                avg_confidence REAL NOT NULL,
+                threshold REAL NOT NULL,
+                reason TEXT NOT NULL,
+                btc_change_pct REAL,
+                up_mid REAL,
+                down_mid REAL,
+                judges_json TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE
+            )
+            """,
             "CREATE INDEX IF NOT EXISTS idx_btc_ts ON btc_ticks(ts)",
             "CREATE INDEX IF NOT EXISTS idx_odds_window ON poly_odds(window_start, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_signal_ts ON signal_history(ts)",
         ]
         for stmt in sqlite_statements:
             execute_write(conn, stmt)
@@ -269,6 +289,27 @@ def init_market_schema(conn):
             down_token_id VARCHAR(255) NULL,
             INDEX idx_window_end (window_end),
             INDEX idx_outcome (actual_outcome)
+        ) ENGINE=InnoDB
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS signal_history (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DOUBLE NOT NULL,
+            ts_utc VARCHAR(64) NOT NULL,
+            window_start BIGINT NULL,
+            window_end BIGINT NULL,
+            slug VARCHAR(191) NULL,
+            direction VARCHAR(16) NOT NULL,
+            avg_confidence DOUBLE NOT NULL,
+            threshold DOUBLE NOT NULL,
+            reason TEXT NOT NULL,
+            btc_change_pct DOUBLE NULL,
+            up_mid DOUBLE NULL,
+            down_mid DOUBLE NULL,
+            judges_json LONGTEXT NOT NULL,
+            dedupe_key VARCHAR(512) NOT NULL,
+            UNIQUE KEY uq_signal_dedupe (dedupe_key),
+            INDEX idx_signal_ts (ts)
         ) ENGINE=InnoDB
         """,
         "CREATE INDEX idx_btc_ts ON btc_ticks(ts)",

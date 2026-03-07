@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 from config import config
 from db_config import (
     connect_db,
+    execute_write,
     db_label,
     fetch_all_dicts,
     fetch_one,
@@ -61,7 +62,6 @@ logger = logging.getLogger("dashboard")
 # Keep jury logs quiet for UI polling.
 logging.getLogger("judges").setLevel(logging.WARNING)
 JURY = Jury(threshold=config.trading.jury_threshold)
-SIGNAL_HISTORY = deque(maxlen=200)
 _LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
 
 
@@ -493,15 +493,15 @@ def _build_signal(
     }
 
 
-def _record_signal_history(now_ts: float, window: Optional[dict], market: dict, signal: dict):
+def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: dict, signal: dict) -> bool:
     global _LAST_SIGNAL_HISTORY_KEY
 
     # Keep only rejected/non-actionable decisions with actual judge context.
     if signal.get("actionable"):
-        return
+        return False
     judges = signal.get("judges") or []
     if not judges:
-        return
+        return False
 
     ws = _to_int(window.get("window_start")) if window else None
     we = _to_int(window.get("window_end")) if window else None
@@ -515,33 +515,92 @@ def _record_signal_history(now_ts: float, window: Optional[dict], market: dict, 
     )
     key = f"{ws}|{direction}|{avg_conf}|{reason}|{vote_sig}"
     if key == _LAST_SIGNAL_HISTORY_KEY:
-        return
+        return False
     _LAST_SIGNAL_HISTORY_KEY = key
 
-    SIGNAL_HISTORY.appendleft(
-        {
-            "ts": now_ts,
-            "ts_utc": datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat(),
-            "window_start": ws,
-            "window_end": we,
-            "slug": slug,
-            "direction": direction,
-            "avg_confidence": avg_conf,
-            "threshold": float(signal.get("threshold") or 0.0),
-            "reason": reason,
-            "market": {
-                "btc_change_pct": _to_float(market.get("btc_change_pct")),
-                "up_mid": _to_float(market.get("up_mid")),
-                "down_mid": _to_float(market.get("down_mid")),
-            },
-            "judges": judges,
-        }
-    )
+    ts_utc = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
+    try:
+        execute_write(
+            conn,
+            """INSERT INTO signal_history
+               (ts, ts_utc, window_start, window_end, slug, direction, avg_confidence, threshold,
+                reason, btc_change_pct, up_mid, down_mid, judges_json, dedupe_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                float(now_ts),
+                ts_utc,
+                ws,
+                we,
+                slug,
+                direction,
+                avg_conf,
+                float(signal.get("threshold") or 0.0),
+                reason,
+                _to_float(market.get("btc_change_pct")),
+                _to_float(market.get("up_mid")),
+                _to_float(market.get("down_mid")),
+                json.dumps(judges, ensure_ascii=False),
+                key,
+            ),
+        )
+        return True
+    except Exception as e:
+        # Ignore duplicate-key inserts from highly similar snapshots.
+        msg = str(e)
+        if ("UNIQUE constraint failed" in msg) or ("Duplicate entry" in msg):
+            return False
+        logger.debug("signal_history insert error: %s", e)
+        return False
 
 
 def build_signal_history(limit: int = 40) -> dict:
     lim = max(1, min(int(limit), 200))
-    return {"ok": True, "items": list(SIGNAL_HISTORY)[:lim], "count": len(SIGNAL_HISTORY)}
+    try:
+        conn = _connect_db()
+    except Exception as e:
+        return {"ok": False, "error": f"Database connection error ({db_label()}): {e}"}
+
+    try:
+        rows = fetch_all_dicts(
+            conn,
+            """SELECT ts, ts_utc, window_start, window_end, slug, direction, avg_confidence,
+                      threshold, reason, btc_change_pct, up_mid, down_mid, judges_json
+               FROM signal_history
+               ORDER BY ts DESC
+               LIMIT ?""",
+            (lim,),
+        )
+        items = []
+        for r in rows:
+            judges_json = r.get("judges_json")
+            try:
+                judges = json.loads(judges_json) if judges_json else []
+            except Exception:
+                judges = []
+            items.append(
+                {
+                    "ts": _to_float(r.get("ts")),
+                    "ts_utc": str(r.get("ts_utc") or ""),
+                    "window_start": _to_int(r.get("window_start")),
+                    "window_end": _to_int(r.get("window_end")),
+                    "slug": str(r.get("slug")) if r.get("slug") else None,
+                    "direction": str(r.get("direction") or "NO_TRADE"),
+                    "avg_confidence": _to_float(r.get("avg_confidence")) or 0.0,
+                    "threshold": _to_float(r.get("threshold")) or 0.0,
+                    "reason": str(r.get("reason") or ""),
+                    "market": {
+                        "btc_change_pct": _to_float(r.get("btc_change_pct")),
+                        "up_mid": _to_float(r.get("up_mid")),
+                        "down_mid": _to_float(r.get("down_mid")),
+                    },
+                    "judges": judges,
+                }
+            )
+        cnt_row = fetch_one(conn, "SELECT COUNT(*) FROM signal_history")
+        count = int(cnt_row[0]) if cnt_row else len(items)
+        return {"ok": True, "items": items, "count": count}
+    finally:
+        conn.close()
 
 
 def build_snapshot() -> dict:
@@ -615,7 +674,9 @@ def build_snapshot() -> dict:
             "down_bid": _to_float(latest_odds["down_best_bid"]) if latest_odds else None,
             "down_ask": _to_float(latest_odds["down_best_ask"]) if latest_odds else None,
         }
-        _record_signal_history(now_ts, window, market_obj, signal)
+        inserted = _record_signal_history(conn, now_ts, window, market_obj, signal)
+        if inserted:
+            conn.commit()
 
         snapshot = {
             "ok": True,
