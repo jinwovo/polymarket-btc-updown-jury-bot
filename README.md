@@ -8,6 +8,10 @@ A real-time BTC/Polymarket signal platform with:
 - backtest + auto sweep,
 - Next.js dashboard controls.
 
+## Dashboard preview
+
+![Dashboard Preview](example.png)
+
 ## Why this project
 
 Most retail bots overfit on fake odds or ignore execution quality.
