@@ -53,6 +53,7 @@ PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
 PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.20"))
 PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "20"))
 PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "220"))
+PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
 
 
 def init_paper_table(conn):
@@ -184,7 +185,12 @@ def _recent_risk_state(conn) -> tuple[int, float]:
     return loss_streak, loss_rate
 
 
-def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> bool:
+def open_trade_if_signal(
+    conn,
+    initial_capital: float,
+    risk_fraction: float,
+    sizing_mode: str,
+) -> bool:
     snap = build_snapshot()
     if not snap.get("ok"):
         logger.warning("Snapshot unavailable: %s", snap.get("error", "unknown"))
@@ -303,23 +309,29 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
         return False
 
     realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
-    if available_equity < PAPER_MIN_BET:
-        logger.warning(
-            "Insufficient available equity ws=%s: available=$%.2f",
-            window_start,
-            available_equity,
-        )
-        return False
 
-    stake = _compute_bet_size(
-        available_equity=available_equity,
-        initial_capital=initial_capital,
-        expected_roi=gate.expected_roi,
-        risk_fraction=risk_fraction,
-    )
-    if loss_streak > 0:
-        # Adaptive de-risking after losses.
-        stake = round(stake * (0.65 ** min(loss_streak, 3)), 2)
+    if sizing_mode == "all_in_fixed":
+        stake = round(initial_capital, 2)
+    elif sizing_mode == "all_in_equity":
+        stake = round(max(0.0, available_equity), 2)
+    else:
+        if available_equity < PAPER_MIN_BET:
+            logger.warning(
+                "Insufficient available equity ws=%s: available=$%.2f",
+                window_start,
+                available_equity,
+            )
+            return False
+
+        stake = _compute_bet_size(
+            available_equity=available_equity,
+            initial_capital=initial_capital,
+            expected_roi=gate.expected_roi,
+            risk_fraction=risk_fraction,
+        )
+        if loss_streak > 0:
+            # Adaptive de-risking after losses.
+            stake = round(stake * (0.65 ** min(loss_streak, 3)), 2)
     if stake < PAPER_MIN_BET:
         logger.warning("Computed bet too small ws=%s: $%.2f", window_start, stake)
         return False
@@ -360,7 +372,7 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
     conn.commit()
 
     logger.warning(
-        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f streak=%s",
+        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f streak=%s mode=%s",
         window_start,
         direction,
         stake,
@@ -369,6 +381,7 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
         realized_equity,
         available_equity,
         loss_streak,
+        sizing_mode,
     )
     return True
 
@@ -528,15 +541,19 @@ def show_status(conn):
             )
 
 
-def run_loop(stake: float, interval_sec: float):
+def run_loop(stake: float, interval_sec: float, sizing_mode: str):
     conn = connect_db()
     init_paper_table(conn)
 
     initial_capital = max(50.0, float(stake))
     risk_fraction = _clamp(PAPER_RISK_FRACTION, 0.01, 1.0)
+    mode = str(sizing_mode or "adaptive").strip().lower()
+    if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
+        mode = "adaptive"
     logger.warning(
-        "Paper simulator running: initial=$%.2f risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f",
+        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f",
         initial_capital,
+        mode,
         risk_fraction,
         PAPER_MIN_EXPECTED_ROI * 100.0,
         PAPER_MIN_SUPPORT_RATIO * 100.0,
@@ -546,7 +563,12 @@ def run_loop(stake: float, interval_sec: float):
     try:
         while True:
             resolve_open_trades(conn)
-            open_trade_if_signal(conn, initial_capital=initial_capital, risk_fraction=risk_fraction)
+            open_trade_if_signal(
+                conn,
+                initial_capital=initial_capital,
+                risk_fraction=risk_fraction,
+                sizing_mode=mode,
+            )
             time.sleep(interval_sec)
     except KeyboardInterrupt:
         logger.warning("Paper simulator stopped by user")
@@ -558,6 +580,12 @@ def main():
     parser = argparse.ArgumentParser(description="Live paper-trading simulator")
     parser.add_argument("--stake", type=float, default=1000.0, help="Paper seed capital in USD (default: 1000)")
     parser.add_argument("--interval", type=float, default=2.0, help="Polling interval seconds (default: 2)")
+    parser.add_argument(
+        "--sizing-mode",
+        type=str,
+        default=PAPER_SIZING_MODE,
+        help="adaptive | all_in_fixed | all_in_equity",
+    )
     parser.add_argument("--status", action="store_true", help="Show paper trade status")
     args = parser.parse_args()
 
@@ -571,7 +599,11 @@ def main():
         conn.close()
         return
 
-    run_loop(stake=float(args.stake), interval_sec=float(args.interval))
+    run_loop(
+        stake=float(args.stake),
+        interval_sec=float(args.interval),
+        sizing_mode=str(args.sizing_mode),
+    )
 
 
 if __name__ == "__main__":

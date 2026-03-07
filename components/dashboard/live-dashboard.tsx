@@ -258,6 +258,7 @@ export function LiveDashboard() {
 
   const [paperStake, setPaperStake] = useState("1000");
   const [paperInterval, setPaperInterval] = useState("2");
+  const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
 
   const [lastHours, setLastHours] = useState("24");
   const [runMode, setRunMode] = useState<"single" | "auto_sweep">("auto_sweep");
@@ -370,6 +371,7 @@ export function LiveDashboard() {
         action: "start",
         stake: Number(paperStake || "1000"),
         interval: Number(paperInterval || "2"),
+        sizing_mode: paperSizingMode,
       }),
     });
     const json = (await res.json()) as ProcessStatus;
@@ -876,6 +878,22 @@ export function LiveDashboard() {
                     onChange={(e) => setPaperInterval(e.target.value)}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   />
+                </label>
+                <label className="text-xs text-muted-foreground col-span-2">
+                  Position Mode
+                  <select
+                    value={paperSizingMode}
+                    onChange={(e) =>
+                      setPaperSizingMode(
+                        e.target.value as "adaptive" | "all_in_fixed" | "all_in_equity",
+                      )
+                    }
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  >
+                    <option value="adaptive">adaptive (recommended)</option>
+                    <option value="all_in_fixed">all_in_fixed (always seed amount)</option>
+                    <option value="all_in_equity">all_in_equity (all available equity)</option>
+                  </select>
                 </label>
               </div>
               <div className="flex gap-2">

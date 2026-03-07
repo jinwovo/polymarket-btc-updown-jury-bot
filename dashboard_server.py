@@ -1132,15 +1132,18 @@ def _python_command(script_name: str, args: list[str]) -> list[str]:
     return [sys.executable, str(script_path), *args]
 
 
-def control_paper_start(stake: float, interval: float) -> dict:
+def control_paper_start(stake: float, interval: float, sizing_mode: str = "adaptive") -> dict:
     stake = max(1.0, float(stake))
     interval = max(0.5, float(interval))
+    mode = str(sizing_mode or "adaptive").strip().lower()
+    if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
+        mode = "adaptive"
     ok, msg = PAPER_SIM_PROC.start(
         _python_command(
             "paper_trade_sim.py",
-            ["--stake", str(stake), "--interval", str(interval)],
+            ["--stake", str(stake), "--interval", str(interval), "--sizing-mode", mode],
         ),
-        meta={"stake": stake, "interval": interval},
+        meta={"stake": stake, "interval": interval, "sizing_mode": mode},
     )
     status = PAPER_SIM_PROC.status()
     status["ok"] = ok
@@ -1358,8 +1361,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/control/paper/start":
             stake = payload.get("stake", 1000.0)
             interval = payload.get("interval", 2.0)
+            sizing_mode = str(payload.get("sizing_mode", "adaptive"))
             try:
-                resp = control_paper_start(float(stake), float(interval))
+                resp = control_paper_start(float(stake), float(interval), sizing_mode=sizing_mode)
                 self._send_json(resp, code=200)
             except Exception as e:
                 logger.exception("paper start error")
