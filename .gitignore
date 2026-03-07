@@ -3,3 +3,15 @@ market_data.db
 market_data.db-shm
 market_data.db-wal
 *.db
+
+# Build/cache
+.next/
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+
+# Local runtime artifacts
+bot.log
+backtest_report.txt

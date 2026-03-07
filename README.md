@@ -1,100 +1,158 @@
 # Algorithmic-Trading
 
-Polymarket BTC Up/Down 5분 마켓과 Binance 실시간 가격을 결합해 시그널을 만들고, 데이터 수집/백테스트/가상매매를 수행하는 프로젝트입니다.
+A real-time BTC/Polymarket signal platform with:
+- live data collection,
+- 5-judge decision engine,
+- fee-aware entry gate,
+- paper trading,
+- backtest + auto sweep,
+- Next.js dashboard controls.
 
-## 구조
+## Why this project
+
+Most retail bots overfit on fake odds or ignore execution quality.
+This project is built to test **real collected orderbook data** and block low-quality entries even when judges agree.
+
+## Core features
+
+- Real data pipeline (Binance trades + Polymarket orderbook)
+- 5-judge consensus engine (technical, arb, statistical, trend persistence, orderbook quality)
+- Fee-aware entry gate
+  - skip trade when expected net ROI is below threshold
+  - avoid "100% confidence but no real payout" traps
+- Paper simulation from dashboard (start/stop + history popup)
+- Backtest + auto sweep for `JURY_THRESHOLD` and `MIN_EDGE`
+- Signal history (accepted/rejected) with DB persistence and paging
+
+## Tech stack
+
+- Python: collector, strategy, simulation, backtest, API server
+- SQLite or MariaDB backend
+- Next.js + Tailwind + shadcn-style UI components
+
+## Repository structure
 
 ```text
-config.py              # 설정값 (API키, 임계값, 리스크 한도)
-binance_ws.py          # Binance WebSocket 실시간 BTC 가격
-polymarket_client.py   # Polymarket Gamma API + CLOB 주문
-judges.py              # 5-judge 신호 엔진
-risk_manager.py        # 리스크 관리 (일일한도, 켈리, 연패보호)
-main.py                # 메인 봇 루프
-data_collector.py      # 실시간 데이터 수집기
-backtest.py            # 백테스트 + 자동 스윕
-paper_trade_sim.py     # 가상 매수/정산 시뮬레이터
-dashboard_server.py    # Python API 서버
-app/                   # Next.js 대시보드
+app/                         # Next.js app router
+components/dashboard/        # Dashboard UI
+config.py                    # Runtime configuration
+data_collector.py            # Live data collector
+dashboard_server.py          # Python API for dashboard + process control
+judges.py                    # 5-judge decision engine
+trade_gate.py                # Fee-aware entry gate logic
+paper_trade_sim.py           # Paper trading simulator
+backtest.py                  # Backtest + auto sweep
+main.py                      # Live trading loop
 ```
 
-## 전략
+## Quick start (one command)
 
-1. Binance WebSocket으로 BTC/USDT 실시간 가격 수신
-2. 5분 윈도우 시작가 기준으로 현재 가격 변동 추적
-3. Polymarket UP/DOWN 가격(미드/호가)과 괴리 비교
-4. 5개 judge가 독립적으로 투표
-   - TechnicalJudge: RSI/모멘텀/볼린저
-   - ArbitrageJudge: Binance 변동 대비 Polymarket 미스프라이싱
-   - StatisticalJudge: 변동성/최근 패턴
-   - TrendPersistenceJudge: 다중 시간축 추세 지속성
-   - OrderbookValueJudge: 호가/스프레드/오버라운드 기반 가치 평가
-5. `JURY_THRESHOLD` 이상 동의 + confidence 조건 충족 시 시그널 생성
-
-## 설치
+### 1) Install
 
 ```bash
 pip install -r requirements.txt
-npm.cmd install
+npm install
 ```
 
-## 설정
-
-1. `.env.example` -> `.env` 복사
-2. 필요 시 API/DB 값 설정
-
-```env
-POLYMARKET_API_KEY=your_key
-POLYMARKET_API_SECRET=your_secret
-POLYMARKET_API_PASSPHRASE=your_pass
-POLYMARKET_FUNDER=your_wallet
-DRY_RUN=true
-MIN_EDGE=0.08
-JURY_THRESHOLD=3
-```
-
-## 사용 흐름
-
-### Step 1: 데이터 수집
+### 2) Run full stack
 
 ```bash
-python data_collector.py
+npm run start
+```
+
+Open: `http://127.0.0.1:3100`
+
+This starts:
+- web dashboard,
+- python API server,
+- data collector.
+
+## Dashboard controls
+
+- `Paper Sim Control`
+  - start/stop paper simulation from UI
+- `Trade History` popup
+  - entry price
+  - 5m BTC start/end
+  - UP/DOWN odds at entry
+  - to-win total and to-win pnl
+  - realized pnl / roi / outcome
+- `Backtest/Sweep Control`
+  - single run or auto-sweep from UI
+
+## Strategy safety model
+
+### Entry requirements (high level)
+
+1. Jury direction must be `UP` or `DOWN`
+2. Confidence must pass `MIN_EDGE`
+3. Time-to-close must pass cutoff
+4. **Net expected ROI gate must pass**:
+   - includes configured fee/slippage drag
+   - blocks low-EV entries
+
+### Important payout note
+
+On Polymarket, UI `To win` is generally a gross payout target.
+Your effective result is:
+
+`net pnl = payout - stake - fees/slippage`
+
+This project uses fee-aware filtering and fee-adjusted pnl in simulation/backtest.
+
+## Configuration
+
+Create `.env` from `.env.example`, then edit values.
+
+Key parameters:
+
+- `MIN_EDGE` (default: `0.08`)
+- `JURY_THRESHOLD` (default: `3`)
+- `TRADE_FEE_RATE` (default: `0.010`)
+- `MIN_EXPECTED_ROI` (default: `0.003`)
+- `MAX_BET_SIZE` (default: `5.0`)
+- `DAILY_LOSS_LIMIT` (default: `50.0`)
+
+## Useful commands
+
+```bash
+# Collector status
 python data_collector.py --status
-python data_collector.py --export
-```
 
-### Step 2: 백테스트
+# Paper sim status
+python paper_trade_sim.py --status
 
-```bash
-python backtest.py
+# Backtest
 python backtest.py --last-hours 24
-python backtest.py --auto-sweep
-python backtest.py --csv
+
+# Auto sweep
+python backtest.py --auto-sweep --edge-grid "0.04,0.06,0.08,0.10" --jury-grid "2,3,4,5"
 ```
 
-### Step 3: 대시보드 실행
+## Database reset (fresh start)
 
-```bash
-npm.cmd run start
-```
+If you want to restart from clean history, clear:
+- `btc_ticks`
+- `poly_odds`
+- `market_windows`
+- `signal_history`
+- `paper_trades`
 
-브라우저: `http://127.0.0.1:3100`
+## Roadmap
 
-화면에서 직접 실행 가능:
-- `Paper Sim Control`: `paper_trade_sim.py` 시작/중지
-- `Backtest/Sweep Control`: 단건 백테스트 / 자동 스윕 실행
+- Better execution modeling (partial fills and slippage curve)
+- More robust market-regime features
+- CI checks + benchmark snapshots
+- Public demo video + release cadence
 
-## 주요 설정값
+## Contributing
 
-| 설정 | 기본값 | 설명 |
-|------|--------|------|
-| `DRY_RUN` | `true` | 시뮬레이션 모드 |
-| `MAX_BET_SIZE` | `5.0` | 최대 베팅금액 (USDC) |
-| `MIN_EDGE` | `0.08` | 최소 엣지 |
-| `JURY_THRESHOLD` | `3` | 시그널 합의 임계값 |
-| `DAILY_LOSS_LIMIT` | `50.0` | 일일 손실 한도 |
+Please read [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 주의
+## Security
 
-- 실거래 전 충분한 데이터 수집과 백테스트가 필요합니다.
-- 자동 스윕 결과는 표본 수가 적으면 신뢰도가 낮습니다.
+Please read [SECURITY.md](SECURITY.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
