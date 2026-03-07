@@ -28,6 +28,7 @@ from db_config import (
     fetch_one,
     is_sqlite_backend,
 )
+from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 
 
 logging.basicConfig(
@@ -128,12 +129,38 @@ def open_trade_if_signal(conn, stake: float) -> bool:
         logger.warning("Invalid entry ask %.6f for %s; skipping trade", entry_price, direction)
         return False
 
+    btc_now = market.get("btc_price")
+    btc_start = market.get("btc_start_price")
+    sec_elapsed = window.get("seconds_elapsed")
+    judges = signal.get("judges") or []
+    if btc_now is None or btc_start is None or sec_elapsed is None:
+        logger.warning("Missing market context for entry gate; skipping trade")
+        return False
+    support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
+    support_ratio = (support_votes / float(len(judges))) if judges else 0.0
+    gate = evaluate_entry_gate(
+        direction=direction,
+        entry_price=float(entry_price),
+        current_price=float(btc_now),
+        start_price=float(btc_start),
+        seconds_elapsed=float(sec_elapsed),
+        jury_confidence=float(signal.get("avg_confidence") or 0.0),
+        support_ratio=float(support_ratio),
+    )
+    if not gate.allow:
+        logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
+        return False
+
     shares = stake / entry_price
     payout_multiple = 1.0 / entry_price
-    potential_win_pnl = shares - stake
+    potential_win_pnl = apply_fee_to_pnl(shares - stake, stake)
     opened_at = time.time()
     conf = float(signal.get("avg_confidence") or 0.0)
     reason = str(signal.get("reason") or "")
+    if reason:
+        reason = f"{reason} | {gate.reason}"
+    else:
+        reason = gate.reason
 
     execute_write(
         conn,
@@ -190,7 +217,8 @@ def resolve_open_trades(conn) -> int:
         stake = float(row["stake"])
         shares = float(row["shares"])
         won = 1 if outcome == direction else 0
-        pnl = (shares - stake) if won else (-stake)
+        raw_pnl = (shares - stake) if won else (-stake)
+        pnl = apply_fee_to_pnl(raw_pnl, stake)
         roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
         closed_at = time.time()
 

@@ -33,6 +33,7 @@ from db_config import (
     sqlite_db_path,
 )
 from judges import Jury, MarketContext
+from trade_gate import evaluate_entry_gate
 
 
 BASE_DIR = Path(__file__).parent
@@ -448,13 +449,6 @@ def _build_signal(
 
     decision = JURY.deliberate(ctx)
 
-    actionable = (
-        decision.direction in ("UP", "DOWN")
-        and decision.avg_confidence >= config.trading.min_edge
-        and seconds_remaining > config.trading.cutoff_before_close_seconds
-    )
-    action_label = f"BUY {decision.direction}" if actionable else "WAIT"
-
     vote_counts = {"UP": 0, "DOWN": 0, "ABSTAIN": 0}
     judge_rows = []
     for v in decision.verdicts:
@@ -469,11 +463,50 @@ def _build_signal(
         )
 
     jury_size = len(decision.verdicts)
-    if actionable:
-        summary = (
-            f"{vote_counts['UP']}/{jury_size} UP votes" if decision.direction == "UP"
-            else f"{vote_counts['DOWN']}/{jury_size} DOWN votes"
+    base_actionable = (
+        decision.direction in ("UP", "DOWN")
+        and decision.avg_confidence >= config.trading.min_edge
+        and seconds_remaining > config.trading.cutoff_before_close_seconds
+    )
+
+    gate_result = None
+    entry_price = None
+    if decision.direction == "UP":
+        entry_price = _to_float(latest_odds.get("up_best_ask")) or up_mid
+    elif decision.direction == "DOWN":
+        entry_price = _to_float(latest_odds.get("down_best_ask")) or down_mid
+
+    if (
+        base_actionable
+        and decision.direction in ("UP", "DOWN")
+        and entry_price is not None
+        and 0.0 < entry_price < 1.0
+        and jury_size > 0
+    ):
+        support_votes = vote_counts.get(decision.direction, 0)
+        support_ratio = support_votes / float(jury_size)
+        gate_result = evaluate_entry_gate(
+            direction=decision.direction,
+            entry_price=float(entry_price),
+            current_price=btc_now,
+            start_price=start_price,
+            seconds_elapsed=seconds_elapsed,
+            jury_confidence=decision.avg_confidence,
+            support_ratio=support_ratio,
         )
+
+    actionable = base_actionable and gate_result is not None and gate_result.allow
+    action_label = f"BUY {decision.direction}" if actionable else "WAIT"
+
+    if actionable and gate_result is not None:
+        summary = (
+            f"{vote_counts[decision.direction]}/{jury_size} {decision.direction} votes | "
+            f"{gate_result.reason}"
+        )
+    elif base_actionable and gate_result is not None:
+        summary = gate_result.reason
+    elif base_actionable and gate_result is None:
+        summary = "skip invalid entry price for current orderbook"
     else:
         summary = (
             f"votes UP={vote_counts['UP']} DOWN={vote_counts['DOWN']} "
@@ -490,6 +523,10 @@ def _build_signal(
         "jury_size": jury_size,
         "unanimous": decision.unanimous,
         "reason": summary,
+        "entry_price": entry_price,
+        "expected_roi": gate_result.expected_roi if gate_result is not None else None,
+        "model_prob": gate_result.model_prob if gate_result is not None else None,
+        "break_even_prob": gate_result.break_even_prob if gate_result is not None else None,
         "judges": judge_rows,
     }
 

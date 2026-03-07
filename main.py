@@ -17,6 +17,7 @@ from binance_ws import BinancePriceFeed
 from polymarket_client import PolymarketClient, MarketInfo, compute_market_timestamps
 from judges import Jury, MarketContext, Vote
 from risk_manager import RiskManager, TradeRecord
+from trade_gate import evaluate_entry_gate
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -55,6 +56,11 @@ class TradingBot:
         logger.info("Polymarket BTC Up/Down 5m Speed Arbitrage Bot")
         logger.info(f"Mode: {'DRY RUN' if config.trading.dry_run else '*** LIVE TRADING ***'}")
         logger.info(f"Max bet: ${config.trading.max_bet_size} | Min edge: {config.trading.min_edge}")
+        logger.info(
+            "Entry gate: fee=%s%% | min_expected_roi=%s%%",
+            round(config.trading.fee_rate * 100.0, 3),
+            round(config.trading.min_expected_roi * 100.0, 3),
+        )
         logger.info(
             "Jury: %s/%s | Check interval: %ss",
             config.trading.jury_threshold,
@@ -204,9 +210,25 @@ class TradingBot:
         if price <= 0.01 or price >= 0.99 or not token_id:
             return
 
+        support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
+        support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
+        gate = evaluate_entry_gate(
+            direction=decision.direction,
+            entry_price=float(price),
+            current_price=float(ctx.current_binance_price),
+            start_price=float(ctx.market_start_price),
+            seconds_elapsed=float(seconds_elapsed),
+            jury_confidence=float(decision.avg_confidence),
+            support_ratio=float(support_ratio),
+        )
+        if not gate.allow:
+            logger.info("Skip trade by entry gate: %s", gate.reason)
+            return
+
         logger.info(
             f">>> TRADE: {decision.direction} | ${bet_size:.2f} @ {price:.4f} | "
             f"conf={decision.avg_confidence:.3f} | unan={decision.unanimous} | "
+            f"net_ev={gate.expected_roi:+.3%} | "
             f"BTC_chg={ctx.current_binance_price - ctx.market_start_price:+.2f} | "
             f"poly_up={ctx.poly_up_price:.3f} poly_down={ctx.poly_down_price:.3f}"
         )

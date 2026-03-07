@@ -39,6 +39,7 @@ from db_config import (
 )
 from judges import Jury, MarketContext, Vote, JuryDecision
 from risk_manager import RiskManager
+from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 
 logging.basicConfig(
     level=logging.INFO,
@@ -366,12 +367,28 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
+            support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
+            support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
+            gate = evaluate_entry_gate(
+                direction=decision.direction,
+                entry_price=float(entry_price),
+                current_price=float(btc_current),
+                start_price=float(btc_start),
+                seconds_elapsed=float(seconds_elapsed),
+                jury_confidence=float(decision.avg_confidence),
+                support_ratio=float(support_ratio),
+            )
+            if not gate.allow:
+                check_time += self.check_interval
+                continue
+
             won = (decision.direction == outcome)
             if won:
                 shares = bet_size / entry_price
-                pnl = shares - bet_size
+                raw_pnl = shares - bet_size
             else:
-                pnl = -bet_size
+                raw_pnl = -bet_size
+            pnl = apply_fee_to_pnl(raw_pnl, bet_size)
 
             trade = BacktestTrade(
                 window_start=ws,
@@ -523,7 +540,8 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
 
 {'='*70}
 Config: min_edge={config.trading.min_edge}, max_bet=${config.trading.max_bet_size},
-         kelly={config.trading.kelly_fraction}, jury={config.trading.jury_threshold}/{jury_size}
+         kelly={config.trading.kelly_fraction}, jury={config.trading.jury_threshold}/{jury_size},
+         fee={config.trading.fee_rate:.3%}, min_expected_roi={config.trading.min_expected_roi:.3%}
 {'='*70}
 """
     return report

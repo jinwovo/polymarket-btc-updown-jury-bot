@@ -40,6 +40,10 @@ class TradingConfig:
     min_bet_size: float = 0.5
     # Minimum edge (expected value advantage) required to place a trade
     min_edge: float = field(default_factory=lambda: float(os.getenv("MIN_EDGE", "0.08")))
+    # Approximate total fee/slippage drag per completed trade as a stake fraction.
+    fee_rate: float = field(default_factory=lambda: float(os.getenv("TRADE_FEE_RATE", "0.010")))
+    # Require this minimum expected ROI (after fee_rate) before entry.
+    min_expected_roi: float = field(default_factory=lambda: float(os.getenv("MIN_EXPECTED_ROI", "0.003")))
     # Jury: minimum same-direction votes required to trade
     jury_threshold: int = field(default_factory=lambda: int(os.getenv("JURY_THRESHOLD", "3")))
     # How many seconds before market close to stop entering
