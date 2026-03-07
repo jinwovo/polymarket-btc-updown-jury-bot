@@ -1,0 +1,5 @@
+node_modules
+market_data.db
+market_data.db-shm
+market_data.db-wal
+*.db

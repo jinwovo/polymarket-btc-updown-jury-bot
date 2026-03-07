@@ -1,0 +1,8 @@
+websockets>=12.0
+httpx>=0.27.0
+numpy>=1.26.0
+pandas>=2.1.0
+ta>=0.11.0
+py-clob-client>=0.17.0
+python-dotenv>=1.0.0
+pymysql>=1.1.1

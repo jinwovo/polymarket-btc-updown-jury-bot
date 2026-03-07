@@ -1,0 +1,30 @@
+{
+  "name": "future-prediction-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "concurrently -k -n API,WEB -c cyan,magenta \"python dashboard_server.py --host 127.0.0.1 --port 8790\" \"next dev -p 3100\"",
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start:web": "next start -p 3100"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.475.0",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.4.40",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4"
+  }
+}

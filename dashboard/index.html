@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Future Pulse Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="min-h-screen text-slate-100 antialiased">
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <div class="bg-grid"></div>
+
+  <header class="border-b border-white/10 backdrop-blur-xl">
+    <div class="mx-auto max-w-7xl px-4 py-4 md:px-8">
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <p class="text-[11px] uppercase tracking-[0.22em] text-slate-400">Live Monitoring</p>
+          <h1 class="text-2xl font-bold md:text-3xl">Future Pulse Console</h1>
+        </div>
+        <div class="flex items-center gap-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2">
+          <span id="statusDot" class="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_16px_rgba(251,191,36,.65)]"></span>
+          <div class="text-right">
+            <p id="statusText" class="text-sm font-semibold">Connecting...</p>
+            <p id="statusFreshness" class="mono text-[11px] text-slate-400">No data</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl space-y-5 px-4 py-5 md:px-8 md:py-7">
+    <section id="opportunityBanner" class="signal-banner">
+      <div>
+        <p class="text-[11px] uppercase tracking-[0.2em] text-slate-300/80">Signal Engine</p>
+        <p id="bannerTitle" class="mt-1 text-xl font-bold md:text-2xl">Waiting for setup</p>
+      </div>
+      <div class="text-right">
+        <p class="mono text-xs text-slate-300/80">Confidence</p>
+        <p id="bannerConfidence" class="mono text-2xl font-semibold">0.00</p>
+      </div>
+    </section>
+
+    <section class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <article class="panel">
+        <p class="label">Current Action</p>
+        <p id="signalDirection" class="mt-2 text-3xl font-bold tracking-tight">WAIT</p>
+        <p id="signalReason" class="mt-1 text-sm text-slate-300">No signal yet</p>
+      </article>
+
+      <article class="panel">
+        <p class="label">BTC Window Move</p>
+        <p id="btcMove" class="mt-2 mono text-3xl font-semibold">--</p>
+        <p id="btcPrice" class="mt-1 text-sm text-slate-300">BTC: --</p>
+      </article>
+
+      <article class="panel">
+        <p class="label">Polymarket Mid Odds</p>
+        <div class="mt-2 flex items-baseline justify-between gap-3">
+          <p class="mono text-2xl font-semibold text-emerald-300">UP <span id="upMid">--</span></p>
+          <p class="mono text-2xl font-semibold text-rose-300">DOWN <span id="downMid">--</span></p>
+        </div>
+        <p id="oddsSpread" class="mt-1 text-sm text-slate-300">Spread: --</p>
+      </article>
+
+      <article class="panel">
+        <p class="label">Window Countdown</p>
+        <p id="windowCountdown" class="mt-2 mono text-3xl font-semibold">--:--</p>
+        <p id="windowSlug" class="mt-1 truncate text-sm text-slate-300">slug: --</p>
+        <div class="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+          <div id="windowProgress" class="h-full w-0 rounded-full bg-gradient-to-r from-cyan-400 to-fuchsia-400 transition-all duration-700"></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid grid-cols-1 gap-4 xl:grid-cols-3">
+      <article class="panel xl:col-span-2">
+        <div class="mb-4 flex items-center justify-between">
+          <div>
+            <p class="label">Market Motion</p>
+            <p class="text-sm text-slate-300">BTC and implied probabilities from last 30m</p>
+          </div>
+          <div class="mono text-xs text-slate-400">auto refresh 6s</div>
+        </div>
+        <div class="space-y-4">
+          <div>
+            <p class="mono mb-1 text-[11px] uppercase tracking-[0.2em] text-cyan-300/90">BTC Price</p>
+            <canvas id="btcChart" class="chart"></canvas>
+          </div>
+          <div>
+            <p class="mono mb-1 text-[11px] uppercase tracking-[0.2em] text-fuchsia-300/90">UP / DOWN Mid Odds</p>
+            <canvas id="oddsChart" class="chart"></canvas>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <p class="label">Judge Votes</p>
+        <div id="judgeVotes" class="mt-3 space-y-2"></div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="mb-3 flex items-center justify-between">
+        <p class="label">Recent 5m Windows</p>
+        <p id="statsLine" class="mono text-xs text-slate-400">stats: --</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[720px] text-left">
+          <thead>
+            <tr class="border-b border-white/10 text-xs uppercase tracking-[0.16em] text-slate-400">
+              <th class="py-2">Start (UTC)</th>
+              <th class="py-2">Outcome</th>
+              <th class="py-2">Start</th>
+              <th class="py-2">End</th>
+              <th class="py-2">Move</th>
+              <th class="py-2">Slug</th>
+            </tr>
+          </thead>
+          <tbody id="windowRows" class="mono text-sm"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

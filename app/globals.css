@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 216 40% 6%;
+  --foreground: 214 32% 94%;
+  --card: 220 34% 11%;
+  --card-foreground: 214 32% 94%;
+  --primary: 190 96% 56%;
+  --primary-foreground: 210 40% 8%;
+  --secondary: 220 27% 16%;
+  --secondary-foreground: 214 32% 94%;
+  --muted: 220 25% 16%;
+  --muted-foreground: 215 16% 68%;
+  --accent: 24 96% 57%;
+  --accent-foreground: 210 40% 8%;
+  --border: 218 24% 24%;
+  --input: 218 24% 20%;
+  --ring: 190 96% 56%;
+}
+
+* {
+  @apply border-border;
+}
+
+html,
+body {
+  @apply bg-background text-foreground;
+}
+
+body {
+  background:
+    radial-gradient(70rem 36rem at -4% -8%, rgba(22, 163, 210, 0.19), transparent 52%),
+    radial-gradient(58rem 32rem at 104% -10%, rgba(249, 115, 22, 0.18), transparent 48%),
+    hsl(var(--background));
+  min-height: 100vh;
+}
+
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.14;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at center, black 22%, transparent 100%);
+}
+
+.panel {
+  @apply rounded-2xl border bg-card/80 backdrop-blur-xl;
+  box-shadow: 0 20px 64px rgba(3, 8, 20, 0.35);
+}
+
+.tiny-label {
+  @apply text-[11px] uppercase tracking-[0.18em] text-muted-foreground;
+}
