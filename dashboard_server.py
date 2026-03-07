@@ -1159,6 +1159,58 @@ def control_paper_stop() -> dict:
     return status
 
 
+def control_paper_reset() -> dict:
+    was_running = bool(PAPER_SIM_PROC.status().get("running"))
+    stopped_ok = True
+    stopped_msg = "already stopped"
+    if was_running:
+        stopped_ok, stopped_msg = PAPER_SIM_PROC.stop()
+
+    deleted = 0
+    conn = None
+    try:
+        conn = _connect_db()
+        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades")
+        deleted = int(count_row[0] or 0) if count_row else 0
+        execute_write(conn, "DELETE FROM paper_trades")
+        if is_sqlite_backend():
+            try:
+                execute_write(conn, "DELETE FROM sqlite_sequence WHERE name='paper_trades'")
+            except Exception:
+                pass
+        else:
+            try:
+                execute_write(conn, "ALTER TABLE paper_trades AUTO_INCREMENT = 1")
+            except Exception:
+                pass
+        conn.commit()
+    except Exception as e:
+        msg = str(e)
+        # If table does not exist yet, treat as already reset.
+        if ("no such table" in msg.lower()) or ("doesn't exist" in msg.lower()):
+            deleted = 0
+        else:
+            status = PAPER_SIM_PROC.status()
+            status["ok"] = False
+            status["message"] = f"reset failed: {msg}"
+            status["deleted"] = 0
+            status["stopped"] = {"ok": stopped_ok, "message": stopped_msg}
+            return status
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    status = PAPER_SIM_PROC.status()
+    status["ok"] = True
+    status["message"] = "paper history reset"
+    status["deleted"] = deleted
+    status["stopped"] = {"ok": stopped_ok, "message": stopped_msg}
+    return status
+
+
 def control_backtest_run(payload: dict[str, Any]) -> dict:
     action_mode = str(payload.get("mode", "single")).strip().lower()
     args: list[str] = []
@@ -1375,6 +1427,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_paper_stop(), code=200)
             except Exception as e:
                 logger.exception("paper stop error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/paper/reset":
+            try:
+                self._send_json(control_paper_reset(), code=200)
+            except Exception as e:
+                logger.exception("paper reset error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

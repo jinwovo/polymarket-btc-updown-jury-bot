@@ -32,7 +32,11 @@ export async function POST(request: NextRequest) {
 
   const action = String(body.action ?? "start").toLowerCase();
   const endpoint =
-    action === "stop" ? "/api/control/paper/stop" : "/api/control/paper/start";
+    action === "stop"
+      ? "/api/control/paper/stop"
+      : action === "reset"
+        ? "/api/control/paper/reset"
+        : "/api/control/paper/start";
 
   try {
     const response = await fetch(`${PY_API_BASE}${endpoint}`, {

@@ -394,6 +394,27 @@ export function LiveDashboard() {
     await loadPaperTradeSummary();
   }
 
+  async function resetPaperHistory() {
+    const ok = window.confirm(
+      "Reset all paper trade history? This will delete all paper trades and cannot be undone.",
+    );
+    if (!ok) return;
+
+    const res = await fetch("/api/control/paper", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset" }),
+    });
+    const json = (await res.json()) as ProcessStatus;
+    setPaperStatus(json);
+    setPaperHistory([]);
+    setPaperHistoryTotal(0);
+    setPaperHistoryOffset(0);
+    setPaperHistorySummary(null);
+    await loadPaperTradeSummary();
+    await loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: 0 });
+  }
+
   async function runBacktest() {
     const payload: Record<string, unknown> = {
       action: "run",
@@ -1067,6 +1088,12 @@ export function LiveDashboard() {
                   </p>
                 </div>
                 <div className="flex gap-2">
+                  <button
+                    onClick={() => void resetPaperHistory()}
+                    className="rounded-md border border-amber-400/50 bg-amber-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Reset
+                  </button>
                   <button
                     onClick={() =>
                       void loadPaperTradeHistory({
