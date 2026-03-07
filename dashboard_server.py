@@ -701,6 +701,160 @@ def build_signal_history(limit: int = 40, offset: int = 0, history_type: str = "
         conn.close()
 
 
+def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
+    lim = max(1, min(int(limit), 200))
+    off = max(0, int(offset))
+    try:
+        conn = _connect_db()
+    except Exception as e:
+        return {"ok": False, "error": f"Database connection error ({db_label()}): {e}"}
+
+    try:
+        rows = fetch_all_dicts(
+            conn,
+            """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
+                      potential_win_pnl, signal_confidence, signal_reason, status,
+                      opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+               FROM paper_trades
+               ORDER BY window_start DESC
+               LIMIT ? OFFSET ?""",
+            (lim, off),
+        )
+    except Exception as e:
+        conn.close()
+        return {"ok": False, "error": f"paper_trades unavailable: {e}"}
+
+    try:
+        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades")
+        count = int(count_row[0]) if count_row else len(rows)
+        stats_row = fetch_one(
+            conn,
+            """SELECT
+                   SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END),
+                   COALESCE(SUM(pnl), 0)
+               FROM paper_trades""",
+        )
+        open_cnt = int(stats_row[0] or 0) if stats_row else 0
+        closed_cnt = int(stats_row[1] or 0) if stats_row else 0
+        wins = int(stats_row[2] or 0) if stats_row else 0
+        losses = int(stats_row[3] or 0) if stats_row else 0
+        total_pnl = float(stats_row[4] or 0.0) if stats_row else 0.0
+
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            ws = _to_int(r.get("window_start"))
+            opened_at = _to_float(r.get("opened_at"))
+
+            window_row = None
+            if ws is not None:
+                window_row = fetch_one_dict(
+                    conn,
+                    """SELECT slug, btc_start_price, btc_end_price, actual_outcome
+                       FROM market_windows
+                       WHERE window_start = ?
+                       LIMIT 1""",
+                    (ws,),
+                )
+
+            odds_row = None
+            if ws is not None and opened_at is not None:
+                odds_row = fetch_one_dict(
+                    conn,
+                    """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
+                       FROM poly_odds
+                       WHERE window_start = ?
+                       ORDER BY ABS(ts - ?) ASC
+                       LIMIT 1""",
+                    (ws, opened_at),
+                )
+
+            direction = str(r.get("direction") or "NO_TRADE")
+            entry_price = _to_float(r.get("entry_price"))
+            shares = _to_float(r.get("shares"))
+            stake = _to_float(r.get("stake"))
+            to_win_total = shares
+            to_win_pnl = _to_float(r.get("potential_win_pnl"))
+            if to_win_pnl is None and shares is not None and stake is not None:
+                to_win_pnl = shares - stake
+
+            entry_side_price = None
+            if odds_row:
+                if direction == "UP":
+                    entry_side_price = _to_float(odds_row.get("up_best_ask")) or _to_float(odds_row.get("up_mid"))
+                elif direction == "DOWN":
+                    entry_side_price = _to_float(odds_row.get("down_best_ask")) or _to_float(odds_row.get("down_mid"))
+
+            items.append(
+                {
+                    "id": _to_int(r.get("id")),
+                    "window_start": ws,
+                    "window_end": _to_int(r.get("window_end")),
+                    "direction": direction,
+                    "stake": stake,
+                    "entry_price": entry_price,
+                    "entry_side_price_at_signal": entry_side_price,
+                    "payout_multiple": _to_float(r.get("payout_multiple")),
+                    "shares": shares,
+                    "to_win_total": to_win_total,
+                    "to_win_pnl": to_win_pnl,
+                    "signal_confidence": _to_float(r.get("signal_confidence")),
+                    "signal_reason": str(r.get("signal_reason") or ""),
+                    "status": str(r.get("status") or "OPEN"),
+                    "opened_at": opened_at,
+                    "opened_at_utc": (
+                        datetime.fromtimestamp(opened_at, tz=timezone.utc).isoformat()
+                        if opened_at is not None
+                        else None
+                    ),
+                    "closed_at": _to_float(r.get("closed_at")),
+                    "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
+                    "won": _to_int(r.get("won")),
+                    "pnl": _to_float(r.get("pnl")),
+                    "roi_pct": _to_float(r.get("roi_pct")),
+                    "window": {
+                        "slug": str(window_row.get("slug")) if window_row and window_row.get("slug") else None,
+                        "btc_start_price": _to_float(window_row.get("btc_start_price")) if window_row else None,
+                        "btc_end_price": _to_float(window_row.get("btc_end_price")) if window_row else None,
+                        "actual_outcome": (
+                            str(window_row.get("actual_outcome"))
+                            if window_row and window_row.get("actual_outcome")
+                            else None
+                        ),
+                    },
+                    "odds_at_entry": {
+                        "ts": _to_float(odds_row.get("ts")) if odds_row else None,
+                        "up_mid": _to_float(odds_row.get("up_mid")) if odds_row else None,
+                        "down_mid": _to_float(odds_row.get("down_mid")) if odds_row else None,
+                        "up_bid": _to_float(odds_row.get("up_best_bid")) if odds_row else None,
+                        "up_ask": _to_float(odds_row.get("up_best_ask")) if odds_row else None,
+                        "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
+                        "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
+                    },
+                }
+            )
+
+        return {
+            "ok": True,
+            "items": items,
+            "count": count,
+            "limit": lim,
+            "offset": off,
+            "summary": {
+                "open": open_cnt,
+                "closed": closed_cnt,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": (wins / closed_cnt) if closed_cnt > 0 else 0.0,
+                "total_pnl": total_pnl,
+            },
+        }
+    finally:
+        conn.close()
+
+
 def build_snapshot() -> dict:
     now_ts = time.time()
     now_iso = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
@@ -1059,6 +1213,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 logger.exception("signal-history error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/paper-history":
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int(qs.get("limit", ["30"])[0])
+            except ValueError:
+                limit = 30
+            try:
+                offset = int(qs.get("offset", ["0"])[0])
+            except ValueError:
+                offset = 0
+            try:
+                self._send_json(build_paper_trade_history(limit=limit, offset=offset), code=200)
+            except Exception as e:
+                logger.exception("paper-history error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

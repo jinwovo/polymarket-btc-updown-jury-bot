@@ -132,6 +132,64 @@ interface FailedSignalHistoryResponse {
   error?: string;
 }
 
+interface PaperTradeHistoryItem {
+  id: number | null;
+  window_start: number | null;
+  window_end: number | null;
+  direction: "UP" | "DOWN" | "NO_TRADE";
+  stake: number | null;
+  entry_price: number | null;
+  entry_side_price_at_signal: number | null;
+  payout_multiple: number | null;
+  shares: number | null;
+  to_win_total: number | null;
+  to_win_pnl: number | null;
+  signal_confidence: number | null;
+  signal_reason: string;
+  status: "OPEN" | "CLOSED";
+  opened_at: number | null;
+  opened_at_utc: string | null;
+  closed_at: number | null;
+  actual_outcome: "UP" | "DOWN" | null;
+  won: number | null;
+  pnl: number | null;
+  roi_pct: number | null;
+  window?: {
+    slug: string | null;
+    btc_start_price: number | null;
+    btc_end_price: number | null;
+    actual_outcome: "UP" | "DOWN" | null;
+  };
+  odds_at_entry?: {
+    ts: number | null;
+    up_mid: number | null;
+    down_mid: number | null;
+    up_bid: number | null;
+    up_ask: number | null;
+    down_bid: number | null;
+    down_ask: number | null;
+  };
+}
+
+interface PaperTradeHistorySummary {
+  open: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_pnl: number;
+}
+
+interface PaperTradeHistoryResponse {
+  ok: boolean;
+  items: PaperTradeHistoryItem[];
+  count: number;
+  limit: number;
+  offset: number;
+  summary?: PaperTradeHistorySummary;
+  error?: string;
+}
+
 function formatNumber(value: number | null | undefined, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value.toLocaleString(undefined, {
@@ -143,6 +201,14 @@ function formatNumber(value: number | null | undefined, digits = 2) {
 function formatPct(value: number | null | undefined, digits = 3) {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return `${value >= 0 ? "+" : ""}${value.toFixed(digits)}%`;
+}
+
+function formatUsd(value: number | null | undefined, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "--";
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`;
 }
 
 function formatCountdown(seconds: number | null | undefined) {
@@ -188,6 +254,13 @@ export function LiveDashboard() {
   const [failedHistoryOffset, setFailedHistoryOffset] = useState(0);
   const [failedHistoryType, setFailedHistoryType] = useState<"all" | "accepted" | "rejected">("rejected");
   const failedHistoryPageSize = 20;
+  const [paperHistoryOpen, setPaperHistoryOpen] = useState(false);
+  const [paperHistoryLoading, setPaperHistoryLoading] = useState(false);
+  const [paperHistory, setPaperHistory] = useState<PaperTradeHistoryItem[]>([]);
+  const [paperHistoryTotal, setPaperHistoryTotal] = useState(0);
+  const [paperHistoryOffset, setPaperHistoryOffset] = useState(0);
+  const [paperHistorySummary, setPaperHistorySummary] = useState<PaperTradeHistorySummary | null>(null);
+  const paperHistoryPageSize = 20;
 
   async function loadSnapshot() {
     const res = await fetch("/api/live/snapshot", { cache: "no-store" });
@@ -234,6 +307,28 @@ export function LiveDashboard() {
       }
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function loadPaperTradeHistory(
+    params: { limit?: number; offset?: number } = {},
+  ) {
+    const limit = params.limit ?? paperHistoryPageSize;
+    const offset = params.offset ?? paperHistoryOffset;
+    setPaperHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/live/paper-history?limit=${limit}&offset=${offset}`, {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as PaperTradeHistoryResponse;
+      if (json.ok) {
+        setPaperHistory(json.items ?? []);
+        setPaperHistoryTotal(json.count ?? 0);
+        setPaperHistoryOffset(json.offset ?? offset);
+        setPaperHistorySummary(json.summary ?? null);
+      }
+    } finally {
+      setPaperHistoryLoading(false);
     }
   }
 
@@ -659,8 +754,22 @@ export function LiveDashboard() {
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Card>
             <CardHeader>
-              <CardTitle>Paper Sim Control</CardTitle>
-              <CardDescription>Start/stop virtual entry engine from this UI</CardDescription>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Paper Sim Control</CardTitle>
+                  <CardDescription>Start/stop virtual entry engine from this UI</CardDescription>
+                </div>
+                <button
+                  onClick={() => {
+                    setPaperHistoryOpen(true);
+                    setPaperHistoryOffset(0);
+                    void loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Trade History
+                </button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
@@ -809,6 +918,162 @@ export function LiveDashboard() {
             </CardContent>
           </Card>
         </section>
+
+        {paperHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Paper Trade History</p>
+                  <p className="text-xs text-muted-foreground">
+                    Entry, 5m start price, odds at entry, to-win, and realized PnL.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadPaperTradeHistory({
+                        limit: paperHistoryPageSize,
+                        offset: paperHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setPaperHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-6">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{paperHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{paperHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {paperHistorySummary?.wins ?? 0}/{paperHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((paperHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs md:col-span-2">
+                  <p className="text-muted-foreground">Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(paperHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {paperHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : paperHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No paper trades yet.</p>
+                ) : (
+                  paperHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        <span className="font-mono text-muted-foreground">{t.opened_at_utc ?? "--"}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">
+                            {formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            signal-side px {formatNumber(t.entry_side_price_at_signal, 3)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">5m BTC Start/End</p>
+                          <p className="font-mono">
+                            {formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">
+                            {formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">
+                          conf {formatNumber(t.signal_confidence, 3)}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {paperHistoryTotal} | showing {paperHistoryTotal === 0 ? 0 : paperHistoryOffset + 1}-
+                  {Math.min(paperHistoryOffset + paperHistory.length, paperHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={paperHistoryLoading || paperHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, paperHistoryOffset - paperHistoryPageSize);
+                      setPaperHistoryOffset(nextOffset);
+                      void loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={paperHistoryLoading || paperHistoryOffset + paperHistoryPageSize >= paperHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = paperHistoryOffset + paperHistoryPageSize;
+                      setPaperHistoryOffset(nextOffset);
+                      void loadPaperTradeHistory({ limit: paperHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {historyOpen ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
