@@ -260,6 +260,86 @@ def _equity_drawdown_pct(conn, initial_capital: float) -> float:
     return max_dd
 
 
+def _price_at_or_near(conn, ts: float, *, prefer_before: bool) -> float | None:
+    if prefer_before:
+        row = fetch_one(
+            conn,
+            "SELECT price FROM btc_ticks WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+            (float(ts),),
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+        row = fetch_one(
+            conn,
+            "SELECT price FROM btc_ticks WHERE ts >= ? ORDER BY ts ASC LIMIT 1",
+            (float(ts),),
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+    else:
+        row = fetch_one(
+            conn,
+            "SELECT price FROM btc_ticks WHERE ts >= ? ORDER BY ts ASC LIMIT 1",
+            (float(ts),),
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+        row = fetch_one(
+            conn,
+            "SELECT price FROM btc_ticks WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+            (float(ts),),
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+    return None
+
+
+def _backfill_unresolved_windows(conn) -> int:
+    now_ts = time.time()
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT window_start, window_end, btc_start_price
+           FROM market_windows
+           WHERE window_end < ?
+             AND (actual_outcome IS NULL OR actual_outcome NOT IN ('UP', 'DOWN'))
+           ORDER BY window_start ASC
+           LIMIT 40""",
+        (now_ts,),
+    )
+    if not rows:
+        return 0
+
+    updated = 0
+    for row in rows:
+        ws = int(row["window_start"])
+        we = int(row["window_end"])
+
+        start_price = float(row["btc_start_price"]) if row.get("btc_start_price") is not None else None
+        if start_price is None:
+            start_price = _price_at_or_near(conn, float(ws), prefer_before=False)
+        end_price = _price_at_or_near(conn, float(we), prefer_before=True)
+
+        if start_price is None or end_price is None:
+            continue
+
+        outcome = "UP" if end_price >= start_price else "DOWN"
+        execute_write(
+            conn,
+            """UPDATE market_windows
+               SET btc_start_price = COALESCE(btc_start_price, ?),
+                   btc_end_price = ?,
+                   actual_outcome = ?
+               WHERE window_start = ?""",
+            (float(start_price), float(end_price), outcome, ws),
+        )
+        updated += 1
+
+    if updated:
+        conn.commit()
+        logger.warning("Backfilled %s unresolved window outcomes from btc_ticks", updated)
+    return updated
+
+
 def open_trade_if_signal(
     conn,
     initial_capital: float,
@@ -508,6 +588,8 @@ def open_trade_if_signal(
 
 
 def resolve_open_trades(conn) -> int:
+    _backfill_unresolved_windows(conn)
+
     open_rows = fetch_all_dicts(
         conn,
         """SELECT id, window_start, direction, stake, shares
