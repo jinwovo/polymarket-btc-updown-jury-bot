@@ -53,11 +53,17 @@ PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
 PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.12"))
 PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
 PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "180"))
-PAPER_MIN_TRADE_GAP_SEC = float(os.getenv("PAPER_MIN_TRADE_GAP_SEC", "1800"))
+# Dynamic minimum trade gap:
+# - base gap is permissive enough to allow a strong signal in the next 5m window
+# - adaptive gap expands toward target gap when performance deteriorates
+PAPER_BASE_TRADE_GAP_SEC = float(os.getenv("PAPER_BASE_TRADE_GAP_SEC", "300"))
+PAPER_TARGET_TRADE_GAP_SEC = float(os.getenv("PAPER_TARGET_TRADE_GAP_SEC", "1800"))
 PAPER_MAX_DRAWDOWN_STOP_PCT = float(os.getenv("PAPER_MAX_DRAWDOWN_STOP_PCT", "0.20"))
 PAPER_RECENT_PERF_WINDOW = int(os.getenv("PAPER_RECENT_PERF_WINDOW", "8"))
 PAPER_MIN_RECENT_WIN_RATE = float(os.getenv("PAPER_MIN_RECENT_WIN_RATE", "0.55"))
-PAPER_REQUIRE_UNANIMOUS = os.getenv("PAPER_REQUIRE_UNANIMOUS", "true").lower() == "true"
+PAPER_REQUIRE_UNANIMOUS = os.getenv("PAPER_REQUIRE_UNANIMOUS", "false").lower() == "true"
+PAPER_HIGH_QUALITY_EV = float(os.getenv("PAPER_HIGH_QUALITY_EV", "0.12"))
+PAPER_HIGH_QUALITY_CONF = float(os.getenv("PAPER_HIGH_QUALITY_CONF", "0.50"))
 PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
 
 
@@ -224,6 +230,36 @@ def _last_opened_at(conn) -> float:
         return 0.0
 
 
+def _equity_drawdown_pct(conn, initial_capital: float) -> float:
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT pnl
+           FROM paper_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END ASC,
+             id ASC""",
+    )
+    if not rows:
+        return 0.0
+
+    equity = initial_capital
+    peak = initial_capital
+    max_dd = 0.0
+    for row in rows:
+        equity += float(row.get("pnl") or 0.0)
+        if equity > peak:
+            peak = equity
+        if peak > 0:
+            dd = (peak - equity) / peak
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd
+
+
 def open_trade_if_signal(
     conn,
     initial_capital: float,
@@ -263,11 +299,6 @@ def open_trade_if_signal(
     if exists:
         return False
 
-    now_ts = time.time()
-    last_opened_at = _last_opened_at(conn)
-    if last_opened_at > 0 and (now_ts - last_opened_at) < PAPER_MIN_TRADE_GAP_SEC:
-        return False
-
     entry_price = market.get("up_ask") if direction == "UP" else market.get("down_ask")
     if entry_price is None:
         logger.warning("No %s ask price available; skipping trade", direction)
@@ -286,24 +317,52 @@ def open_trade_if_signal(
         return False
     support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
-    if PAPER_REQUIRE_UNANIMOUS and support_ratio < 1.0:
-        return False
+    confidence = float(signal.get("avg_confidence") or 0.0)
     gate = evaluate_entry_gate(
         direction=direction,
         entry_price=float(entry_price),
         current_price=float(btc_now),
         start_price=float(btc_start),
         seconds_elapsed=float(sec_elapsed),
-        jury_confidence=float(signal.get("avg_confidence") or 0.0),
+        jury_confidence=confidence,
         support_ratio=float(support_ratio),
     )
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
         return False
     loss_streak, recent_loss_rate = _recent_risk_state(conn)
-    adaptive_min_ev = PAPER_MIN_EXPECTED_ROI + min(loss_streak, 3) * 0.01
-    if recent_loss_rate >= 0.60:
-        adaptive_min_ev += 0.005
+    perf_count, perf_wr, perf_pnl = _recent_performance(conn, PAPER_RECENT_PERF_WINDOW)
+    realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
+    drawdown_pct = _equity_drawdown_pct(conn, initial_capital)
+
+    # Adaptive strictness in [0, 1]: increases after losses/drawdown/weak performance.
+    strictness = 0.0
+    strictness += min(0.45, loss_streak * 0.15)
+    strictness += max(0.0, recent_loss_rate - 0.50) * 0.70
+    strictness += min(0.40, drawdown_pct * 0.80)
+    if perf_count >= 4 and perf_pnl < 0.0:
+        strictness += 0.10
+    strictness = _clamp(strictness, 0.0, 1.0)
+
+    adaptive_min_ev = PAPER_MIN_EXPECTED_ROI * (1.0 + 0.9 * strictness) + min(loss_streak, 3) * 0.005
+    adaptive_min_support = _clamp(PAPER_MIN_SUPPORT_RATIO + 0.20 * strictness, PAPER_MIN_SUPPORT_RATIO, 1.0)
+    adaptive_min_conf = _clamp(PAPER_MIN_CONFIDENCE + 0.18 * strictness, PAPER_MIN_CONFIDENCE, 0.80)
+    adaptive_max_ask = _clamp(PAPER_MAX_ENTRY_PRICE - 0.08 * strictness, 0.45, PAPER_MAX_ENTRY_PRICE)
+
+    dynamic_gap = PAPER_BASE_TRADE_GAP_SEC + strictness * (
+        max(PAPER_BASE_TRADE_GAP_SEC, PAPER_TARGET_TRADE_GAP_SEC) - PAPER_BASE_TRADE_GAP_SEC
+    )
+    dynamic_gap = max(0.0, dynamic_gap)
+    now_ts = time.time()
+    last_opened_at = _last_opened_at(conn)
+    since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
+    high_quality_override = (
+        gate.expected_roi >= PAPER_HIGH_QUALITY_EV
+        and confidence >= PAPER_HIGH_QUALITY_CONF
+        and support_ratio >= max(adaptive_min_support, 0.80)
+    )
+    if since_last < dynamic_gap and not high_quality_override:
+        return False
 
     if gate.expected_roi < adaptive_min_ev:
         logger.warning(
@@ -316,45 +375,44 @@ def open_trade_if_signal(
             recent_loss_rate * 100.0,
         )
         return False
-    if support_ratio < PAPER_MIN_SUPPORT_RATIO:
+    if support_ratio < adaptive_min_support:
         logger.warning(
             "Skip weak jury ws=%s dir=%s: support=%.1f%% < %.1f%%",
             window_start,
             direction,
             support_ratio * 100.0,
-            PAPER_MIN_SUPPORT_RATIO * 100.0,
+            adaptive_min_support * 100.0,
         )
         return False
-    if loss_streak >= 2 and support_ratio < 1.0:
+    require_unanimous = PAPER_REQUIRE_UNANIMOUS or strictness >= 0.65
+    if require_unanimous and support_ratio < 1.0:
         logger.warning(
-            "Skip non-unanimous after losses ws=%s dir=%s: streak=%s support=%.1f%%",
+            "Skip non-unanimous ws=%s dir=%s: strictness=%.2f support=%.1f%%",
             window_start,
             direction,
-            loss_streak,
+            strictness,
             support_ratio * 100.0,
         )
         return False
-    confidence = float(signal.get("avg_confidence") or 0.0)
-    if confidence < PAPER_MIN_CONFIDENCE:
+    if confidence < adaptive_min_conf:
         logger.warning(
             "Skip low confidence ws=%s dir=%s: conf=%.3f < %.3f",
             window_start,
             direction,
             confidence,
-            PAPER_MIN_CONFIDENCE,
+            adaptive_min_conf,
         )
         return False
-    if entry_price > PAPER_MAX_ENTRY_PRICE:
+    if entry_price > adaptive_max_ask:
         logger.warning(
             "Skip expensive entry ws=%s dir=%s: ask=%.3f > %.3f",
             window_start,
             direction,
             entry_price,
-            PAPER_MAX_ENTRY_PRICE,
+            adaptive_max_ask,
         )
         return False
 
-    realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
     if realized_equity <= (initial_capital * (1.0 - PAPER_MAX_DRAWDOWN_STOP_PCT)):
         logger.warning(
             "Risk stop active: equity=$%.2f below stop level $%.2f",
@@ -363,7 +421,6 @@ def open_trade_if_signal(
         )
         return False
 
-    perf_count, perf_wr, perf_pnl = _recent_performance(conn, PAPER_RECENT_PERF_WINDOW)
     if perf_count >= max(4, PAPER_RECENT_PERF_WINDOW) and perf_wr < PAPER_MIN_RECENT_WIN_RATE and perf_pnl < 0.0:
         logger.warning(
             "Pause by weak recent performance: trades=%s wr=%.1f%% pnl=$%+.2f",
@@ -435,7 +492,7 @@ def open_trade_if_signal(
     conn.commit()
 
     logger.warning(
-        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f streak=%s mode=%s",
+        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f strict=%.2f gap=%.0fs mode=%s",
         window_start,
         direction,
         stake,
@@ -443,7 +500,8 @@ def open_trade_if_signal(
         gate.expected_roi * 100.0,
         realized_equity,
         available_equity,
-        loss_streak,
+        strictness,
+        dynamic_gap,
         sizing_mode,
     )
     return True
@@ -614,14 +672,15 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
     if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
         mode = "adaptive"
     logger.warning(
-        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f gap=%.0fs unanim=%s",
+        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f gap=%.0f~%.0fs unanim=%s",
         initial_capital,
         mode,
         risk_fraction,
         PAPER_MIN_EXPECTED_ROI * 100.0,
         PAPER_MIN_SUPPORT_RATIO * 100.0,
         PAPER_MAX_ENTRY_PRICE,
-        PAPER_MIN_TRADE_GAP_SEC,
+        PAPER_BASE_TRADE_GAP_SEC,
+        PAPER_TARGET_TRADE_GAP_SEC,
         PAPER_REQUIRE_UNANIMOUS,
     )
 
