@@ -5,8 +5,8 @@ const HISTORY_TTL_MS = 3000;
 
 type SignalHistoryCache = {
   ts: number;
-  payloadByLimit: Map<string, unknown>;
-  inFlightByLimit: Map<string, Promise<unknown>>;
+  payloadByKey: Map<string, unknown>;
+  inFlightByKey: Map<string, Promise<unknown>>;
 };
 
 const globalCache = globalThis as typeof globalThis & {
@@ -17,8 +17,8 @@ function cacheState(): SignalHistoryCache {
   if (!globalCache.__fp_signal_history_cache) {
     globalCache.__fp_signal_history_cache = {
       ts: 0,
-      payloadByLimit: new Map(),
-      inFlightByLimit: new Map(),
+      payloadByKey: new Map(),
+      inFlightByKey: new Map(),
     };
   }
   return globalCache.__fp_signal_history_cache;
@@ -27,14 +27,17 @@ function cacheState(): SignalHistoryCache {
 export async function GET(request: NextRequest) {
   const state = cacheState();
   const limit = request.nextUrl.searchParams.get("limit") || "40";
+  const offset = request.nextUrl.searchParams.get("offset") || "0";
+  const type = request.nextUrl.searchParams.get("type") || "all";
+  const key = `${limit}|${offset}|${type}`;
   const now = Date.now();
-  const cached = state.payloadByLimit.get(limit);
+  const cached = state.payloadByKey.get(key);
 
   if (cached && now - state.ts < HISTORY_TTL_MS) {
     return NextResponse.json(cached);
   }
 
-  const inFlight = state.inFlightByLimit.get(limit);
+  const inFlight = state.inFlightByKey.get(key);
   if (inFlight) {
     const payload = await inFlight;
     return NextResponse.json(payload);
@@ -43,16 +46,16 @@ export async function GET(request: NextRequest) {
   try {
     const req = (async () => {
       const response = await fetch(
-        `${PY_API_BASE}/api/signal-history?limit=${encodeURIComponent(limit)}`,
+        `${PY_API_BASE}/api/signal-history?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}&type=${encodeURIComponent(type)}`,
         { cache: "no-store" },
       );
       const payload = await response.json();
-      state.payloadByLimit.set(limit, payload);
+      state.payloadByKey.set(key, payload);
       state.ts = Date.now();
       return payload;
     })();
 
-    state.inFlightByLimit.set(limit, req);
+    state.inFlightByKey.set(key, req);
     const payload = await req;
     return NextResponse.json(payload, { status: 200 });
   } catch (error) {
@@ -66,6 +69,6 @@ export async function GET(request: NextRequest) {
       { status: 502 },
     );
   } finally {
-    state.inFlightByLimit.delete(limit);
+    state.inFlightByKey.delete(key);
   }
 }

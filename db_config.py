@@ -233,6 +233,9 @@ def init_market_schema(conn):
                 window_start INTEGER,
                 window_end INTEGER,
                 slug TEXT,
+                history_type TEXT NOT NULL DEFAULT 'rejected',
+                support_direction TEXT,
+                support_votes INTEGER,
                 direction TEXT NOT NULL,
                 avg_confidence REAL NOT NULL,
                 threshold REAL NOT NULL,
@@ -247,9 +250,20 @@ def init_market_schema(conn):
             "CREATE INDEX IF NOT EXISTS idx_btc_ts ON btc_ticks(ts)",
             "CREATE INDEX IF NOT EXISTS idx_odds_window ON poly_odds(window_start, ts)",
             "CREATE INDEX IF NOT EXISTS idx_signal_ts ON signal_history(ts)",
+            "CREATE INDEX IF NOT EXISTS idx_signal_type_ts ON signal_history(history_type, ts)",
         ]
         for stmt in sqlite_statements:
             execute_write(conn, stmt)
+        # lightweight schema migration for existing DB files
+        for alter_sql in [
+            "ALTER TABLE signal_history ADD COLUMN history_type TEXT NOT NULL DEFAULT 'rejected'",
+            "ALTER TABLE signal_history ADD COLUMN support_direction TEXT",
+            "ALTER TABLE signal_history ADD COLUMN support_votes INTEGER",
+        ]:
+            try:
+                execute_write(conn, alter_sql)
+            except Exception:
+                pass
         return
 
     ensure_mariadb_database()
@@ -299,6 +313,9 @@ def init_market_schema(conn):
             window_start BIGINT NULL,
             window_end BIGINT NULL,
             slug VARCHAR(191) NULL,
+            history_type VARCHAR(16) NOT NULL DEFAULT 'rejected',
+            support_direction VARCHAR(16) NULL,
+            support_votes INT NULL,
             direction VARCHAR(16) NOT NULL,
             avg_confidence DOUBLE NOT NULL,
             threshold DOUBLE NOT NULL,
@@ -309,7 +326,8 @@ def init_market_schema(conn):
             judges_json LONGTEXT NOT NULL,
             dedupe_key VARCHAR(512) NOT NULL,
             UNIQUE KEY uq_signal_dedupe (dedupe_key),
-            INDEX idx_signal_ts (ts)
+            INDEX idx_signal_ts (ts),
+            INDEX idx_signal_type_ts (history_type, ts)
         ) ENGINE=InnoDB
         """,
         "CREATE INDEX idx_btc_ts ON btc_ticks(ts)",
@@ -322,6 +340,17 @@ def init_market_schema(conn):
             if "Duplicate key name" in str(e):
                 continue
             raise
+    # lightweight schema migration for existing MariaDB tables
+    for alter_sql in [
+        "ALTER TABLE signal_history ADD COLUMN history_type VARCHAR(16) NOT NULL DEFAULT 'rejected'",
+        "ALTER TABLE signal_history ADD COLUMN support_direction VARCHAR(16) NULL",
+        "ALTER TABLE signal_history ADD COLUMN support_votes INT NULL",
+        "CREATE INDEX idx_signal_type_ts ON signal_history(history_type, ts)",
+    ]:
+        try:
+            execute_write(conn, alter_sql)
+        except Exception:
+            pass
 
 
 def upsert_btc_ticks_sql() -> str:

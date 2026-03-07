@@ -63,6 +63,7 @@ logger = logging.getLogger("dashboard")
 logging.getLogger("judges").setLevel(logging.WARNING)
 JURY = Jury(threshold=config.trading.jury_threshold)
 _LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
+_LAST_SIGNAL_HISTORY_TS: dict[str, float] = {}
 
 
 class ManagedProcess:
@@ -496,12 +497,28 @@ def _build_signal(
 def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: dict, signal: dict) -> bool:
     global _LAST_SIGNAL_HISTORY_KEY
 
-    # Keep only rejected/non-actionable decisions with actual judge context.
-    if signal.get("actionable"):
-        return False
     judges = signal.get("judges") or []
     if not judges:
         return False
+
+    up_votes = sum(1 for j in judges if str(j.get("vote")) == "UP")
+    down_votes = sum(1 for j in judges if str(j.get("vote")) == "DOWN")
+    support_votes = max(up_votes, down_votes)
+    if up_votes > down_votes:
+        support_direction = "UP"
+    elif down_votes > up_votes:
+        support_direction = "DOWN"
+    else:
+        support_direction = "NONE"
+
+    actionable = bool(signal.get("actionable"))
+    if actionable:
+        history_type = "accepted"
+    else:
+        # Rejected history is stored only if >=3 judges supported one side.
+        if support_votes < 3 or support_direction not in ("UP", "DOWN"):
+            return False
+        history_type = "rejected"
 
     ws = _to_int(window.get("window_start")) if window else None
     we = _to_int(window.get("window_end")) if window else None
@@ -510,33 +527,50 @@ def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: 
     reason = str(signal.get("reason") or "")
     avg_conf = round(float(signal.get("avg_confidence") or 0.0), 3)
     vote_sig = ",".join(
-        f"{j.get('name','?')}:{j.get('vote','ABSTAIN')}:{round(float(j.get('confidence') or 0.0), 3)}"
+        f"{j.get('name','?')}:{j.get('vote','ABSTAIN')}"
         for j in judges
     )
-    key = f"{ws}|{direction}|{avg_conf}|{reason}|{vote_sig}"
+    elapsed_bucket = 0
+    if ws is not None:
+        elapsed_bucket = int(max(0.0, now_ts - float(ws)) // 30)
+    btc_change = _to_float(market.get("btc_change_pct"))
+    btc_bucket = round((btc_change or 0.0) / 0.05) * 0.05
+    conf_bucket = round(avg_conf / 0.05) * 0.05
+    key = (
+        f"{ws}|{history_type}|{support_direction}|{support_votes}|{direction}|"
+        f"{conf_bucket:.2f}|{btc_bucket:.2f}|{elapsed_bucket}|{vote_sig}"
+    )
     if key == _LAST_SIGNAL_HISTORY_KEY:
         return False
+    last_ts = _LAST_SIGNAL_HISTORY_TS.get(key)
+    if last_ts is not None and (now_ts - last_ts) < 20.0:
+        return False
     _LAST_SIGNAL_HISTORY_KEY = key
+    _LAST_SIGNAL_HISTORY_TS[key] = now_ts
 
     ts_utc = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
     try:
         execute_write(
             conn,
             """INSERT INTO signal_history
-               (ts, ts_utc, window_start, window_end, slug, direction, avg_confidence, threshold,
+               (ts, ts_utc, window_start, window_end, slug, history_type, support_direction, support_votes,
+                direction, avg_confidence, threshold,
                 reason, btc_change_pct, up_mid, down_mid, judges_json, dedupe_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 float(now_ts),
                 ts_utc,
                 ws,
                 we,
                 slug,
+                history_type,
+                support_direction,
+                int(support_votes),
                 direction,
                 avg_conf,
                 float(signal.get("threshold") or 0.0),
                 reason,
-                _to_float(market.get("btc_change_pct")),
+                btc_change,
                 _to_float(market.get("up_mid")),
                 _to_float(market.get("down_mid")),
                 json.dumps(judges, ensure_ascii=False),
@@ -553,22 +587,34 @@ def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: 
         return False
 
 
-def build_signal_history(limit: int = 40) -> dict:
+def build_signal_history(limit: int = 40, offset: int = 0, history_type: str = "all") -> dict:
     lim = max(1, min(int(limit), 200))
+    off = max(0, int(offset))
+    h_type = (history_type or "all").strip().lower()
+    if h_type not in ("all", "accepted", "rejected"):
+        h_type = "all"
     try:
         conn = _connect_db()
     except Exception as e:
         return {"ok": False, "error": f"Database connection error ({db_label()}): {e}"}
 
     try:
+        where = ""
+        params: list[Any] = []
+        if h_type in ("accepted", "rejected"):
+            where = "WHERE history_type = ?"
+            params.append(h_type)
+
         rows = fetch_all_dicts(
             conn,
-            """SELECT ts, ts_utc, window_start, window_end, slug, direction, avg_confidence,
+            f"""SELECT ts, ts_utc, window_start, window_end, slug, history_type,
+                      support_direction, support_votes, direction, avg_confidence,
                       threshold, reason, btc_change_pct, up_mid, down_mid, judges_json
                FROM signal_history
+               {where}
                ORDER BY ts DESC
-               LIMIT ?""",
-            (lim,),
+               LIMIT ? OFFSET ?""",
+            tuple(params + [lim, off]),
         )
         items = []
         for r in rows:
@@ -584,6 +630,9 @@ def build_signal_history(limit: int = 40) -> dict:
                     "window_start": _to_int(r.get("window_start")),
                     "window_end": _to_int(r.get("window_end")),
                     "slug": str(r.get("slug")) if r.get("slug") else None,
+                    "history_type": str(r.get("history_type") or "rejected"),
+                    "support_direction": str(r.get("support_direction") or "NONE"),
+                    "support_votes": _to_int(r.get("support_votes")) or 0,
                     "direction": str(r.get("direction") or "NO_TRADE"),
                     "avg_confidence": _to_float(r.get("avg_confidence")) or 0.0,
                     "threshold": _to_float(r.get("threshold")) or 0.0,
@@ -596,9 +645,21 @@ def build_signal_history(limit: int = 40) -> dict:
                     "judges": judges,
                 }
             )
-        cnt_row = fetch_one(conn, "SELECT COUNT(*) FROM signal_history")
+        cnt_where = ""
+        cnt_params: list[Any] = []
+        if h_type in ("accepted", "rejected"):
+            cnt_where = "WHERE history_type = ?"
+            cnt_params.append(h_type)
+        cnt_row = fetch_one(conn, f"SELECT COUNT(*) FROM signal_history {cnt_where}", tuple(cnt_params))
         count = int(cnt_row[0]) if cnt_row else len(items)
-        return {"ok": True, "items": items, "count": count}
+        return {
+            "ok": True,
+            "items": items,
+            "count": count,
+            "limit": lim,
+            "offset": off,
+            "history_type": h_type,
+        }
     finally:
         conn.close()
 
@@ -950,7 +1011,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except ValueError:
                 limit = 40
             try:
-                self._send_json(build_signal_history(limit=limit), code=200)
+                offset = int(qs.get("offset", ["0"])[0])
+            except ValueError:
+                offset = 0
+            history_type = str(qs.get("type", ["all"])[0] or "all")
+            try:
+                self._send_json(
+                    build_signal_history(limit=limit, offset=offset, history_type=history_type),
+                    code=200,
+                )
             except Exception as e:
                 logger.exception("signal-history error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)

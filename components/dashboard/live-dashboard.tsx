@@ -102,6 +102,9 @@ interface FailedSignalHistoryItem {
   window_start: number | null;
   window_end: number | null;
   slug: string | null;
+  history_type: "accepted" | "rejected";
+  support_direction?: "UP" | "DOWN" | "NONE";
+  support_votes?: number;
   direction: "UP" | "DOWN" | "NO_TRADE";
   avg_confidence: number;
   threshold: number;
@@ -123,6 +126,9 @@ interface FailedSignalHistoryResponse {
   ok: boolean;
   items: FailedSignalHistoryItem[];
   count: number;
+  limit: number;
+  offset: number;
+  history_type: "all" | "accepted" | "rejected";
   error?: string;
 }
 
@@ -178,6 +184,10 @@ export function LiveDashboard() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [failedHistory, setFailedHistory] = useState<FailedSignalHistoryItem[]>([]);
+  const [failedHistoryTotal, setFailedHistoryTotal] = useState(0);
+  const [failedHistoryOffset, setFailedHistoryOffset] = useState(0);
+  const [failedHistoryType, setFailedHistoryType] = useState<"all" | "accepted" | "rejected">("rejected");
+  const failedHistoryPageSize = 20;
 
   async function loadSnapshot() {
     const res = await fetch("/api/live/snapshot", { cache: "no-store" });
@@ -203,13 +213,24 @@ export function LiveDashboard() {
     return (await res.json()) as ProcessStatus;
   }
 
-  async function loadFailedSignalHistory(limit = 40) {
+  async function loadFailedSignalHistory(
+    params: { limit?: number; offset?: number; type?: "all" | "accepted" | "rejected" } = {},
+  ) {
+    const limit = params.limit ?? failedHistoryPageSize;
+    const offset = params.offset ?? failedHistoryOffset;
+    const type = params.type ?? failedHistoryType;
     setHistoryLoading(true);
     try {
-      const res = await fetch(`/api/live/signal-history?limit=${limit}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/live/signal-history?limit=${limit}&offset=${offset}&type=${type}`,
+        { cache: "no-store" },
+      );
       const json = (await res.json()) as FailedSignalHistoryResponse;
       if (json.ok) {
         setFailedHistory(json.items ?? []);
+        setFailedHistoryTotal(json.count ?? 0);
+        setFailedHistoryOffset(json.offset ?? offset);
+        setFailedHistoryType(json.history_type ?? type);
       }
     } finally {
       setHistoryLoading(false);
@@ -405,7 +426,7 @@ export function LiveDashboard() {
             <p className="tiny-label">Next.js + shadcn/ui</p>
             <h1 className="text-2xl font-bold md:text-3xl">Future Pulse Trading Station</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              실시간 BTC/Polymarket 시그널 모니터링
+              Real-time BTC/Polymarket signal monitoring
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -499,7 +520,7 @@ export function LiveDashboard() {
           <Card className="xl:col-span-2">
             <CardHeader>
               <CardTitle>Market Motion</CardTitle>
-              <CardDescription>최근 30분 BTC / UP-DOWN odds 추이</CardDescription>
+              <CardDescription>Last 30 minutes BTC / UP-DOWN odds trend</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
@@ -535,7 +556,9 @@ export function LiveDashboard() {
                 <button
                   onClick={() => {
                     setHistoryOpen(true);
-                    void loadFailedSignalHistory(40);
+                    setFailedHistoryOffset(0);
+                    setFailedHistoryType("rejected");
+                    void loadFailedSignalHistory({ limit: failedHistoryPageSize, offset: 0, type: "rejected" });
                   }}
                   className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
                 >
@@ -577,7 +600,7 @@ export function LiveDashboard() {
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle>Recent 5m Windows</CardTitle>
-              <CardDescription>최근 결과와 변동률</CardDescription>
+              <CardDescription>Recent outcomes and price movement</CardDescription>
             </div>
             <div className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-cyan-300" />
@@ -603,7 +626,7 @@ export function LiveDashboard() {
                 {(snapshot?.recent_windows ?? []).length === 0 ? (
                   <tr>
                     <td className="py-4 text-muted-foreground" colSpan={6}>
-                      아직 수집된 윈도우가 없습니다.
+                      No window data collected yet.
                     </td>
                   </tr>
                 ) : (
@@ -792,14 +815,56 @@ export function LiveDashboard() {
             <div className="w-full max-w-4xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div>
-                  <p className="text-lg font-semibold">Rejected Signal History</p>
-                  <p className="text-xs text-muted-foreground">
-                    최근 judge 불통과 / 비액셔너블 시그널 이력
-                  </p>
+                  <p className="text-lg font-semibold">Signal History</p>
+                  <p className="text-xs text-muted-foreground">Keep only important events with pagination.</p>
                 </div>
                 <div className="flex gap-2">
+                  <div className="flex items-center gap-1 rounded-md border border-border/70 bg-background/40 p-1">
+                    <button
+                      onClick={() => {
+                        setFailedHistoryOffset(0);
+                        setFailedHistoryType("rejected");
+                        void loadFailedSignalHistory({ limit: failedHistoryPageSize, offset: 0, type: "rejected" });
+                      }}
+                      className={`rounded px-2 py-1 text-xs ${
+                        failedHistoryType === "rejected" ? "bg-rose-500/20 text-rose-200" : "text-muted-foreground"
+                      }`}
+                    >
+                      Rejected
+                    </button>
+                    <button
+                      onClick={() => {
+                        setFailedHistoryOffset(0);
+                        setFailedHistoryType("accepted");
+                        void loadFailedSignalHistory({ limit: failedHistoryPageSize, offset: 0, type: "accepted" });
+                      }}
+                      className={`rounded px-2 py-1 text-xs ${
+                        failedHistoryType === "accepted" ? "bg-emerald-500/20 text-emerald-200" : "text-muted-foreground"
+                      }`}
+                    >
+                      Accepted
+                    </button>
+                    <button
+                      onClick={() => {
+                        setFailedHistoryOffset(0);
+                        setFailedHistoryType("all");
+                        void loadFailedSignalHistory({ limit: failedHistoryPageSize, offset: 0, type: "all" });
+                      }}
+                      className={`rounded px-2 py-1 text-xs ${
+                        failedHistoryType === "all" ? "bg-cyan-500/20 text-cyan-200" : "text-muted-foreground"
+                      }`}
+                    >
+                      All
+                    </button>
+                  </div>
                   <button
-                    onClick={() => void loadFailedSignalHistory(40)}
+                    onClick={() =>
+                      void loadFailedSignalHistory({
+                        limit: failedHistoryPageSize,
+                        offset: failedHistoryOffset,
+                        type: failedHistoryType,
+                      })
+                    }
                     className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
                   >
                     Refresh
@@ -817,19 +882,23 @@ export function LiveDashboard() {
                 {historyLoading ? (
                   <p className="text-sm text-muted-foreground">Loading...</p>
                 ) : failedHistory.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No rejected signal history yet.</p>
+                  <p className="text-sm text-muted-foreground">No signal history yet.</p>
                 ) : (
                   failedHistory.map((item) => (
                     <div key={`${item.ts}-${item.slug ?? "no-slug"}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={item.history_type === "accepted" ? "success" : "danger"}>
+                          {item.history_type.toUpperCase()}
+                        </Badge>
                         <Badge variant="neutral">{item.direction}</Badge>
+                        <span className="font-mono text-muted-foreground">
+                          support {item.support_direction ?? "NONE"} {item.support_votes ?? 0}/5
+                        </span>
                         <span className="font-mono text-muted-foreground">{item.ts_utc}</span>
                         <span className="font-mono text-muted-foreground">
                           conf {formatNumber(item.avg_confidence, 3)} / thr {formatNumber(item.threshold, 3)}
                         </span>
-                        <span className="font-mono text-muted-foreground">
-                          BTC {formatPct(item.market?.btc_change_pct)}
-                        </span>
+                        <span className="font-mono text-muted-foreground">BTC {formatPct(item.market?.btc_change_pct)}</span>
                       </div>
                       <p className="mt-1 text-sm">{item.reason}</p>
                       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -837,15 +906,11 @@ export function LiveDashboard() {
                           <div key={`${item.ts}-${j.name}`} className="rounded-md border border-border/60 bg-background/40 p-2">
                             <div className="flex items-center justify-between gap-2">
                               <p className="text-xs font-medium">{j.name}</p>
-                              <Badge
-                                variant={j.vote === "UP" ? "success" : j.vote === "DOWN" ? "danger" : "neutral"}
-                              >
+                              <Badge variant={j.vote === "UP" ? "success" : j.vote === "DOWN" ? "danger" : "neutral"}>
                                 {j.vote}
                               </Badge>
                             </div>
-                            <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                              conf {formatNumber(j.confidence, 3)}
-                            </p>
+                            <p className="mt-1 font-mono text-[11px] text-muted-foreground">conf {formatNumber(j.confidence, 3)}</p>
                             <p className="mt-1 max-h-10 overflow-hidden text-[11px] text-muted-foreground">{j.reason}</p>
                           </div>
                         ))}
@@ -853,6 +918,44 @@ export function LiveDashboard() {
                     </div>
                   ))
                 )}
+              </div>
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {failedHistoryTotal} | showing {failedHistoryTotal === 0 ? 0 : failedHistoryOffset + 1}-
+                  {Math.min(failedHistoryOffset + failedHistory.length, failedHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={historyLoading || failedHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, failedHistoryOffset - failedHistoryPageSize);
+                      setFailedHistoryOffset(nextOffset);
+                      void loadFailedSignalHistory({
+                        limit: failedHistoryPageSize,
+                        offset: nextOffset,
+                        type: failedHistoryType,
+                      });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={historyLoading || failedHistoryOffset + failedHistoryPageSize >= failedHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = failedHistoryOffset + failedHistoryPageSize;
+                      setFailedHistoryOffset(nextOffset);
+                      void loadFailedSignalHistory({
+                        limit: failedHistoryPageSize,
+                        offset: nextOffset,
+                        type: failedHistoryType,
+                      });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -866,3 +969,5 @@ export function LiveDashboard() {
     </main>
   );
 }
+
+
