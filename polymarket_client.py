@@ -230,37 +230,54 @@ class PolymarketClient:
         This is the critical real-time data source.
         Returns True if prices were updated.
         """
-        updated = False
-        for side, token_id in [("up", market.up_token_id), ("down", market.down_token_id)]:
+        async def _fetch_side(
+            side: str,
+            token_id: str,
+        ) -> Optional[tuple[str, float, float, float]]:
             if not token_id:
+                return None
+            resp = await self._http.get(
+                f"{config.polymarket.clob_url}/book",
+                params={"token_id": token_id},
+            )
+            if resp.status_code != 200:
+                return None
+            book = resp.json()
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+
+            best_bid = max((float(b.get("price", 0.0)) for b in bids), default=0.0)
+            best_ask = min((float(a.get("price", 1.0)) for a in asks), default=1.0)
+            mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask < 1 else 0.5
+            return side, best_bid, best_ask, mid_price
+
+        tasks = []
+        if market.up_token_id:
+            tasks.append(_fetch_side("up", market.up_token_id))
+        if market.down_token_id:
+            tasks.append(_fetch_side("down", market.down_token_id))
+
+        if not tasks:
+            return False
+
+        updated = False
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug(f"Orderbook fetch failed: {result}")
                 continue
-            try:
-                resp = await self._http.get(
-                    f"{config.polymarket.clob_url}/book",
-                    params={"token_id": token_id},
-                )
-                if resp.status_code != 200:
-                    continue
-                book = resp.json()
-                bids = book.get("bids", [])
-                asks = book.get("asks", [])
-
-                best_bid = max((float(b["price"]) for b in bids), default=0.0)
-                best_ask = min((float(a["price"]) for a in asks), default=1.0)
-                mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask < 1 else 0.5
-
-                if side == "up":
-                    market.up_price = mid_price
-                    market.up_best_bid = best_bid
-                    market.up_best_ask = best_ask
-                else:
-                    market.down_price = mid_price
-                    market.down_best_bid = best_bid
-                    market.down_best_ask = best_ask
-
-                updated = True
-            except Exception as e:
-                logger.debug(f"Orderbook fetch failed for {side}: {e}")
+            if result is None:
+                continue
+            side, best_bid, best_ask, mid_price = result
+            if side == "up":
+                market.up_price = mid_price
+                market.up_best_bid = best_bid
+                market.up_best_ask = best_ask
+            else:
+                market.down_price = mid_price
+                market.down_best_bid = best_bid
+                market.down_best_ask = best_ask
+            updated = True
 
         if updated:
             market.last_odds_update = time.time()

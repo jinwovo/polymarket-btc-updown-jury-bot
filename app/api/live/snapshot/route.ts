@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 const PY_API_BASE = process.env.PY_DASHBOARD_URL || "http://127.0.0.1:8790";
-const SNAPSHOT_TTL_MS = 1000;
+const SNAPSHOT_TTL_MS = 250;
 
 type SnapshotCache = {
   ts: number;

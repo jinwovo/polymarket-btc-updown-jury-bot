@@ -86,8 +86,12 @@ class DataCollector:
         # Batch insert buffer
         self._tick_buffer: list[tuple] = []
         self._odds_buffer: list[tuple] = []
-        self._flush_interval = 5.0  # flush every 5 seconds
-        self._last_flush = 0.0
+        # Flush odds faster than ticks to reduce visible UI latency.
+        self._flush_loop_interval = 0.25
+        self._tick_flush_interval = 1.0
+        self._odds_flush_interval = 0.5
+        self._last_tick_flush = 0.0
+        self._last_odds_flush = 0.0
         self._stopped = False
 
     async def start(self):
@@ -171,7 +175,7 @@ class DataCollector:
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
 
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
 
     async def _window_tracker_loop(self):
         """Track 5-minute windows and record start/end prices."""
@@ -271,11 +275,13 @@ class DataCollector:
     async def _flush_loop(self):
         """Periodically flush buffered data to SQLite."""
         while self._running:
-            await asyncio.sleep(self._flush_interval)
-            self._flush()
+            await asyncio.sleep(self._flush_loop_interval)
+            self._flush(force=False)
 
-    def _flush(self):
-        if self._tick_buffer:
+    def _flush(self, force: bool = False):
+        now = time.time()
+
+        if self._tick_buffer and (force or (now - self._last_tick_flush) >= self._tick_flush_interval):
             # Deduplicate ticks (keep latest per timestamp bucket)
             seen = {}
             for ts, price, vol in self._tick_buffer:
@@ -289,11 +295,12 @@ class DataCollector:
                     ticks,
                 )
                 self.db.commit()
+                self._last_tick_flush = now
             except Exception as e:
                 logger.error(f"Tick flush error: {e}")
             self._tick_buffer.clear()
 
-        if self._odds_buffer:
+        if self._odds_buffer and (force or (now - self._last_odds_flush) >= self._odds_flush_interval):
             try:
                 executemany_write(
                     self.db,
@@ -301,6 +308,7 @@ class DataCollector:
                     self._odds_buffer,
                 )
                 self.db.commit()
+                self._last_odds_flush = now
             except Exception as e:
                 logger.error(f"Odds flush error: {e}")
             self._odds_buffer.clear()
@@ -310,7 +318,7 @@ class DataCollector:
             return
         self._stopped = True
         self._running = False
-        self._flush()
+        self._flush(force=True)
         self.db.close()
         logger.info("Collector stopped, data saved")
 

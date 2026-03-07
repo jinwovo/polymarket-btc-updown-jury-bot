@@ -456,7 +456,7 @@ export function LiveDashboard() {
         }
       }
       if (mounted) {
-        snapshotTimer = window.setTimeout(() => void pollSnapshot(), 2000);
+        snapshotTimer = window.setTimeout(() => void pollSnapshot(), 1000);
       }
     };
 
