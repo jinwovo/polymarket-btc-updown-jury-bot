@@ -45,12 +45,14 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
-PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.020"))
+PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.030"))
 PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.80"))
 PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.28"))
 PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.62"))
 PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
-PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.35"))
+PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.20"))
+PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "20"))
+PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "220"))
 
 
 def init_paper_table(conn):
@@ -152,6 +154,36 @@ def _compute_bet_size(
     return round(max(0.0, sized), 2)
 
 
+def _recent_risk_state(conn) -> tuple[int, float]:
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT pnl
+           FROM paper_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END DESC,
+             id DESC
+           LIMIT 6""",
+    )
+    if not rows:
+        return 0, 0.0
+
+    loss_streak = 0
+    for row in rows:
+        pnl = float(row.get("pnl") or 0.0)
+        if pnl < 0.0:
+            loss_streak += 1
+        else:
+            break
+
+    losses = sum(1 for row in rows if float(row.get("pnl") or 0.0) < 0.0)
+    loss_rate = losses / float(len(rows))
+    return loss_streak, loss_rate
+
+
 def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> bool:
     snap = build_snapshot()
     if not snap.get("ok"):
@@ -170,6 +202,12 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
     if not actionable or direction not in ("UP", "DOWN"):
         return False
     if window_start is None or window_end is None:
+        return False
+    seconds_elapsed = window.get("seconds_elapsed")
+    if seconds_elapsed is None:
+        return False
+    seconds_elapsed = float(seconds_elapsed)
+    if seconds_elapsed < PAPER_ENTRY_START_SEC or seconds_elapsed > PAPER_ENTRY_END_SEC:
         return False
 
     exists = fetch_one(
@@ -210,13 +248,20 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
         return False
-    if gate.expected_roi < PAPER_MIN_EXPECTED_ROI:
+    loss_streak, recent_loss_rate = _recent_risk_state(conn)
+    adaptive_min_ev = PAPER_MIN_EXPECTED_ROI + min(loss_streak, 3) * 0.01
+    if recent_loss_rate >= 0.60:
+        adaptive_min_ev += 0.005
+
+    if gate.expected_roi < adaptive_min_ev:
         logger.warning(
-            "Skip weak EV ws=%s dir=%s: net_ev=%+.3f%% < %.3f%%",
+            "Skip weak EV ws=%s dir=%s: net_ev=%+.3f%% < %.3f%% (loss_streak=%s, recent_loss_rate=%.0f%%)",
             window_start,
             direction,
             gate.expected_roi * 100.0,
-            PAPER_MIN_EXPECTED_ROI * 100.0,
+            adaptive_min_ev * 100.0,
+            loss_streak,
+            recent_loss_rate * 100.0,
         )
         return False
     if support_ratio < PAPER_MIN_SUPPORT_RATIO:
@@ -226,6 +271,15 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
             direction,
             support_ratio * 100.0,
             PAPER_MIN_SUPPORT_RATIO * 100.0,
+        )
+        return False
+    if loss_streak >= 2 and support_ratio < 1.0:
+        logger.warning(
+            "Skip non-unanimous after losses ws=%s dir=%s: streak=%s support=%.1f%%",
+            window_start,
+            direction,
+            loss_streak,
+            support_ratio * 100.0,
         )
         return False
     confidence = float(signal.get("avg_confidence") or 0.0)
@@ -263,6 +317,9 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
         expected_roi=gate.expected_roi,
         risk_fraction=risk_fraction,
     )
+    if loss_streak > 0:
+        # Adaptive de-risking after losses.
+        stake = round(stake * (0.65 ** min(loss_streak, 3)), 2)
     if stake < PAPER_MIN_BET:
         logger.warning("Computed bet too small ws=%s: $%.2f", window_start, stake)
         return False
@@ -303,7 +360,7 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
     conn.commit()
 
     logger.warning(
-        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f",
+        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f streak=%s",
         window_start,
         direction,
         stake,
@@ -311,6 +368,7 @@ def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> 
         gate.expected_roi * 100.0,
         realized_equity,
         available_equity,
+        loss_streak,
     )
     return True
 
