@@ -770,6 +770,57 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         losses = int(stats_row[3] or 0) if stats_row else 0
         total_pnl = float(stats_row[4] or 0.0) if stats_row else 0.0
 
+        first_stake_row = fetch_one(
+            conn,
+            "SELECT stake FROM paper_trades ORDER BY window_start ASC LIMIT 1",
+        )
+        initial_capital = float(first_stake_row[0]) if first_stake_row and first_stake_row[0] is not None else 1000.0
+        current_equity = initial_capital + total_pnl
+        equity_roi_pct = ((total_pnl / initial_capital) * 100.0) if initial_capital > 0 else 0.0
+        is_account_busted = current_equity <= 0.0
+
+        closed_rows = fetch_all_dicts(
+            conn,
+            """SELECT id, pnl
+               FROM paper_trades
+               WHERE status='CLOSED'
+               ORDER BY
+                 CASE
+                   WHEN closed_at IS NOT NULL THEN closed_at
+                   ELSE window_end
+                 END ASC,
+                 id ASC""",
+        )
+
+        bust_count = 0
+        max_drawdown_pct = 0.0
+        max_consecutive_losses = 0
+        running_loss_streak = 0
+        peak_equity = initial_capital
+        equity_cursor = initial_capital
+        prev_equity = initial_capital
+
+        for row in closed_rows:
+            pnl = _to_float(row.get("pnl")) or 0.0
+            equity_cursor += pnl
+            if prev_equity > 0.0 and equity_cursor <= 0.0:
+                bust_count += 1
+            prev_equity = equity_cursor
+
+            if pnl < 0.0:
+                running_loss_streak += 1
+                if running_loss_streak > max_consecutive_losses:
+                    max_consecutive_losses = running_loss_streak
+            else:
+                running_loss_streak = 0
+
+            if equity_cursor > peak_equity:
+                peak_equity = equity_cursor
+            if peak_equity > 0.0:
+                dd_pct = ((peak_equity - equity_cursor) / peak_equity) * 100.0
+                if dd_pct > max_drawdown_pct:
+                    max_drawdown_pct = dd_pct
+
         items: list[dict[str, Any]] = []
         for r in rows:
             ws = _to_int(r.get("window_start"))
@@ -876,6 +927,13 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                 "losses": losses,
                 "win_rate": (wins / closed_cnt) if closed_cnt > 0 else 0.0,
                 "total_pnl": total_pnl,
+                "initial_capital": initial_capital,
+                "current_equity": current_equity,
+                "equity_roi_pct": equity_roi_pct,
+                "bust_count": bust_count,
+                "is_account_busted": is_account_busted,
+                "max_drawdown_pct": max_drawdown_pct,
+                "max_consecutive_losses": max_consecutive_losses,
             },
         }
     finally:

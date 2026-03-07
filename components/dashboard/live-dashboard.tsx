@@ -189,6 +189,13 @@ interface PaperTradeHistorySummary {
   losses: number;
   win_rate: number;
   total_pnl: number;
+  initial_capital?: number;
+  current_equity?: number;
+  equity_roi_pct?: number;
+  bust_count?: number;
+  is_account_busted?: boolean;
+  max_drawdown_pct?: number;
+  max_consecutive_losses?: number;
 }
 
 interface PaperTradeHistoryResponse {
@@ -244,6 +251,7 @@ export function LiveDashboard() {
   const [nowSec, setNowSec] = useState<number>(() => Date.now() / 1000);
   const snapshotInFlightRef = useRef(false);
   const historyInFlightRef = useRef(false);
+  const paperSummaryInFlightRef = useRef(false);
 
   const [paperStatus, setPaperStatus] = useState<ProcessStatus | null>(null);
   const [backtestStatus, setBacktestStatus] = useState<ProcessStatus | null>(null);
@@ -343,6 +351,17 @@ export function LiveDashboard() {
     }
   }
 
+  async function loadPaperTradeSummary() {
+    const res = await fetch("/api/live/paper-history?limit=1&offset=0", {
+      cache: "no-store",
+    });
+    const json = (await res.json()) as PaperTradeHistoryResponse;
+    if (json.ok) {
+      setPaperHistorySummary(json.summary ?? null);
+      setPaperHistoryTotal(json.count ?? 0);
+    }
+  }
+
   async function startPaper() {
     const res = await fetch("/api/control/paper", {
       method: "POST",
@@ -357,6 +376,7 @@ export function LiveDashboard() {
     setPaperStatus(json);
     const bt = await loadBacktestStatus();
     setBacktestStatus(bt);
+    await loadPaperTradeSummary();
   }
 
   async function stopPaper() {
@@ -369,6 +389,7 @@ export function LiveDashboard() {
     setPaperStatus(json);
     const bt = await loadBacktestStatus();
     setBacktestStatus(bt);
+    await loadPaperTradeSummary();
   }
 
   async function runBacktest() {
@@ -416,6 +437,7 @@ export function LiveDashboard() {
     let mounted = true;
     let snapshotTimer: number | null = null;
     let historyTimer: number | null = null;
+    let paperSummaryTimer: number | null = null;
 
     const pollSnapshot = async () => {
       if (!mounted) return;
@@ -469,14 +491,33 @@ export function LiveDashboard() {
       }
     };
 
+    const pollPaperSummary = async () => {
+      if (!mounted) return;
+      if (!paperSummaryInFlightRef.current) {
+        paperSummaryInFlightRef.current = true;
+        try {
+          await loadPaperTradeSummary();
+        } catch (_) {
+          // Ignore summary polling errors.
+        } finally {
+          paperSummaryInFlightRef.current = false;
+        }
+      }
+      if (mounted) {
+        paperSummaryTimer = window.setTimeout(() => void pollPaperSummary(), 8000);
+      }
+    };
+
     void pollSnapshot();
     void pollHistory();
     void loadControlOnce();
+    void pollPaperSummary();
 
     return () => {
       mounted = false;
       if (snapshotTimer !== null) window.clearTimeout(snapshotTimer);
       if (historyTimer !== null) window.clearTimeout(historyTimer);
+      if (paperSummaryTimer !== null) window.clearTimeout(paperSummaryTimer);
     };
   }, []);
 
@@ -492,6 +533,15 @@ export function LiveDashboard() {
   const collector = snapshot?.collector;
   const upBuyOdds = market?.up_ask ?? market?.up_mid ?? null;
   const downBuyOdds = market?.down_ask ?? market?.down_mid ?? null;
+  const defaultSeedCapital = Number(paperStake || "1000");
+  const seedCapital =
+    paperHistorySummary?.initial_capital ??
+    (Number.isFinite(defaultSeedCapital) && defaultSeedCapital > 0 ? defaultSeedCapital : 1000);
+  const realizedPnl = paperHistorySummary?.total_pnl ?? 0;
+  const accountEquity = paperHistorySummary?.current_equity ?? (seedCapital + realizedPnl);
+  const accountRoiPct =
+    paperHistorySummary?.equity_roi_pct ??
+    (seedCapital > 0 ? (realizedPnl / seedCapital) * 100.0 : 0.0);
 
   const bannerTitle = useMemo(() => {
     if (signal?.actionable) {
@@ -848,6 +898,37 @@ export function LiveDashboard() {
               <p className="font-mono text-xs text-muted-foreground">
                 pid={paperStatus?.pid ?? "-"} | exit={paperStatus?.exit_code ?? "-"}
               </p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono">{formatUsd(seedCapital)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono">{formatUsd(accountEquity)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized PnL</p>
+                  <p className="font-mono">{formatUsd(realizedPnl)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono">{formatPct(accountRoiPct, 2)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">All-Loss Hits</p>
+                  <p className="font-mono">{paperHistorySummary?.bust_count ?? 0}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Max Drawdown</p>
+                  <p className="font-mono">{formatPct(paperHistorySummary?.max_drawdown_pct ?? 0, 2)}</p>
+                </div>
+              </div>
+              {paperHistorySummary?.is_account_busted ? (
+                <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+                  Account depleted on realized PnL basis. Consider lowering risk per trade.
+                </p>
+              ) : null}
               <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
                 {(paperStatus?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
               </pre>
@@ -988,7 +1069,7 @@ export function LiveDashboard() {
                 </div>
               </div>
 
-              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-6">
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-8">
                 <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
                   <p className="text-muted-foreground">Open</p>
                   <p className="font-mono text-sm">{paperHistorySummary?.open ?? 0}</p>
@@ -1007,8 +1088,32 @@ export function LiveDashboard() {
                   <p className="text-muted-foreground">Win Rate</p>
                   <p className="font-mono text-sm">{formatPct((paperHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
                 </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono text-sm">{formatUsd(paperHistorySummary?.initial_capital ?? seedCapital)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono text-sm">{formatUsd(paperHistorySummary?.current_equity ?? accountEquity)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono text-sm">{formatPct(paperHistorySummary?.equity_roi_pct ?? accountRoiPct, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">All-Loss Hits</p>
+                  <p className="font-mono text-sm">{paperHistorySummary?.bust_count ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Max Loss Streak</p>
+                  <p className="font-mono text-sm">{paperHistorySummary?.max_consecutive_losses ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Max Drawdown</p>
+                  <p className="font-mono text-sm">{formatPct(paperHistorySummary?.max_drawdown_pct ?? 0, 2)}</p>
+                </div>
                 <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs md:col-span-2">
-                  <p className="text-muted-foreground">Total PnL</p>
+                  <p className="text-muted-foreground">Realized Total PnL</p>
                   <p className="font-mono text-sm">{formatUsd(paperHistorySummary?.total_pnl)}</p>
                 </div>
               </div>
