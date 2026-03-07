@@ -250,7 +250,6 @@ def init_market_schema(conn):
             "CREATE INDEX IF NOT EXISTS idx_btc_ts ON btc_ticks(ts)",
             "CREATE INDEX IF NOT EXISTS idx_odds_window ON poly_odds(window_start, ts)",
             "CREATE INDEX IF NOT EXISTS idx_signal_ts ON signal_history(ts)",
-            "CREATE INDEX IF NOT EXISTS idx_signal_type_ts ON signal_history(history_type, ts)",
         ]
         for stmt in sqlite_statements:
             execute_write(conn, stmt)
@@ -262,6 +261,14 @@ def init_market_schema(conn):
         ]:
             try:
                 execute_write(conn, alter_sql)
+            except Exception:
+                pass
+        # Create after migration so old DBs without history_type do not crash.
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_signal_type_ts ON signal_history(history_type, ts)",
+        ]:
+            try:
+                execute_write(conn, idx_sql)
             except Exception:
                 pass
         return
