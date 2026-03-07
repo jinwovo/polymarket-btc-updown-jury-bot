@@ -96,6 +96,36 @@ interface ProcessStatus {
   error?: string;
 }
 
+interface FailedSignalHistoryItem {
+  ts: number;
+  ts_utc: string;
+  window_start: number | null;
+  window_end: number | null;
+  slug: string | null;
+  direction: "UP" | "DOWN" | "NO_TRADE";
+  avg_confidence: number;
+  threshold: number;
+  reason: string;
+  market?: {
+    btc_change_pct: number | null;
+    up_mid: number | null;
+    down_mid: number | null;
+  };
+  judges: Array<{
+    name: string;
+    vote: JudgeVote;
+    confidence: number;
+    reason: string;
+  }>;
+}
+
+interface FailedSignalHistoryResponse {
+  ok: boolean;
+  items: FailedSignalHistoryItem[];
+  count: number;
+  error?: string;
+}
+
 function formatNumber(value: number | null | undefined, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value.toLocaleString(undefined, {
@@ -131,7 +161,6 @@ export function LiveDashboard() {
   const [nowSec, setNowSec] = useState<number>(() => Date.now() / 1000);
   const snapshotInFlightRef = useRef(false);
   const historyInFlightRef = useRef(false);
-  const controlInFlightRef = useRef(false);
 
   const [paperStatus, setPaperStatus] = useState<ProcessStatus | null>(null);
   const [backtestStatus, setBacktestStatus] = useState<ProcessStatus | null>(null);
@@ -146,6 +175,9 @@ export function LiveDashboard() {
   const [edgeGridInput, setEdgeGridInput] = useState("0.04,0.06,0.08,0.10,0.12,0.15");
   const [juryGridInput, setJuryGridInput] = useState("2,3,4,5");
   const [minTradesInput, setMinTradesInput] = useState("10");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [failedHistory, setFailedHistory] = useState<FailedSignalHistoryItem[]>([]);
 
   async function loadSnapshot() {
     const res = await fetch("/api/live/snapshot", { cache: "no-store" });
@@ -171,6 +203,19 @@ export function LiveDashboard() {
     return (await res.json()) as ProcessStatus;
   }
 
+  async function loadFailedSignalHistory(limit = 40) {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/live/signal-history?limit=${limit}`, { cache: "no-store" });
+      const json = (await res.json()) as FailedSignalHistoryResponse;
+      if (json.ok) {
+        setFailedHistory(json.items ?? []);
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   async function startPaper() {
     const res = await fetch("/api/control/paper", {
       method: "POST",
@@ -183,6 +228,8 @@ export function LiveDashboard() {
     });
     const json = (await res.json()) as ProcessStatus;
     setPaperStatus(json);
+    const bt = await loadBacktestStatus();
+    setBacktestStatus(bt);
   }
 
   async function stopPaper() {
@@ -193,6 +240,8 @@ export function LiveDashboard() {
     });
     const json = (await res.json()) as ProcessStatus;
     setPaperStatus(json);
+    const bt = await loadBacktestStatus();
+    setBacktestStatus(bt);
   }
 
   async function runBacktest() {
@@ -220,6 +269,8 @@ export function LiveDashboard() {
     });
     const json = (await res.json()) as ProcessStatus;
     setBacktestStatus(json);
+    const paper = await loadPaperStatus();
+    setPaperStatus(paper);
   }
 
   async function stopBacktest() {
@@ -230,13 +281,14 @@ export function LiveDashboard() {
     });
     const json = (await res.json()) as ProcessStatus;
     setBacktestStatus(json);
+    const paper = await loadPaperStatus();
+    setPaperStatus(paper);
   }
 
   useEffect(() => {
     let mounted = true;
     let snapshotTimer: number | null = null;
     let historyTimer: number | null = null;
-    let controlTimer: number | null = null;
 
     const pollSnapshot = async () => {
       if (!mounted) return;
@@ -277,36 +329,27 @@ export function LiveDashboard() {
       }
     };
 
-    const pollControl = async () => {
+    const loadControlOnce = async () => {
       if (!mounted) return;
-      if (!controlInFlightRef.current) {
-        controlInFlightRef.current = true;
-        try {
-          const [paper, backtest] = await Promise.all([loadPaperStatus(), loadBacktestStatus()]);
-          if (mounted) {
-            setPaperStatus(paper);
-            setBacktestStatus(backtest);
-          }
-        } catch (_) {
-          // Keep previous status on transient errors.
-        } finally {
-          controlInFlightRef.current = false;
+      try {
+        const [paper, backtest] = await Promise.all([loadPaperStatus(), loadBacktestStatus()]);
+        if (mounted) {
+          setPaperStatus(paper);
+          setBacktestStatus(backtest);
         }
-      }
-      if (mounted) {
-        controlTimer = window.setTimeout(() => void pollControl(), 3000);
+      } catch (_) {
+        // Ignore transient control status errors.
       }
     };
 
     void pollSnapshot();
     void pollHistory();
-    void pollControl();
+    void loadControlOnce();
 
     return () => {
       mounted = false;
       if (snapshotTimer !== null) window.clearTimeout(snapshotTimer);
       if (historyTimer !== null) window.clearTimeout(historyTimer);
-      if (controlTimer !== null) window.clearTimeout(controlTimer);
     };
   }, []);
 
@@ -487,7 +530,18 @@ export function LiveDashboard() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Judge Votes</CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle>Judge Votes</CardTitle>
+                <button
+                  onClick={() => {
+                    setHistoryOpen(true);
+                    void loadFailedSignalHistory(40);
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  History
+                </button>
+              </div>
               <CardDescription>
                 Live {signal?.jury_size ?? signal?.judges?.length ?? 0}-judge consensus
               </CardDescription>
@@ -733,9 +787,80 @@ export function LiveDashboard() {
           </Card>
         </section>
 
+        {historyOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-4xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Rejected Signal History</p>
+                  <p className="text-xs text-muted-foreground">
+                    최근 judge 불통과 / 비액셔너블 시그널 이력
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => void loadFailedSignalHistory(40)}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-[65vh] space-y-2 overflow-auto pr-1">
+                {historyLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : failedHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No rejected signal history yet.</p>
+                ) : (
+                  failedHistory.map((item) => (
+                    <div key={`${item.ts}-${item.slug ?? "no-slug"}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="neutral">{item.direction}</Badge>
+                        <span className="font-mono text-muted-foreground">{item.ts_utc}</span>
+                        <span className="font-mono text-muted-foreground">
+                          conf {formatNumber(item.avg_confidence, 3)} / thr {formatNumber(item.threshold, 3)}
+                        </span>
+                        <span className="font-mono text-muted-foreground">
+                          BTC {formatPct(item.market?.btc_change_pct)}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-sm">{item.reason}</p>
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        {(item.judges ?? []).map((j) => (
+                          <div key={`${item.ts}-${j.name}`} className="rounded-md border border-border/60 bg-background/40 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium">{j.name}</p>
+                              <Badge
+                                variant={j.vote === "UP" ? "success" : j.vote === "DOWN" ? "danger" : "neutral"}
+                              >
+                                {j.vote}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                              conf {formatNumber(j.confidence, 3)}
+                            </p>
+                            <p className="mt-1 max-h-10 overflow-hidden text-[11px] text-muted-foreground">{j.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <footer className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
           <Timer className="h-3.5 w-3.5" />
-          <span>Auto refresh: snapshot 2s / history 6s / control 3s</span>
+          <span>Auto refresh: snapshot 2s / history 6s</span>
         </footer>
       </div>
     </main>

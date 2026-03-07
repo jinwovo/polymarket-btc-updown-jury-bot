@@ -31,7 +31,7 @@ from db_config import (
 
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
@@ -157,16 +157,7 @@ def open_trade_if_signal(conn, stake: float) -> bool:
     )
     conn.commit()
 
-    logger.info(
-        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.4f payx=%.3f shares=%.3f winPnL=$%.2f",
-        int(window_start),
-        direction,
-        stake,
-        entry_price,
-        payout_multiple,
-        shares,
-        potential_win_pnl,
-    )
+    # Intentionally quiet on open; report only profitable closes.
     return True
 
 
@@ -217,15 +208,33 @@ def resolve_open_trades(conn) -> int:
         )
         resolved += 1
 
-        logger.info(
-            "CLOSE ws=%s dir=%s outcome=%s won=%s pnl=$%+.2f roi=%+.2f%%",
-            ws,
-            direction,
-            outcome,
-            bool(won),
-            pnl,
-            roi_pct,
-        )
+        if pnl > 0:
+            logger.warning(
+                "PROFIT ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                ws,
+                direction,
+                outcome,
+                pnl,
+                roi_pct,
+            )
+        elif pnl < 0:
+            logger.warning(
+                "LOSS   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                ws,
+                direction,
+                outcome,
+                pnl,
+                roi_pct,
+            )
+        else:
+            logger.warning(
+                "FLAT   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                ws,
+                direction,
+                outcome,
+                pnl,
+                roi_pct,
+            )
 
     if resolved:
         conn.commit()
@@ -295,11 +304,7 @@ def run_loop(stake: float, interval_sec: float):
     conn = connect_db()
     init_paper_table(conn)
 
-    logger.info("Paper simulator started")
-    logger.info("DB: %s", db_label())
-    logger.info("Stake per trade: $%.2f", stake)
-    logger.info("Polling interval: %.2fs", interval_sec)
-    logger.info("One trade max per 5-minute window")
+    logger.warning("Paper simulator running (quiet mode): only PROFIT and errors will be printed")
 
     try:
         while True:
@@ -307,7 +312,7 @@ def run_loop(stake: float, interval_sec: float):
             open_trade_if_signal(conn, stake=stake)
             time.sleep(interval_sec)
     except KeyboardInterrupt:
-        logger.info("Stopped by user")
+        logger.warning("Paper simulator stopped by user")
     finally:
         conn.close()
 

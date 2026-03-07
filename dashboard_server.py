@@ -61,6 +61,8 @@ logger = logging.getLogger("dashboard")
 # Keep jury logs quiet for UI polling.
 logging.getLogger("judges").setLevel(logging.WARNING)
 JURY = Jury(threshold=config.trading.jury_threshold)
+SIGNAL_HISTORY = deque(maxlen=200)
+_LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
 
 
 class ManagedProcess:
@@ -491,6 +493,57 @@ def _build_signal(
     }
 
 
+def _record_signal_history(now_ts: float, window: Optional[dict], market: dict, signal: dict):
+    global _LAST_SIGNAL_HISTORY_KEY
+
+    # Keep only rejected/non-actionable decisions with actual judge context.
+    if signal.get("actionable"):
+        return
+    judges = signal.get("judges") or []
+    if not judges:
+        return
+
+    ws = _to_int(window.get("window_start")) if window else None
+    we = _to_int(window.get("window_end")) if window else None
+    slug = str(window.get("slug")) if window and window.get("slug") else None
+    direction = str(signal.get("direction") or "NO_TRADE")
+    reason = str(signal.get("reason") or "")
+    avg_conf = round(float(signal.get("avg_confidence") or 0.0), 3)
+    vote_sig = ",".join(
+        f"{j.get('name','?')}:{j.get('vote','ABSTAIN')}:{round(float(j.get('confidence') or 0.0), 3)}"
+        for j in judges
+    )
+    key = f"{ws}|{direction}|{avg_conf}|{reason}|{vote_sig}"
+    if key == _LAST_SIGNAL_HISTORY_KEY:
+        return
+    _LAST_SIGNAL_HISTORY_KEY = key
+
+    SIGNAL_HISTORY.appendleft(
+        {
+            "ts": now_ts,
+            "ts_utc": datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat(),
+            "window_start": ws,
+            "window_end": we,
+            "slug": slug,
+            "direction": direction,
+            "avg_confidence": avg_conf,
+            "threshold": float(signal.get("threshold") or 0.0),
+            "reason": reason,
+            "market": {
+                "btc_change_pct": _to_float(market.get("btc_change_pct")),
+                "up_mid": _to_float(market.get("up_mid")),
+                "down_mid": _to_float(market.get("down_mid")),
+            },
+            "judges": judges,
+        }
+    )
+
+
+def build_signal_history(limit: int = 40) -> dict:
+    lim = max(1, min(int(limit), 200))
+    return {"ok": True, "items": list(SIGNAL_HISTORY)[:lim], "count": len(SIGNAL_HISTORY)}
+
+
 def build_snapshot() -> dict:
     now_ts = time.time()
     now_iso = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
@@ -551,6 +604,18 @@ def build_snapshot() -> dict:
 
         signal = _build_signal(conn, now_ts, window, latest_tick, latest_odds)
         recent_windows = _window_rows(conn, limit=12)
+        market_obj = {
+            "btc_price": btc_price,
+            "btc_start_price": start_price,
+            "btc_change_pct": btc_change_pct,
+            "up_mid": _to_float(latest_odds["up_mid"]) if latest_odds else None,
+            "down_mid": _to_float(latest_odds["down_mid"]) if latest_odds else None,
+            "up_bid": _to_float(latest_odds["up_best_bid"]) if latest_odds else None,
+            "up_ask": _to_float(latest_odds["up_best_ask"]) if latest_odds else None,
+            "down_bid": _to_float(latest_odds["down_best_bid"]) if latest_odds else None,
+            "down_ask": _to_float(latest_odds["down_best_ask"]) if latest_odds else None,
+        }
+        _record_signal_history(now_ts, window, market_obj, signal)
 
         snapshot = {
             "ok": True,
@@ -572,17 +637,7 @@ def build_snapshot() -> dict:
                 "seconds_remaining": remain,
                 "progress_pct": progress,
             },
-            "market": {
-                "btc_price": btc_price,
-                "btc_start_price": start_price,
-                "btc_change_pct": btc_change_pct,
-                "up_mid": _to_float(latest_odds["up_mid"]) if latest_odds else None,
-                "down_mid": _to_float(latest_odds["down_mid"]) if latest_odds else None,
-                "up_bid": _to_float(latest_odds["up_best_bid"]) if latest_odds else None,
-                "up_ask": _to_float(latest_odds["up_best_ask"]) if latest_odds else None,
-                "down_bid": _to_float(latest_odds["down_best_bid"]) if latest_odds else None,
-                "down_ask": _to_float(latest_odds["down_best_ask"]) if latest_odds else None,
-            },
+            "market": market_obj,
             "signal": signal,
             "stats": _stats(conn),
             "recent_windows": recent_windows,
@@ -757,7 +812,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
-        logger.info("%s - %s", self.address_string(), fmt % args)
+        # Silence routine HTTP request logs; keep explicit exception logs only.
+        return
 
     def _send_json(self, payload: dict, code: int = 200):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -823,6 +879,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(build_history(minutes=minutes), code=200)
             except Exception as e:
                 logger.exception("history error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/signal-history":
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int(qs.get("limit", ["40"])[0])
+            except ValueError:
+                limit = 40
+            try:
+                self._send_json(build_signal_history(limit=limit), code=200)
+            except Exception as e:
+                logger.exception("signal-history error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
