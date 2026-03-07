@@ -355,6 +355,33 @@ def _stats(conn) -> dict:
     }
 
 
+def _get_last_actionable_signal(conn, now_ts: float) -> Optional[dict]:
+    row = fetch_one_dict(
+        conn,
+        """SELECT ts, ts_utc, window_start, window_end, slug,
+                  direction, avg_confidence, reason
+           FROM signal_history
+           WHERE history_type = 'accepted'
+           ORDER BY ts DESC
+           LIMIT 1""",
+    )
+    if not row:
+        return None
+    ts = _to_float(row.get("ts"))
+    age_sec = (now_ts - ts) if ts is not None else None
+    return {
+        "ts": ts,
+        "ts_utc": str(row.get("ts_utc") or ""),
+        "window_start": _to_int(row.get("window_start")),
+        "window_end": _to_int(row.get("window_end")),
+        "slug": str(row.get("slug")) if row.get("slug") else None,
+        "direction": str(row.get("direction") or "NO_TRADE"),
+        "avg_confidence": _to_float(row.get("avg_confidence")) or 0.0,
+        "reason": str(row.get("reason") or ""),
+        "age_sec": age_sec,
+    }
+
+
 def _build_signal(
     conn,
     now_ts: float,
@@ -914,6 +941,7 @@ def build_snapshot() -> dict:
         )
 
         signal = _build_signal(conn, now_ts, window, latest_tick, latest_odds)
+        last_actionable_signal = _get_last_actionable_signal(conn, now_ts)
         recent_windows = _window_rows(conn, limit=12)
         market_obj = {
             "btc_price": btc_price,
@@ -952,6 +980,7 @@ def build_snapshot() -> dict:
             },
             "market": market_obj,
             "signal": signal,
+            "last_actionable_signal": last_actionable_signal,
             "stats": _stats(conn),
             "recent_windows": recent_windows,
         }

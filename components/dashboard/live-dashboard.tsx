@@ -55,6 +55,17 @@ interface SnapshotResponse {
       reason: string;
     }>;
   };
+  last_actionable_signal?: {
+    ts: number | null;
+    ts_utc: string;
+    window_start: number | null;
+    window_end: number | null;
+    slug: string | null;
+    direction: "UP" | "DOWN" | "NO_TRADE";
+    avg_confidence: number;
+    reason: string;
+    age_sec: number | null;
+  } | null;
   stats?: {
     ticks: number;
     odds: number;
@@ -475,9 +486,41 @@ export function LiveDashboard() {
   }, []);
 
   const signal = snapshot?.signal;
+  const lastActionableSignal = snapshot?.last_actionable_signal;
   const market = snapshot?.market;
   const windowInfo = snapshot?.window;
   const collector = snapshot?.collector;
+  const upBuyOdds = market?.up_ask ?? market?.up_mid ?? null;
+  const downBuyOdds = market?.down_ask ?? market?.down_mid ?? null;
+
+  const bannerTitle = useMemo(() => {
+    if (signal?.actionable) {
+      return `${signal.action_label} opportunity detected`;
+    }
+    if (lastActionableSignal && lastActionableSignal.direction !== "NO_TRADE") {
+      return `Last signal was BUY ${lastActionableSignal.direction}`;
+    }
+    return "No actionable setup right now";
+  }, [signal, lastActionableSignal]);
+
+  const bannerSubtitle = useMemo(() => {
+    if (signal?.actionable) {
+      return signal.reason;
+    }
+    if (lastActionableSignal && lastActionableSignal.direction !== "NO_TRADE") {
+      const age = ageText(lastActionableSignal.age_sec);
+      return `${age} | ${lastActionableSignal.reason}`;
+    }
+    return signal?.reason ?? "Waiting for data...";
+  }, [signal, lastActionableSignal]);
+
+  const bannerConfidence = useMemo(() => {
+    if (signal?.actionable) return signal.avg_confidence;
+    if (lastActionableSignal?.direction && lastActionableSignal.direction !== "NO_TRADE") {
+      return lastActionableSignal.avg_confidence;
+    }
+    return signal?.avg_confidence ?? null;
+  }, [signal, lastActionableSignal]);
 
   const computedRemaining = useMemo(() => {
     if (windowInfo?.window_end) {
@@ -543,18 +586,12 @@ export function LiveDashboard() {
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="tiny-label">Signal Engine</p>
-              <p className="mt-1 text-2xl font-bold md:text-3xl">
-                {signal?.actionable
-                  ? `${signal.action_label} opportunity detected`
-                  : "No actionable setup right now"}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">{signal?.reason ?? "Waiting for data..."}</p>
+              <p className="mt-1 text-2xl font-bold md:text-3xl">{bannerTitle}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{bannerSubtitle}</p>
             </div>
             <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-3 text-right">
               <p className="tiny-label">Confidence</p>
-              <p className="font-mono text-3xl font-semibold">
-                {formatNumber(signal?.avg_confidence ?? null, 3)}
-              </p>
+              <p className="font-mono text-3xl font-semibold">{formatNumber(bannerConfidence, 3)}</p>
             </div>
           </div>
         </section>
@@ -589,13 +626,14 @@ export function LiveDashboard() {
 
           <Card>
             <CardHeader>
-              <CardDescription className="tiny-label">Mid Odds</CardDescription>
+              <CardDescription className="tiny-label">Polymarket Buy Odds (Ask)</CardDescription>
               <CardTitle className="font-mono text-2xl">
-                UP {formatNumber(market?.up_mid, 3)} / DOWN {formatNumber(market?.down_mid, 3)}
+                UP {formatNumber(upBuyOdds, 3)} / DOWN {formatNumber(downBuyOdds, 3)}
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              UP bid/ask {formatNumber(market?.up_bid, 3)} / {formatNumber(market?.up_ask, 3)}
+              Mid UP/DOWN {formatNumber(market?.up_mid, 3)} / {formatNumber(market?.down_mid, 3)} | bid UP/DOWN{" "}
+              {formatNumber(market?.up_bid, 3)} / {formatNumber(market?.down_bid, 3)}
             </CardContent>
           </Card>
 
