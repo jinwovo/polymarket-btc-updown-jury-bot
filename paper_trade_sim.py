@@ -45,14 +45,19 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
-PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.030"))
+PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.060"))
 PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.80"))
-PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.28"))
-PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.62"))
+PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
+PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
 PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
-PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.20"))
-PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "20"))
-PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "220"))
+PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.12"))
+PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
+PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "180"))
+PAPER_MIN_TRADE_GAP_SEC = float(os.getenv("PAPER_MIN_TRADE_GAP_SEC", "1800"))
+PAPER_MAX_DRAWDOWN_STOP_PCT = float(os.getenv("PAPER_MAX_DRAWDOWN_STOP_PCT", "0.20"))
+PAPER_RECENT_PERF_WINDOW = int(os.getenv("PAPER_RECENT_PERF_WINDOW", "8"))
+PAPER_MIN_RECENT_WIN_RATE = float(os.getenv("PAPER_MIN_RECENT_WIN_RATE", "0.55"))
+PAPER_REQUIRE_UNANIMOUS = os.getenv("PAPER_REQUIRE_UNANIMOUS", "true").lower() == "true"
 PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
 
 
@@ -185,6 +190,40 @@ def _recent_risk_state(conn) -> tuple[int, float]:
     return loss_streak, loss_rate
 
 
+def _recent_performance(conn, limit: int) -> tuple[int, float, float]:
+    lim = max(1, int(limit))
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT won, pnl
+           FROM paper_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END DESC,
+             id DESC
+           LIMIT ?""",
+        (lim,),
+    )
+    if not rows:
+        return 0, 0.0, 0.0
+    wins = sum(1 for row in rows if int(row.get("won") or 0) == 1)
+    win_rate = wins / float(len(rows))
+    pnl_sum = sum(float(row.get("pnl") or 0.0) for row in rows)
+    return len(rows), win_rate, pnl_sum
+
+
+def _last_opened_at(conn) -> float:
+    row = fetch_one(conn, "SELECT MAX(opened_at) FROM paper_trades")
+    if not row or row[0] is None:
+        return 0.0
+    try:
+        return float(row[0])
+    except Exception:
+        return 0.0
+
+
 def open_trade_if_signal(
     conn,
     initial_capital: float,
@@ -224,6 +263,11 @@ def open_trade_if_signal(
     if exists:
         return False
 
+    now_ts = time.time()
+    last_opened_at = _last_opened_at(conn)
+    if last_opened_at > 0 and (now_ts - last_opened_at) < PAPER_MIN_TRADE_GAP_SEC:
+        return False
+
     entry_price = market.get("up_ask") if direction == "UP" else market.get("down_ask")
     if entry_price is None:
         logger.warning("No %s ask price available; skipping trade", direction)
@@ -242,6 +286,8 @@ def open_trade_if_signal(
         return False
     support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
+    if PAPER_REQUIRE_UNANIMOUS and support_ratio < 1.0:
+        return False
     gate = evaluate_entry_gate(
         direction=direction,
         entry_price=float(entry_price),
@@ -309,6 +355,23 @@ def open_trade_if_signal(
         return False
 
     realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
+    if realized_equity <= (initial_capital * (1.0 - PAPER_MAX_DRAWDOWN_STOP_PCT)):
+        logger.warning(
+            "Risk stop active: equity=$%.2f below stop level $%.2f",
+            realized_equity,
+            initial_capital * (1.0 - PAPER_MAX_DRAWDOWN_STOP_PCT),
+        )
+        return False
+
+    perf_count, perf_wr, perf_pnl = _recent_performance(conn, PAPER_RECENT_PERF_WINDOW)
+    if perf_count >= max(4, PAPER_RECENT_PERF_WINDOW) and perf_wr < PAPER_MIN_RECENT_WIN_RATE and perf_pnl < 0.0:
+        logger.warning(
+            "Pause by weak recent performance: trades=%s wr=%.1f%% pnl=$%+.2f",
+            perf_count,
+            perf_wr * 100.0,
+            perf_pnl,
+        )
+        return False
 
     if sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
@@ -551,13 +614,15 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
     if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
         mode = "adaptive"
     logger.warning(
-        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f",
+        "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f gap=%.0fs unanim=%s",
         initial_capital,
         mode,
         risk_fraction,
         PAPER_MIN_EXPECTED_ROI * 100.0,
         PAPER_MIN_SUPPORT_RATIO * 100.0,
         PAPER_MAX_ENTRY_PRICE,
+        PAPER_MIN_TRADE_GAP_SEC,
+        PAPER_REQUIRE_UNANIMOUS,
     )
 
     try:
