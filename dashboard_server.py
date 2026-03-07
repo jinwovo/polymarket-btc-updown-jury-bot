@@ -66,6 +66,17 @@ JURY = Jury(threshold=config.trading.jury_threshold)
 _LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
 _LAST_SIGNAL_HISTORY_TS: dict[str, float] = {}
 
+# Keep UI signal actionability aligned with paper entry core filters.
+PAPER_ALIGN_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.040"))
+PAPER_ALIGN_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
+PAPER_ALIGN_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "150"))
+PAPER_ALIGN_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "24"))
+PAPER_ALIGN_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "75"))
+PAPER_ALIGN_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
+PAPER_ALIGN_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
+PAPER_ALIGN_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
+PAPER_ALIGN_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
+
 
 class ManagedProcess:
     def __init__(self, name: str, max_lines: int = 400):
@@ -286,6 +297,59 @@ def _get_recent_results(conn, limit: int = 20) -> list[str]:
     return [str(r["actual_outcome"]) for r in rows if r["actual_outcome"]]
 
 
+def _window_sample_counts(conn, window_start: int, now_ts: float) -> tuple[int, int]:
+    tick_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?""",
+        (float(window_start), float(now_ts)),
+    )
+    odds_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM poly_odds
+           WHERE window_start = ? AND ts <= ?""",
+        (int(window_start), float(now_ts)),
+    )
+    tick_cnt = int(tick_row[0] or 0) if tick_row else 0
+    odds_cnt = int(odds_row[0] or 0) if odds_row else 0
+    return tick_cnt, odds_cnt
+
+
+def _recent_move_pct(conn, window_start: int, now_ts: float, lookback_sec: float) -> Optional[float]:
+    lo_ts = max(float(window_start), float(now_ts) - max(1.0, float(lookback_sec)))
+    hi_ts = float(now_ts)
+    first_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts ASC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    last_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts DESC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    if not first_row or not last_row:
+        return None
+    try:
+        p0 = float(first_row[0])
+        p1 = float(last_row[0])
+        if p0 <= 0.0:
+            return None
+        return ((p1 - p0) / p0) * 100.0
+    except Exception:
+        return None
+
+
 def _get_recent_btc(
     conn,
     start_ts: float,
@@ -490,6 +554,8 @@ def _build_signal(
         )
 
     jury_size = len(decision.verdicts)
+    support_votes = vote_counts.get(decision.direction, 0) if decision.direction in ("UP", "DOWN") else 0
+    support_ratio = (support_votes / float(jury_size)) if jury_size > 0 else 0.0
     base_actionable = (
         decision.direction in ("UP", "DOWN")
         and decision.avg_confidence >= config.trading.min_edge
@@ -510,8 +576,6 @@ def _build_signal(
         and 0.0 < entry_price < 1.0
         and jury_size > 0
     ):
-        support_votes = vote_counts.get(decision.direction, 0)
-        support_ratio = support_votes / float(jury_size)
         gate_result = evaluate_entry_gate(
             direction=decision.direction,
             entry_price=float(entry_price),
@@ -522,7 +586,64 @@ def _build_signal(
             support_ratio=support_ratio,
         )
 
-    actionable = base_actionable and gate_result is not None and gate_result.allow
+    paper_filter_ok = True
+    paper_filter_reason = ""
+    if base_actionable and gate_result is not None and decision.direction in ("UP", "DOWN"):
+        if seconds_elapsed < PAPER_ALIGN_ENTRY_START_SEC or seconds_elapsed > PAPER_ALIGN_ENTRY_END_SEC:
+            paper_filter_ok = False
+            paper_filter_reason = (
+                f"paper timing gate: elapsed={seconds_elapsed:.0f}s not in "
+                f"[{PAPER_ALIGN_ENTRY_START_SEC:.0f},{PAPER_ALIGN_ENTRY_END_SEC:.0f}]"
+            )
+        elif seconds_remaining < PAPER_ALIGN_MIN_SECONDS_REMAINING:
+            paper_filter_ok = False
+            paper_filter_reason = (
+                f"paper timing gate: remaining={seconds_remaining:.0f}s < {PAPER_ALIGN_MIN_SECONDS_REMAINING:.0f}s"
+            )
+        else:
+            tick_samples, odds_samples = _window_sample_counts(conn, ws, now_ts)
+            if tick_samples < PAPER_ALIGN_MIN_TICK_SAMPLES:
+                paper_filter_ok = False
+                paper_filter_reason = (
+                    f"paper sample gate: ticks={tick_samples} < {PAPER_ALIGN_MIN_TICK_SAMPLES}"
+                )
+            elif odds_samples < PAPER_ALIGN_MIN_ODDS_SAMPLES:
+                paper_filter_ok = False
+                paper_filter_reason = (
+                    f"paper sample gate: odds={odds_samples} < {PAPER_ALIGN_MIN_ODDS_SAMPLES}"
+                )
+            elif support_ratio < PAPER_ALIGN_MIN_SUPPORT_RATIO:
+                paper_filter_ok = False
+                paper_filter_reason = (
+                    f"paper jury gate: support={support_ratio:.1%} < {PAPER_ALIGN_MIN_SUPPORT_RATIO:.1%}"
+                )
+            elif gate_result.expected_roi < PAPER_ALIGN_MIN_EXPECTED_ROI:
+                paper_filter_ok = False
+                paper_filter_reason = (
+                    f"paper EV gate: net_ev={gate_result.expected_roi:+.3%} < {PAPER_ALIGN_MIN_EXPECTED_ROI:.3%}"
+                )
+            else:
+                short_move = _recent_move_pct(
+                    conn,
+                    ws,
+                    now_ts=now_ts,
+                    lookback_sec=PAPER_ALIGN_RECENT_MOVE_LOOKBACK_SEC,
+                )
+                if short_move is None:
+                    paper_filter_ok = False
+                    paper_filter_reason = "paper momentum gate: insufficient short-term ticks"
+                elif decision.direction == "UP" and short_move < PAPER_ALIGN_MIN_RECENT_MOVE_PCT:
+                    paper_filter_ok = False
+                    paper_filter_reason = (
+                        f"paper momentum gate: move={short_move:+.4f}% < +{PAPER_ALIGN_MIN_RECENT_MOVE_PCT:.4f}%"
+                    )
+                elif decision.direction == "DOWN" and short_move > -PAPER_ALIGN_MIN_RECENT_MOVE_PCT:
+                    paper_filter_ok = False
+                    paper_filter_reason = (
+                        f"paper momentum gate: move={short_move:+.4f}% > -{PAPER_ALIGN_MIN_RECENT_MOVE_PCT:.4f}%"
+                    )
+
+    actionable = base_actionable and gate_result is not None and gate_result.allow and paper_filter_ok
     action_label = f"BUY {decision.direction}" if actionable else "WAIT"
 
     if actionable and gate_result is not None:
@@ -530,6 +651,8 @@ def _build_signal(
             f"{vote_counts[decision.direction]}/{jury_size} {decision.direction} votes | "
             f"{gate_result.reason}"
         )
+    elif base_actionable and gate_result is not None and not paper_filter_ok:
+        summary = paper_filter_reason
     elif base_actionable and gate_result is not None:
         summary = gate_result.reason
     elif base_actionable and gate_result is None:
