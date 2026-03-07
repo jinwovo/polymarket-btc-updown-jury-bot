@@ -15,6 +15,7 @@ Usage:
 """
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -39,6 +40,19 @@ logging.basicConfig(
 logger = logging.getLogger("paper_sim")
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
+PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.020"))
+PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.80"))
+PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.28"))
+PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.62"))
+PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
+PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.35"))
+
+
 def init_paper_table(conn):
     if is_sqlite_backend():
         sql = """
@@ -54,6 +68,8 @@ def init_paper_table(conn):
             potential_win_pnl REAL NOT NULL,
             signal_confidence REAL NOT NULL,
             signal_reason TEXT,
+            initial_capital REAL,
+            risk_fraction REAL,
             status TEXT NOT NULL DEFAULT 'OPEN',
             opened_at REAL NOT NULL,
             closed_at REAL,
@@ -77,6 +93,8 @@ def init_paper_table(conn):
             potential_win_pnl DOUBLE NOT NULL,
             signal_confidence DOUBLE NOT NULL,
             signal_reason TEXT NULL,
+            initial_capital DOUBLE NULL,
+            risk_fraction DOUBLE NULL,
             status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
             opened_at DOUBLE NOT NULL,
             closed_at DOUBLE NULL,
@@ -89,10 +107,52 @@ def init_paper_table(conn):
         ) ENGINE=InnoDB
         """
     execute_write(conn, sql)
+    # Lightweight schema migration for existing deployments.
+    try:
+        execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN initial_capital REAL")
+    except Exception:
+        pass
+    try:
+        execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN risk_fraction REAL")
+    except Exception:
+        pass
     conn.commit()
 
 
-def open_trade_if_signal(conn, stake: float) -> bool:
+def _equity_snapshot(conn, initial_capital: float) -> tuple[float, float]:
+    closed_pnl_row = fetch_one(
+        conn,
+        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status='CLOSED'",
+    )
+    open_notional_row = fetch_one(
+        conn,
+        "SELECT COALESCE(SUM(stake), 0) FROM paper_trades WHERE status='OPEN'",
+    )
+    closed_pnl = float(closed_pnl_row[0] or 0.0) if closed_pnl_row else 0.0
+    open_notional = float(open_notional_row[0] or 0.0) if open_notional_row else 0.0
+    realized_equity = initial_capital + closed_pnl
+    available_equity = max(0.0, realized_equity - open_notional)
+    return realized_equity, available_equity
+
+
+def _compute_bet_size(
+    available_equity: float,
+    initial_capital: float,
+    expected_roi: float,
+    risk_fraction: float,
+) -> float:
+    if available_equity <= 0:
+        return 0.0
+    rf = _clamp(risk_fraction, 0.01, 1.0)
+    edge_scale = _clamp(expected_roi / 0.10, 0.4, 1.4)
+    target_frac = min(PAPER_MAX_BET_FRAC, rf * edge_scale)
+    raw_size = available_equity * target_frac
+    hard_cap = max(PAPER_MIN_BET, initial_capital * PAPER_MAX_BET_FRAC)
+    sized = min(raw_size, available_equity, hard_cap)
+    return round(max(0.0, sized), 2)
+
+
+def open_trade_if_signal(conn, initial_capital: float, risk_fraction: float) -> bool:
     snap = build_snapshot()
     if not snap.get("ok"):
         logger.warning("Snapshot unavailable: %s", snap.get("error", "unknown"))
@@ -150,12 +210,68 @@ def open_trade_if_signal(conn, stake: float) -> bool:
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
         return False
+    if gate.expected_roi < PAPER_MIN_EXPECTED_ROI:
+        logger.warning(
+            "Skip weak EV ws=%s dir=%s: net_ev=%+.3f%% < %.3f%%",
+            window_start,
+            direction,
+            gate.expected_roi * 100.0,
+            PAPER_MIN_EXPECTED_ROI * 100.0,
+        )
+        return False
+    if support_ratio < PAPER_MIN_SUPPORT_RATIO:
+        logger.warning(
+            "Skip weak jury ws=%s dir=%s: support=%.1f%% < %.1f%%",
+            window_start,
+            direction,
+            support_ratio * 100.0,
+            PAPER_MIN_SUPPORT_RATIO * 100.0,
+        )
+        return False
+    confidence = float(signal.get("avg_confidence") or 0.0)
+    if confidence < PAPER_MIN_CONFIDENCE:
+        logger.warning(
+            "Skip low confidence ws=%s dir=%s: conf=%.3f < %.3f",
+            window_start,
+            direction,
+            confidence,
+            PAPER_MIN_CONFIDENCE,
+        )
+        return False
+    if entry_price > PAPER_MAX_ENTRY_PRICE:
+        logger.warning(
+            "Skip expensive entry ws=%s dir=%s: ask=%.3f > %.3f",
+            window_start,
+            direction,
+            entry_price,
+            PAPER_MAX_ENTRY_PRICE,
+        )
+        return False
+
+    realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
+    if available_equity < PAPER_MIN_BET:
+        logger.warning(
+            "Insufficient available equity ws=%s: available=$%.2f",
+            window_start,
+            available_equity,
+        )
+        return False
+
+    stake = _compute_bet_size(
+        available_equity=available_equity,
+        initial_capital=initial_capital,
+        expected_roi=gate.expected_roi,
+        risk_fraction=risk_fraction,
+    )
+    if stake < PAPER_MIN_BET:
+        logger.warning("Computed bet too small ws=%s: $%.2f", window_start, stake)
+        return False
 
     shares = stake / entry_price
     payout_multiple = 1.0 / entry_price
     potential_win_pnl = apply_fee_to_pnl(shares - stake, stake)
     opened_at = time.time()
-    conf = float(signal.get("avg_confidence") or 0.0)
+    conf = confidence
     reason = str(signal.get("reason") or "")
     if reason:
         reason = f"{reason} | {gate.reason}"
@@ -166,8 +282,8 @@ def open_trade_if_signal(conn, stake: float) -> bool:
         conn,
         """INSERT INTO paper_trades
            (window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
-            potential_win_pnl, signal_confidence, signal_reason, status, opened_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+            potential_win_pnl, signal_confidence, signal_reason, initial_capital, risk_fraction, status, opened_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
         (
             int(window_start),
             int(window_end),
@@ -179,12 +295,23 @@ def open_trade_if_signal(conn, stake: float) -> bool:
             potential_win_pnl,
             conf,
             reason,
+            float(initial_capital),
+            float(risk_fraction),
             opened_at,
         ),
     )
     conn.commit()
 
-    # Intentionally quiet on open; report only profitable closes.
+    logger.warning(
+        "OPEN  ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% eq=$%.2f avail=$%.2f",
+        window_start,
+        direction,
+        stake,
+        entry_price,
+        gate.expected_roi * 100.0,
+        realized_equity,
+        available_equity,
+    )
     return True
 
 
@@ -270,6 +397,18 @@ def resolve_open_trades(conn) -> int:
 
 
 def show_status(conn):
+    try:
+        cap_row = fetch_one(
+            conn,
+            "SELECT initial_capital FROM paper_trades WHERE initial_capital IS NOT NULL ORDER BY window_start ASC LIMIT 1",
+        )
+    except Exception:
+        cap_row = None
+    if cap_row and cap_row[0] is not None:
+        initial_capital = float(cap_row[0])
+    else:
+        initial_capital = 1000.0
+
     stats = fetch_one(
         conn,
         """SELECT
@@ -289,12 +428,15 @@ def show_status(conn):
     losses = int(stats[4] or 0)
     total_pnl = float(stats[5] or 0.0)
     win_rate = (wins / closed_cnt * 100.0) if closed_cnt > 0 else 0.0
+    equity = initial_capital + total_pnl
 
     print(f"""
 {'='*64}
  PAPER TRADE STATUS
 {'='*64}
  DB:          {db_label()}
+ Seed Cap:    ${initial_capital:.2f}
+ Equity:      ${equity:+.2f}
  Total:       {total}
  Open:        {open_cnt}
  Closed:      {closed_cnt}
@@ -332,12 +474,21 @@ def run_loop(stake: float, interval_sec: float):
     conn = connect_db()
     init_paper_table(conn)
 
-    logger.warning("Paper simulator running (quiet mode): only PROFIT and errors will be printed")
+    initial_capital = max(50.0, float(stake))
+    risk_fraction = _clamp(PAPER_RISK_FRACTION, 0.01, 1.0)
+    logger.warning(
+        "Paper simulator running: initial=$%.2f risk_frac=%.2f min_ev=%.2f%% min_support=%.0f%% max_ask=%.2f",
+        initial_capital,
+        risk_fraction,
+        PAPER_MIN_EXPECTED_ROI * 100.0,
+        PAPER_MIN_SUPPORT_RATIO * 100.0,
+        PAPER_MAX_ENTRY_PRICE,
+    )
 
     try:
         while True:
             resolve_open_trades(conn)
-            open_trade_if_signal(conn, stake=stake)
+            open_trade_if_signal(conn, initial_capital=initial_capital, risk_fraction=risk_fraction)
             time.sleep(interval_sec)
     except KeyboardInterrupt:
         logger.warning("Paper simulator stopped by user")
@@ -347,7 +498,7 @@ def run_loop(stake: float, interval_sec: float):
 
 def main():
     parser = argparse.ArgumentParser(description="Live paper-trading simulator")
-    parser.add_argument("--stake", type=float, default=1000.0, help="Virtual stake per trade (default: 1000)")
+    parser.add_argument("--stake", type=float, default=1000.0, help="Paper seed capital in USD (default: 1000)")
     parser.add_argument("--interval", type=float, default=2.0, help="Polling interval seconds (default: 2)")
     parser.add_argument("--status", action="store_true", help="Show paper trade status")
     args = parser.parse_args()

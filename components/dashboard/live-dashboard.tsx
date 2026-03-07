@@ -862,7 +862,7 @@ export function LiveDashboard() {
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs text-muted-foreground">
-                  Stake (USD)
+                  Seed Capital (USD)
                   <input
                     value={paperStake}
                     onChange={(e) => setPaperStake(e.target.value)}
