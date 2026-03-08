@@ -719,8 +719,12 @@ def resolve_open_trades(conn) -> int:
         stake = float(row["stake"])
         shares = float(row["shares"])
         won = 1 if outcome == direction else 0
-        raw_pnl = (shares - stake) if won else (-stake)
-        pnl = apply_fee_to_pnl(raw_pnl, stake)
+        if won:
+            raw_pnl = shares - stake
+            pnl = apply_fee_to_pnl(raw_pnl, stake)
+        else:
+            # Binary option loss: lose the stake, no additional fee
+            pnl = -stake
         roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
         closed_at = time.time()
 

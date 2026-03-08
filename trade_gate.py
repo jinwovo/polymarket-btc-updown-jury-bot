@@ -54,9 +54,10 @@ def evaluate_entry_gate(
     base_prob = fair_up if direction == "UP" else (1.0 - fair_up)
 
     # Conservative boost from jury confidence/support on top of market-fair estimate.
+    # Kept deliberately small to avoid overfitting jury accuracy.
     conf = _clamp(jury_confidence, 0.0, 1.0)
     support = _clamp(support_ratio, 0.0, 1.0)
-    boost = conf * (0.08 + 0.14 * support)
+    boost = conf * (0.03 + 0.07 * support)
     model_prob = _clamp(base_prob + boost, 0.001, 0.999)
 
     fee_rate = max(0.0, float(config.trading.fee_rate))

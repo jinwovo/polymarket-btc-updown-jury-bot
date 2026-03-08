@@ -76,6 +76,8 @@ PAPER_ALIGN_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
 PAPER_ALIGN_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
 PAPER_ALIGN_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
 PAPER_ALIGN_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
+PAPER_ALIGN_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
+PAPER_ALIGN_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
 
 
 class ManagedProcess:
@@ -642,6 +644,16 @@ def _build_signal(
                     paper_filter_reason = (
                         f"paper momentum gate: move={short_move:+.4f}% > -{PAPER_ALIGN_MIN_RECENT_MOVE_PCT:.4f}%"
                     )
+        if paper_filter_ok and decision.avg_confidence < PAPER_ALIGN_MIN_CONFIDENCE:
+            paper_filter_ok = False
+            paper_filter_reason = (
+                f"paper confidence gate: conf={decision.avg_confidence:.3f} < {PAPER_ALIGN_MIN_CONFIDENCE:.3f}"
+            )
+        if paper_filter_ok and entry_price is not None and entry_price > PAPER_ALIGN_MAX_ENTRY_PRICE:
+            paper_filter_ok = False
+            paper_filter_reason = (
+                f"paper ask gate: ask={entry_price:.3f} > {PAPER_ALIGN_MAX_ENTRY_PRICE:.3f}"
+            )
 
     actionable = base_actionable and gate_result is not None and gate_result.allow and paper_filter_ok
     action_label = f"BUY {decision.direction}" if actionable else "WAIT"
