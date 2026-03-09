@@ -21,6 +21,7 @@ This project is built to test **real collected orderbook data** and block low-qu
 
 - Real data pipeline (Binance trades + Polymarket orderbook)
 - 5-judge consensus engine (technical, diffusion-based mispricing, statistical, trend persistence, orderbook quality)
+- Judge feature feed normalization (irregular tick stream -> fixed-interval series, default 1s)
 - Fee-aware entry gate
   - skip trade when expected net ROI is below threshold
   - avoid "100% confidence but no real payout" traps
@@ -164,6 +165,9 @@ Key parameters:
 - `LIVE_RECENT_MOVE_LOOKBACK_SEC` / `LIVE_MIN_RECENT_MOVE_PCT`
 - `LIVE_MAX_OPPOSITE_IMPLIED` / `LIVE_MIN_ENTRY_SIDE_IMPLIED`
 - `LIVE_DOWN_ABOVE_START_BLOCK_PCT` / `LIVE_DOWN_ABOVE_START_MOMENTUM_EXTRA` / `LIVE_DOWN_ABOVE_START_EV_PENALTY`
+- `FEATURE_LOOKBACK_SECONDS` (default: `600`)
+- `FEATURE_RESAMPLE_SECONDS` (default: `1.0`) - set to `15` for 15-second bars
+- `FEATURE_MAX_POINTS` (default: `900`)
 - `FAST_LANE_ENABLED` (default: `true`)
 - `FAST_LANE_MIN_SECONDS_ELAPSED` / `FAST_LANE_MAX_SECONDS_ELAPSED` / `FAST_LANE_MIN_SECONDS_REMAINING`
 - `FAST_LANE_MIN_MOVE_PCT` / `FAST_LANE_MAX_MOVE_PCT`

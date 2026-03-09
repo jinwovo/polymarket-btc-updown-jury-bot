@@ -154,6 +154,17 @@ class TradingConfig:
     fast_lane_min_expected_roi: float = field(
         default_factory=lambda: float(os.getenv("FAST_LANE_MIN_EXPECTED_ROI", "0.080"))
     )
+    # Feature feed normalization for judge inputs.
+    # Judges consume a fixed-interval series built from irregular Binance ticks.
+    feature_lookback_seconds: int = field(
+        default_factory=lambda: int(os.getenv("FEATURE_LOOKBACK_SECONDS", "600"))
+    )
+    feature_resample_seconds: float = field(
+        default_factory=lambda: float(os.getenv("FEATURE_RESAMPLE_SECONDS", "1.0"))
+    )
+    feature_max_points: int = field(
+        default_factory=lambda: int(os.getenv("FEATURE_MAX_POINTS", "900"))
+    )
 
 
 @dataclass

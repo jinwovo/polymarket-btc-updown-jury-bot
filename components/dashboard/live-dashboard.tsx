@@ -290,6 +290,19 @@ function ageText(sec: number | null | undefined) {
   return `${Math.floor(sec / 60)}m ago`;
 }
 
+function windowSeries(
+  points: Array<{ ts: number; value: number }> | null | undefined,
+  windowSec: number,
+): number[] {
+  if (!points || points.length === 0) return [];
+  const lastTs = Number(points[points.length - 1]?.ts ?? 0);
+  if (!Number.isFinite(lastTs) || lastTs <= 0) {
+    return points.map((p) => p.value);
+  }
+  const cutoff = lastTs - Math.max(1, Math.floor(windowSec));
+  return points.filter((p) => Number.isFinite(p.ts) && p.ts >= cutoff).map((p) => p.value);
+}
+
 export function LiveDashboard() {
   const [snapshot, setSnapshot] = useState<SnapshotResponse | null>(null);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
@@ -756,6 +769,7 @@ export function LiveDashboard() {
   const btcSeries = history?.btc?.map((p) => p.value) ?? [];
   const upSeries = history?.up?.map((p) => p.value) ?? [];
   const downSeries = history?.down?.map((p) => p.value) ?? [];
+  const btcSeries5m = useMemo(() => windowSeries(history?.btc, 5 * 60), [history?.btc]);
 
   return (
     <main className="pb-8">
@@ -878,6 +892,20 @@ export function LiveDashboard() {
                     DOWN Mid
                   </p>
                   <Sparkline values={downSeries} stroke="#fb7185" fillGradient="#fb7185" />
+                </div>
+              </div>
+              <div className="rounded-xl border border-border/70 bg-background/20 p-3">
+                <p className="tiny-label mb-3">Last 5 minutes (entry horizon)</p>
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <p className="tiny-label mb-2">BTC 5m</p>
+                    <Sparkline
+                      values={btcSeries5m}
+                      stroke="#22d3ee"
+                      fillGradient="#22d3ee"
+                      className="h-[120px]"
+                    />
+                  </div>
                 </div>
               </div>
             </CardContent>

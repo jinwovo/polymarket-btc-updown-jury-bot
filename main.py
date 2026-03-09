@@ -92,6 +92,58 @@ def _normal_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
 
 
+def _resample_ticks_fixed_interval(
+    ticks: list,
+    interval_sec: float,
+    max_points: int,
+) -> tuple[list[float], list[float]]:
+    """
+    Convert irregular tick timestamps into a fixed-interval close series.
+    Missing buckets are forward-filled from the latest observed tick.
+    """
+    if not ticks:
+        return ([], [])
+    interval = max(0.2, float(interval_sec))
+    max_keep = max(10, int(max_points))
+
+    # Bucket by integer index to avoid float-key precision issues.
+    bucket_last_price: dict[int, float] = {}
+    for t in ticks:
+        try:
+            ts = float(getattr(t, "timestamp"))
+            px = float(getattr(t, "price"))
+        except Exception:
+            continue
+        if px <= 0.0:
+            continue
+        idx = int(math.floor(ts / interval))
+        bucket_last_price[idx] = px
+
+    if not bucket_last_price:
+        return ([], [])
+
+    start_idx = min(bucket_last_price.keys())
+    end_idx = max(bucket_last_price.keys())
+    prices: list[float] = []
+    timestamps: list[float] = []
+    last_px: float | None = None
+
+    for idx in range(start_idx, end_idx + 1):
+        px = bucket_last_price.get(idx)
+        if px is not None:
+            last_px = float(px)
+        if last_px is None:
+            continue
+        timestamps.append(float(idx) * interval)
+        prices.append(last_px)
+
+    if len(prices) > max_keep:
+        prices = prices[-max_keep:]
+        timestamps = timestamps[-max_keep:]
+
+    return (prices, timestamps)
+
+
 class TradingBot:
     def __init__(self):
         self.price_feed = BinancePriceFeed()
@@ -317,6 +369,12 @@ class TradingBot:
             float(config.trading.fast_lane_min_direction_prob),
             float(config.trading.fast_lane_min_prob_edge),
             float(config.trading.fast_lane_min_expected_roi) * 100.0,
+        )
+        logger.info(
+            "Feature feed: lookback=%ss | resample=%ss | max_points=%s",
+            int(config.trading.feature_lookback_seconds),
+            float(config.trading.feature_resample_seconds),
+            int(config.trading.feature_max_points),
         )
         logger.info("=" * 60)
 
@@ -779,13 +837,24 @@ class TradingBot:
         if self.current_market is None:
             return None
 
-        recent = self.price_feed.get_recent_prices(600)
+        recent = self.price_feed.get_recent_prices(
+            int(config.trading.feature_lookback_seconds)
+        )
+        resampled_prices, resampled_ts = _resample_ticks_fixed_interval(
+            recent,
+            interval_sec=float(config.trading.feature_resample_seconds),
+            max_points=int(config.trading.feature_max_points),
+        )
+        # Fallback to raw ticks if resampling produced too few points.
+        if len(resampled_prices) < 10 or len(resampled_ts) < 10:
+            resampled_prices = [float(t.price) for t in recent]
+            resampled_ts = [float(t.timestamp) for t in recent]
 
         return MarketContext(
             current_binance_price=self.price_feed.current_price,
             market_start_price=self.market_start_price,
-            recent_prices=[t.price for t in recent],
-            recent_timestamps=[t.timestamp for t in recent],
+            recent_prices=resampled_prices,
+            recent_timestamps=resampled_ts,
             poly_up_price=self.current_market.up_price,
             poly_down_price=self.current_market.down_price,
             seconds_elapsed=seconds_elapsed,
