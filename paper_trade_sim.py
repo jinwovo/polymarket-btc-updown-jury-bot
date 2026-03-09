@@ -879,13 +879,20 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
 
     try:
         while True:
-            resolve_open_trades(conn)
-            open_trade_if_signal(
-                conn,
-                initial_capital=initial_capital,
-                risk_fraction=risk_fraction,
-                sizing_mode=mode,
-            )
+            try:
+                resolve_open_trades(conn)
+                open_trade_if_signal(
+                    conn,
+                    initial_capital=initial_capital,
+                    risk_fraction=risk_fraction,
+                    sizing_mode=mode,
+                )
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.exception("Paper loop transient error (continue): %s", e)
             time.sleep(interval_sec)
     except KeyboardInterrupt:
         logger.warning("Paper simulator stopped by user")

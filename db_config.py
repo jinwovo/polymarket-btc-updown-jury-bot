@@ -7,11 +7,18 @@ Supported backends:
 """
 import os
 import sqlite3
+import time
+import logging
 from pathlib import Path
 from typing import Any
 
 
 BASE_DIR = Path(__file__).parent
+logger = logging.getLogger(__name__)
+
+_MARIADB_RETRY_ERRNOS = {1020, 1205, 1213}
+_MARIADB_MAX_RETRIES = 4
+_MARIADB_RETRY_BASE_SLEEP_SEC = 0.05
 
 
 def db_backend() -> str:
@@ -72,6 +79,45 @@ def _adapt_query(query: str) -> str:
     return query
 
 
+def _mariadb_errno(exc: Exception) -> int | None:
+    try:
+        return int(getattr(exc, "args", [None])[0])
+    except Exception:
+        return None
+
+
+def _is_retryable_mariadb_error(exc: Exception) -> bool:
+    errno = _mariadb_errno(exc)
+    return errno in _MARIADB_RETRY_ERRNOS
+
+
+def _run_mariadb_with_retry(conn, op_name: str, fn):
+    last_exc = None
+    for attempt in range(1, _MARIADB_MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if (not _is_retryable_mariadb_error(e)) or attempt >= _MARIADB_MAX_RETRIES:
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            sleep_sec = _MARIADB_RETRY_BASE_SLEEP_SEC * attempt
+            logger.warning(
+                "Transient MariaDB error in %s (errno=%s, attempt=%s/%s). Retrying in %.2fs.",
+                op_name,
+                _mariadb_errno(e),
+                attempt,
+                _MARIADB_MAX_RETRIES,
+                sleep_sec,
+            )
+            time.sleep(sleep_sec)
+    if last_exc is not None:
+        raise last_exc
+
+
 def connect_db():
     if is_sqlite_backend():
         return sqlite3.connect(str(sqlite_db_path()))
@@ -94,6 +140,7 @@ def connect_db():
         database=_mariadb_database(),
         charset="utf8mb4",
         autocommit=False,
+        init_command="SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED",
     )
 
 
@@ -131,8 +178,10 @@ def execute_write(conn, query: str, params: tuple | list = ()):
     if is_sqlite_backend():
         conn.execute(q, params)
         return
-    with conn.cursor() as cur:
-        cur.execute(q, params)
+    def _op():
+        with conn.cursor() as cur:
+            cur.execute(q, params)
+    _run_mariadb_with_retry(conn, "execute_write", _op)
 
 
 def executemany_write(conn, query: str, param_rows: list[tuple]):
@@ -142,8 +191,10 @@ def executemany_write(conn, query: str, param_rows: list[tuple]):
     if is_sqlite_backend():
         conn.executemany(q, param_rows)
         return
-    with conn.cursor() as cur:
-        cur.executemany(q, param_rows)
+    def _op():
+        with conn.cursor() as cur:
+            cur.executemany(q, param_rows)
+    _run_mariadb_with_retry(conn, "executemany_write", _op)
 
 
 def fetch_one(conn, query: str, params: tuple | list = ()) -> Any:
@@ -151,9 +202,11 @@ def fetch_one(conn, query: str, params: tuple | list = ()) -> Any:
     if is_sqlite_backend():
         cur = conn.execute(q, params)
         return cur.fetchone()
-    with conn.cursor() as cur:
-        cur.execute(q, params)
-        return cur.fetchone()
+    def _op():
+        with conn.cursor() as cur:
+            cur.execute(q, params)
+            return cur.fetchone()
+    return _run_mariadb_with_retry(conn, "fetch_one", _op)
 
 
 def fetch_all(conn, query: str, params: tuple | list = ()) -> list[Any]:
@@ -161,9 +214,11 @@ def fetch_all(conn, query: str, params: tuple | list = ()) -> list[Any]:
     if is_sqlite_backend():
         cur = conn.execute(q, params)
         return cur.fetchall()
-    with conn.cursor() as cur:
-        cur.execute(q, params)
-        return list(cur.fetchall())
+    def _op():
+        with conn.cursor() as cur:
+            cur.execute(q, params)
+            return list(cur.fetchall())
+    return _run_mariadb_with_retry(conn, "fetch_all", _op)
 
 
 def fetch_all_dicts(conn, query: str, params: tuple | list = ()) -> list[dict]:
@@ -173,10 +228,13 @@ def fetch_all_dicts(conn, query: str, params: tuple | list = ()) -> list[dict]:
         rows = cur.fetchall()
         cols = [c[0] for c in (cur.description or [])]
     else:
-        with conn.cursor() as cur:
-            cur.execute(q, params)
-            rows = cur.fetchall()
-            cols = [c[0] for c in (cur.description or [])]
+        def _op():
+            with conn.cursor() as cur:
+                cur.execute(q, params)
+                rows = cur.fetchall()
+                cols = [c[0] for c in (cur.description or [])]
+                return rows, cols
+        rows, cols = _run_mariadb_with_retry(conn, "fetch_all_dicts", _op)
     return [dict(zip(cols, row)) for row in rows]
 
 

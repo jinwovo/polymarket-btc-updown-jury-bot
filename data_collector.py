@@ -267,7 +267,7 @@ class DataCollector:
                 change_pct = ((end_price - start_price) / start_price) * 100
                 logger.info(
                     f"Window ended: {outcome} | "
-                    f"${start_price:,.2f} → ${end_price:,.2f} ({change_pct:+.4f}%)"
+                    f"${start_price:,.2f} -> ${end_price:,.2f} ({change_pct:+.4f}%)"
                 )
         except Exception as e:
             logger.error(f"Finalize error: {e}")
@@ -380,7 +380,7 @@ def show_status():
   Poly Odds:       {odds_count:,}
   5-min Windows:   {window_count} ({resolved} resolved)
   
-  Time range:      {first_dt} → {last_dt}
+  Time range:      {first_dt} -> {last_dt}
   Duration:        {hours:.1f} hours
 
   Outcomes:        UP={up_count} DOWN={down_count}
@@ -400,7 +400,7 @@ def show_status():
             dt = datetime.fromtimestamp(ws, tz=timezone.utc).strftime("%H:%M")
             if sp and ep:
                 chg = ((ep - sp) / sp) * 100
-                print(f"    {dt} | {outcome or '?':4s} | ${sp:,.2f}→${ep:,.2f} ({chg:+.4f}%)")
+                print(f"    {dt} | {outcome or '?':4s} | ${sp:,.2f} -> ${ep:,.2f} ({chg:+.4f}%)")
             else:
                 print(f"    {dt} | pending...")
 
