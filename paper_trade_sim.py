@@ -27,6 +27,7 @@ from db_config import (
     execute_write,
     fetch_all_dicts,
     fetch_one,
+    fetch_one_dict,
     is_sqlite_backend,
 )
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
@@ -71,6 +72,23 @@ PAPER_HIGH_QUALITY_EV = float(os.getenv("PAPER_HIGH_QUALITY_EV", "0.12"))
 PAPER_HIGH_QUALITY_CONF = float(os.getenv("PAPER_HIGH_QUALITY_CONF", "0.50"))
 PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
 
+# Direction consistency filter (market-implied probability alignment).
+PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.56"))
+PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+
+# DOWN-side hardening when BTC is above the window start.
+PAPER_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))
+PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
+PAPER_DOWN_ABOVE_START_EV_PENALTY = float(os.getenv("PAPER_DOWN_ABOVE_START_EV_PENALTY", "0.020"))
+
+# Early exit rules for open paper positions.
+PAPER_ENABLE_EARLY_EXIT = os.getenv("PAPER_ENABLE_EARLY_EXIT", "true").lower() == "true"
+PAPER_EARLY_EXIT_MIN_ELAPSED_SEC = float(os.getenv("PAPER_EARLY_EXIT_MIN_ELAPSED_SEC", "25"))
+PAPER_EARLY_EXIT_OPPOSITE_ASK = float(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_ASK", "0.70"))
+PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-45.0"))
+PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "95"))
+PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "5.0"))
+
 
 def init_paper_table(conn):
     if is_sqlite_backend():
@@ -87,6 +105,7 @@ def init_paper_table(conn):
             potential_win_pnl REAL NOT NULL,
             signal_confidence REAL NOT NULL,
             signal_reason TEXT,
+            close_reason TEXT,
             initial_capital REAL,
             risk_fraction REAL,
             status TEXT NOT NULL DEFAULT 'OPEN',
@@ -112,6 +131,7 @@ def init_paper_table(conn):
             potential_win_pnl DOUBLE NOT NULL,
             signal_confidence DOUBLE NOT NULL,
             signal_reason TEXT NULL,
+            close_reason TEXT NULL,
             initial_capital DOUBLE NULL,
             risk_fraction DOUBLE NULL,
             status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
@@ -133,6 +153,10 @@ def init_paper_table(conn):
         pass
     try:
         execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN risk_fraction REAL")
+    except Exception:
+        pass
+    try:
+        execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN close_reason TEXT")
     except Exception:
         pass
     conn.commit()
@@ -318,6 +342,129 @@ def _recent_move_pct(conn, window_start: int, now_ts: float, lookback_sec: float
         return None
 
 
+def _recent_price_series(conn, now_ts: float, lookback_sec: float = 600.0) -> tuple[list[float], list[float]]:
+    lo_ts = max(0.0, float(now_ts) - max(30.0, float(lookback_sec)))
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT ts, price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts ASC""",
+        (lo_ts, float(now_ts)),
+    )
+    ts_list: list[float] = []
+    prices: list[float] = []
+    for r in rows:
+        try:
+            ts_val = float(r.get("ts"))
+            px_val = float(r.get("price"))
+            if px_val > 0.0:
+                ts_list.append(ts_val)
+                prices.append(px_val)
+        except Exception:
+            continue
+    return ts_list, prices
+
+
+def _safe_prob(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    if 0.0 < v < 1.0:
+        return v
+    return None
+
+
+def _latest_odds_for_window(conn, window_start: int) -> dict | None:
+    return fetch_one_dict(
+        conn,
+        """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
+           FROM poly_odds
+           WHERE window_start = ?
+           ORDER BY ts DESC
+           LIMIT 1""",
+        (int(window_start),),
+    )
+
+
+def _mark_to_market(
+    *,
+    direction: str,
+    stake: float,
+    shares: float,
+    odds_row: dict | None,
+) -> tuple[float, float, float, float]:
+    """
+    Returns:
+    - exit_price
+    - current_value
+    - pnl_after_fee
+    - roi_pct
+    """
+    exit_price = None
+    if odds_row:
+        if direction == "UP":
+            exit_price = _safe_prob(odds_row.get("up_best_bid")) or _safe_prob(odds_row.get("up_mid"))
+        else:
+            exit_price = _safe_prob(odds_row.get("down_best_bid")) or _safe_prob(odds_row.get("down_mid"))
+    if exit_price is None:
+        exit_price = 0.5
+
+    current_value = float(shares * exit_price)
+    raw_pnl = float(current_value - stake)
+    pnl = float(apply_fee_to_pnl(raw_pnl, stake))
+    roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
+    return float(exit_price), float(current_value), float(pnl), float(roi_pct)
+
+
+def _close_trade_early(
+    conn,
+    *,
+    trade_id: int,
+    window_start: int,
+    direction: str,
+    stake: float,
+    shares: float,
+    reason: str,
+    odds_row: dict | None,
+) -> bool:
+    exit_price, _value, pnl, roi_pct = _mark_to_market(
+        direction=direction,
+        stake=stake,
+        shares=shares,
+        odds_row=odds_row,
+    )
+    won = 1 if pnl > 0 else 0
+    closed_at = time.time()
+    execute_write(
+        conn,
+        """UPDATE paper_trades
+           SET status='CLOSED',
+               closed_at=?,
+               actual_outcome=NULL,
+               won=?,
+               pnl=?,
+               roi_pct=?,
+               close_reason=?
+           WHERE id=?""",
+        (closed_at, won, pnl, roi_pct, str(reason), int(trade_id)),
+    )
+    logger.warning(
+        "EARLY ws=%s id=%s dir=%s reason=%s exit_px=%.3f pnl=$%+.2f roi=%+.2f%%",
+        window_start,
+        trade_id,
+        direction,
+        reason,
+        exit_price,
+        pnl,
+        roi_pct,
+    )
+    return True
+
+
 def _price_at_or_near(conn, ts: float, *, prefer_before: bool) -> float | None:
     if prefer_before:
         row = fetch_one(
@@ -454,13 +601,44 @@ def open_trade_if_signal(
     if exists:
         return False
 
-    entry_price = market.get("up_ask") if direction == "UP" else market.get("down_ask")
+    up_ask_val = _safe_prob(market.get("up_ask"))
+    down_ask_val = _safe_prob(market.get("down_ask"))
+
+    entry_price = up_ask_val if direction == "UP" else down_ask_val
+    if entry_price is None:
+        # Last fallback to raw field conversion.
+        raw_entry = market.get("up_ask") if direction == "UP" else market.get("down_ask")
+        try:
+            entry_price = float(raw_entry) if raw_entry is not None else None
+        except Exception:
+            entry_price = None
     if entry_price is None:
         logger.warning("No %s ask price available; skipping trade", direction)
         return False
     entry_price = float(entry_price)
     if entry_price <= 0.0 or entry_price >= 1.0:
         logger.warning("Invalid entry ask %.6f for %s; skipping trade", entry_price, direction)
+        return False
+
+    side_implied = up_ask_val if direction == "UP" else down_ask_val
+    opposite_implied = down_ask_val if direction == "UP" else up_ask_val
+    if side_implied is not None and side_implied < PAPER_MIN_ENTRY_SIDE_IMPLIED:
+        logger.warning(
+            "Skip weak implied side ws=%s dir=%s: side_ask=%.3f < %.3f",
+            window_start,
+            direction,
+            side_implied,
+            PAPER_MIN_ENTRY_SIDE_IMPLIED,
+        )
+        return False
+    if opposite_implied is not None and opposite_implied > PAPER_MAX_OPPOSITE_IMPLIED:
+        logger.warning(
+            "Skip contra-implied ws=%s dir=%s: opposite_ask=%.3f > %.3f",
+            window_start,
+            direction,
+            opposite_implied,
+            PAPER_MAX_OPPOSITE_IMPLIED,
+        )
         return False
 
     btc_now = market.get("btc_price")
@@ -473,6 +651,7 @@ def open_trade_if_signal(
     support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
     confidence = float(signal.get("avg_confidence") or 0.0)
+    btc_move_from_start_pct = ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
     recent_move_pct = _recent_move_pct(
         conn,
         int(window_start),
@@ -490,15 +669,21 @@ def open_trade_if_signal(
             PAPER_MIN_RECENT_MOVE_PCT,
         )
         return False
-    if direction == "DOWN" and recent_move_pct > -PAPER_MIN_RECENT_MOVE_PCT:
+    down_move_threshold = PAPER_MIN_RECENT_MOVE_PCT
+    if direction == "DOWN" and btc_move_from_start_pct > 0.0:
+        down_move_threshold += PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA
+    if direction == "DOWN" and recent_move_pct > -down_move_threshold:
         logger.warning(
-            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% > -%.4f%%",
+            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
             window_start,
             direction,
             recent_move_pct,
-            PAPER_MIN_RECENT_MOVE_PCT,
+            down_move_threshold,
+            btc_move_from_start_pct,
         )
         return False
+
+    recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
 
     gate = evaluate_entry_gate(
         direction=direction,
@@ -508,6 +693,11 @@ def open_trade_if_signal(
         seconds_elapsed=float(sec_elapsed),
         jury_confidence=confidence,
         support_ratio=float(support_ratio),
+        seconds_remaining=float(seconds_remaining),
+        recent_prices=recent_prices,
+        recent_timestamps=recent_ts,
+        poly_up_ask=float(up_ask_val) if up_ask_val is not None else None,
+        poly_down_ask=float(down_ask_val) if down_ask_val is not None else None,
     )
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
@@ -530,6 +720,19 @@ def open_trade_if_signal(
     adaptive_min_support = _clamp(PAPER_MIN_SUPPORT_RATIO + 0.20 * strictness, PAPER_MIN_SUPPORT_RATIO, 1.0)
     adaptive_min_conf = _clamp(PAPER_MIN_CONFIDENCE + 0.18 * strictness, PAPER_MIN_CONFIDENCE, 0.80)
     adaptive_max_ask = _clamp(PAPER_MAX_ENTRY_PRICE - 0.08 * strictness, 0.45, PAPER_MAX_ENTRY_PRICE)
+
+    if direction == "DOWN" and btc_move_from_start_pct > 0.0:
+        if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
+            logger.warning(
+                "Skip DOWN-above-start hard block ws=%s: btc_vs_start=%+.4f%% >= %.4f%%",
+                window_start,
+                btc_move_from_start_pct,
+                PAPER_DOWN_ABOVE_START_BLOCK_PCT,
+            )
+            return False
+        ratio = btc_move_from_start_pct / max(PAPER_DOWN_ABOVE_START_BLOCK_PCT, 1e-9)
+        ev_penalty = PAPER_DOWN_ABOVE_START_EV_PENALTY * _clamp(ratio, 0.0, 1.0)
+        adaptive_min_ev += ev_penalty
 
     dynamic_gap = PAPER_BASE_TRADE_GAP_SEC + strictness * (
         max(PAPER_BASE_TRADE_GAP_SEC, PAPER_TARGET_TRADE_GAP_SEC) - PAPER_BASE_TRADE_GAP_SEC
@@ -690,10 +893,11 @@ def open_trade_if_signal(
 
 def resolve_open_trades(conn) -> int:
     _backfill_unresolved_windows(conn)
+    now_ts = time.time()
 
     open_rows = fetch_all_dicts(
         conn,
-        """SELECT id, window_start, direction, stake, shares
+        """SELECT id, window_start, window_end, direction, stake, shares, entry_price, opened_at
            FROM paper_trades
            WHERE status = 'OPEN'
            ORDER BY window_start ASC""",
@@ -709,66 +913,122 @@ def resolve_open_trades(conn) -> int:
             "SELECT actual_outcome FROM market_windows WHERE window_start = ?",
             (ws,),
         )
-        if not outcome_row:
-            continue
-        outcome = outcome_row[0]
-        if outcome not in ("UP", "DOWN"):
-            continue
-
         direction = str(row["direction"])
         stake = float(row["stake"])
         shares = float(row["shares"])
-        won = 1 if outcome == direction else 0
-        if won:
-            raw_pnl = shares - stake
-            pnl = apply_fee_to_pnl(raw_pnl, stake)
-        else:
-            # Binary option loss: lose the stake, no additional fee
-            pnl = -stake
-        roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
-        closed_at = time.time()
+        opened_at = float(row.get("opened_at") or 0.0)
+        window_end = float(row.get("window_end") or 0.0)
 
-        execute_write(
-            conn,
-            """UPDATE paper_trades
-               SET status='CLOSED',
-                   closed_at=?,
-                   actual_outcome=?,
-                   won=?,
-                   pnl=?,
-                   roi_pct=?
-               WHERE id=?""",
-            (closed_at, outcome, won, pnl, roi_pct, int(row["id"])),
+        # 1) Expiry settlement (binary resolution)
+        outcome = outcome_row[0] if outcome_row else None
+        if outcome in ("UP", "DOWN"):
+            won = 1 if outcome == direction else 0
+            if won:
+                raw_pnl = shares - stake
+                pnl = apply_fee_to_pnl(raw_pnl, stake)
+            else:
+                # Binary option loss: lose the stake, no additional fee
+                pnl = -stake
+            roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
+            closed_at = now_ts
+
+            execute_write(
+                conn,
+                """UPDATE paper_trades
+                   SET status='CLOSED',
+                       closed_at=?,
+                       actual_outcome=?,
+                       won=?,
+                       pnl=?,
+                       roi_pct=?,
+                       close_reason='expiry_settlement'
+                   WHERE id=?""",
+                (closed_at, outcome, won, pnl, roi_pct, int(row["id"])),
+            )
+            resolved += 1
+
+            if pnl > 0:
+                logger.warning(
+                    "PROFIT ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    ws,
+                    direction,
+                    outcome,
+                    pnl,
+                    roi_pct,
+                )
+            elif pnl < 0:
+                logger.warning(
+                    "LOSS   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    ws,
+                    direction,
+                    outcome,
+                    pnl,
+                    roi_pct,
+                )
+            else:
+                logger.warning(
+                    "FLAT   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    ws,
+                    direction,
+                    outcome,
+                    pnl,
+                    roi_pct,
+                )
+            continue
+
+        # 2) Early exit checks for open markets
+        if not PAPER_ENABLE_EARLY_EXIT:
+            continue
+        if opened_at <= 0.0:
+            continue
+        hold_sec = now_ts - opened_at
+        if hold_sec < PAPER_EARLY_EXIT_MIN_ELAPSED_SEC:
+            continue
+
+        odds_row = _latest_odds_for_window(conn, ws)
+        if not odds_row:
+            continue
+        _exit_px, _value, mtm_pnl, mtm_roi_pct = _mark_to_market(
+            direction=direction,
+            stake=stake,
+            shares=shares,
+            odds_row=odds_row,
         )
-        resolved += 1
+        up_ask = _safe_prob(odds_row.get("up_best_ask")) or _safe_prob(odds_row.get("up_mid"))
+        down_ask = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid"))
+        opposite_ask = up_ask if direction == "DOWN" else down_ask
 
-        if pnl > 0:
-            logger.warning(
-                "PROFIT ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
-                ws,
-                direction,
-                outcome,
-                pnl,
-                roi_pct,
+        early_reason = None
+        if opposite_ask is not None and opposite_ask >= PAPER_EARLY_EXIT_OPPOSITE_ASK:
+            early_reason = (
+                f"opposite_prob_surge(opposite_ask={opposite_ask:.3f}"
+                f" >= {PAPER_EARLY_EXIT_OPPOSITE_ASK:.3f})"
             )
-        elif pnl < 0:
-            logger.warning(
-                "LOSS   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
-                ws,
-                direction,
-                outcome,
-                pnl,
-                roi_pct,
+        elif mtm_roi_pct <= PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:
+            early_reason = (
+                f"stop_loss(roi={mtm_roi_pct:+.2f}%"
+                f" <= {PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:+.2f}%)"
             )
-        else:
-            logger.warning(
-                "FLAT   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
-                ws,
-                direction,
-                outcome,
-                pnl,
-                roi_pct,
+        elif hold_sec >= PAPER_EARLY_EXIT_MAX_HOLD_SEC and mtm_roi_pct <= PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:
+            remaining_sec = max(0.0, window_end - now_ts) if window_end > 0 else 0.0
+            early_reason = (
+                f"time_stop(hold={hold_sec:.1f}s, rem={remaining_sec:.1f}s,"
+                f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:+.2f}%)"
             )
+
+        if early_reason:
+            closed = _close_trade_early(
+                conn,
+                trade_id=int(row["id"]),
+                window_start=ws,
+                direction=direction,
+                stake=stake,
+                shares=shares,
+                reason=early_reason,
+                odds_row=odds_row,
+            )
+            if closed:
+                resolved += 1
 
     if resolved:
         conn.commit()
@@ -860,7 +1120,9 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         mode = "adaptive"
     logger.warning(
         "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f "
-        "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s",
+        "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s "
+        "align(side>=%.2f,opp<=%.2f) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
+        "early_exit=%s(opp>=%.2f,sl<=%.1f%%,hold>=%.0fs roi<=%.1f%%)",
         initial_capital,
         mode,
         risk_fraction,
@@ -875,6 +1137,16 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_BASE_TRADE_GAP_SEC,
         PAPER_TARGET_TRADE_GAP_SEC,
         PAPER_REQUIRE_UNANIMOUS,
+        PAPER_MIN_ENTRY_SIDE_IMPLIED,
+        PAPER_MAX_OPPOSITE_IMPLIED,
+        PAPER_DOWN_ABOVE_START_BLOCK_PCT,
+        PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA,
+        PAPER_DOWN_ABOVE_START_EV_PENALTY * 100.0,
+        PAPER_ENABLE_EARLY_EXIT,
+        PAPER_EARLY_EXIT_OPPOSITE_ASK,
+        PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT,
+        PAPER_EARLY_EXIT_MAX_HOLD_SEC,
+        PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT,
     )
 
     try:

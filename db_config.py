@@ -302,6 +302,7 @@ def init_market_schema(conn):
                 up_mid REAL,
                 down_mid REAL,
                 judges_json TEXT NOT NULL,
+                gate_json TEXT,
                 dedupe_key TEXT NOT NULL UNIQUE
             )
             """,
@@ -316,6 +317,7 @@ def init_market_schema(conn):
             "ALTER TABLE signal_history ADD COLUMN history_type TEXT NOT NULL DEFAULT 'rejected'",
             "ALTER TABLE signal_history ADD COLUMN support_direction TEXT",
             "ALTER TABLE signal_history ADD COLUMN support_votes INTEGER",
+            "ALTER TABLE signal_history ADD COLUMN gate_json TEXT",
         ]:
             try:
                 execute_write(conn, alter_sql)
@@ -389,6 +391,7 @@ def init_market_schema(conn):
             up_mid DOUBLE NULL,
             down_mid DOUBLE NULL,
             judges_json LONGTEXT NOT NULL,
+            gate_json LONGTEXT NULL,
             dedupe_key VARCHAR(512) NOT NULL,
             UNIQUE KEY uq_signal_dedupe (dedupe_key),
             INDEX idx_signal_ts (ts),
@@ -410,6 +413,7 @@ def init_market_schema(conn):
         "ALTER TABLE signal_history ADD COLUMN history_type VARCHAR(16) NOT NULL DEFAULT 'rejected'",
         "ALTER TABLE signal_history ADD COLUMN support_direction VARCHAR(16) NULL",
         "ALTER TABLE signal_history ADD COLUMN support_votes INT NULL",
+        "ALTER TABLE signal_history ADD COLUMN gate_json LONGTEXT NULL",
         "CREATE INDEX idx_signal_type_ts ON signal_history(history_type, ts)",
     ]:
         try:

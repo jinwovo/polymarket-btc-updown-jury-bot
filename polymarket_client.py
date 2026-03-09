@@ -4,11 +4,10 @@ Handles market discovery, real-time odds monitoring, and order placement via CLO
 """
 import asyncio
 import time
-import math
 import json
 import logging
-from typing import Any, Optional, Callable
-from dataclasses import dataclass, field
+from typing import Any, Optional
+from dataclasses import dataclass
 
 import httpx
 
@@ -62,6 +61,120 @@ def _to_float(value: Any, default: float = 0.5) -> float:
     except Exception:
         return default
     return default
+
+
+def _to_optional_float(value: Any) -> Optional[float]:
+    """Best-effort conversion to float; returns None on failure."""
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            return float(s)
+    except Exception:
+        return None
+    return None
+
+
+def _find_nested_value(payload: Any, candidates: set[str]) -> Any:
+    """Find first matching key value in a nested dict/list payload."""
+    keys = {str(k).lower() for k in candidates}
+    stack = [payload]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for key, val in cur.items():
+                if str(key).lower() in keys:
+                    return val
+                if isinstance(val, (dict, list, tuple)):
+                    stack.append(val)
+        elif isinstance(cur, (list, tuple)):
+            for item in cur:
+                if isinstance(item, (dict, list, tuple)):
+                    stack.append(item)
+    return None
+
+
+def _extract_order_id(payload: Any) -> Optional[str]:
+    # Prefer explicit order-id keys; plain "id" is a last-resort fallback.
+    if isinstance(payload, dict):
+        for key in ("orderID", "orderId", "order_id", "orderid", "id"):
+            if key in payload:
+                raw = payload.get(key)
+                if raw is not None and str(raw).strip():
+                    return str(raw).strip()
+
+    val = _find_nested_value(payload, {"orderid", "order_id"})
+    if val is None:
+        val = _find_nested_value(payload, {"id"})
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
+def _extract_order_status(payload: Any) -> Optional[str]:
+    val = _find_nested_value(payload, {"status", "state", "order_status"})
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    return s if s else None
+
+
+def _extract_filled_size(payload: Any) -> Optional[float]:
+    val = _find_nested_value(
+        payload,
+        {
+            "size_matched",
+            "matched_size",
+            "filled_size",
+            "filled",
+            "filledsize",
+            "executed_size",
+            "size_filled",
+            "filled_qty",
+            "filled_quantity",
+        },
+    )
+    return _to_optional_float(val)
+
+
+def _extract_avg_price(payload: Any) -> Optional[float]:
+    val = _find_nested_value(
+        payload,
+        {
+            "avg_price",
+            "average_price",
+            "fill_price",
+            "avg_fill_price",
+            "executed_price",
+            "price",
+        },
+    )
+    price = _to_optional_float(val)
+    if price is None:
+        return None
+    if not (0.0 < price < 1.0):
+        return None
+    return price
+
+
+def _is_terminal_status(status: Optional[str]) -> bool:
+    if not status:
+        return False
+    return status in {
+        "filled",
+        "cancelled",
+        "canceled",
+        "rejected",
+        "expired",
+        "failed",
+        "matched",
+    }
 
 
 @dataclass
@@ -293,12 +406,147 @@ class PolymarketClient:
     def stop_odds_polling(self):
         self._odds_polling = False
 
+    def _normalize_execution_result(
+        self,
+        *,
+        mode: str,
+        side: str,
+        token_id: str,
+        requested_amount: float,
+        raw_payload: Any,
+        default_price: Optional[float] = None,
+        requested_size: Optional[float] = None,
+        order_id_hint: Optional[str] = None,
+        status_hint: Optional[str] = None,
+    ) -> dict:
+        order_id = order_id_hint or _extract_order_id(raw_payload)
+        status = (status_hint or _extract_order_status(raw_payload) or "unknown").lower()
+
+        filled_size = _extract_filled_size(raw_payload)
+        if filled_size is None and requested_size is not None and status in {"filled", "matched"}:
+            filled_size = float(requested_size)
+        filled_size = float(filled_size or 0.0)
+
+        avg_price = _extract_avg_price(raw_payload)
+        if avg_price is None and default_price is not None and 0.0 < float(default_price) < 1.0:
+            avg_price = float(default_price)
+
+        executed_notional = 0.0
+        if filled_size > 0.0 and avg_price is not None and avg_price > 0.0:
+            executed_notional = float(filled_size * avg_price)
+        elif status in {"filled", "matched"} and requested_amount > 0.0:
+            executed_notional = float(requested_amount)
+            if filled_size <= 0.0 and avg_price is not None and avg_price > 0.0:
+                filled_size = float(executed_notional / avg_price)
+
+        filled = bool(executed_notional > 0.0 or filled_size > 0.0)
+
+        return {
+            "ok": True,
+            "mode": str(mode),
+            "side": str(side),
+            "token_id": str(token_id),
+            "order_id": order_id,
+            "status": status,
+            "requested_amount": float(requested_amount),
+            "requested_size": float(requested_size) if requested_size is not None else None,
+            "requested_price": float(default_price) if default_price is not None else None,
+            "executed_notional": float(executed_notional),
+            "executed_size": float(filled_size),
+            "executed_price": float(avg_price) if avg_price is not None else None,
+            "filled": bool(filled),
+            "accepted": bool(status not in {"rejected", "failed"}),
+            "timed_out": False,
+            "cancel_attempted": False,
+            "cancelled": False,
+            "reason": None,
+            "raw": raw_payload,
+        }
+
+    async def _get_best_ask(self, token_id: str) -> Optional[float]:
+        if not token_id:
+            return None
+        try:
+            resp = await self._http.get(
+                f"{config.polymarket.clob_url}/book",
+                params={"token_id": token_id},
+            )
+            if resp.status_code != 200:
+                return None
+            book = resp.json()
+            asks = book.get("asks", [])
+            best_ask = min((float(a.get("price", 1.0)) for a in asks), default=1.0)
+            if 0.0 < best_ask < 1.0:
+                return float(best_ask)
+            return None
+        except Exception:
+            return None
+
+    async def _check_entry_price_drift(
+        self, token_id: str, reference_ask: Optional[float]
+    ) -> tuple[bool, Optional[float], Optional[str]]:
+        ref = _to_optional_float(reference_ask)
+        if ref is None or not (0.0 < ref < 1.0):
+            return True, None, None
+
+        current_ask = await self._get_best_ask(token_id)
+        if current_ask is None:
+            return False, None, "skip entry: unable to fetch live ask for drift check"
+
+        if current_ask <= ref:
+            return True, current_ask, None
+
+        drift_abs = float(current_ask - ref)
+        drift_ratio = float(drift_abs / max(ref, 1e-9))
+
+        max_abs = max(0.0, float(config.trading.max_entry_price_drift_abs))
+        max_ratio = max(0.0, float(config.trading.max_entry_price_drift_ratio))
+        if drift_abs > max_abs or drift_ratio > max_ratio:
+            return (
+                False,
+                current_ask,
+                (
+                    "skip entry: ask drift too large "
+                    f"(ref={ref:.3f}, live={current_ask:.3f}, abs=+{drift_abs:.4f}, rel=+{drift_ratio:.2%})"
+                ),
+            )
+        return True, current_ask, None
+
     async def place_market_order(
-        self, token_id: str, side: str, amount: float
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+        reference_price: Optional[float] = None,
     ) -> Optional[dict]:
         if config.trading.dry_run:
-            logger.info(f"[DRY RUN] Would buy {side} for ${amount:.2f} (token={token_id[:16]}...)")
-            return {"dry_run": True, "side": side, "amount": amount}
+            sim_price = _to_optional_float(reference_price) or 0.5
+            sim_size = float(amount / sim_price) if sim_price > 0 else 0.0
+            logger.info(
+                f"[DRY RUN] Market/FOK {side} ${amount:.2f} "
+                f"(token={token_id[:16]}..., ref={sim_price:.4f})"
+            )
+            return {
+                "ok": True,
+                "mode": "MARKET",
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "dry_run",
+                "requested_amount": float(amount),
+                "requested_size": sim_size,
+                "requested_price": float(sim_price),
+                "executed_notional": float(amount),
+                "executed_size": float(sim_size),
+                "executed_price": float(sim_price),
+                "filled": True,
+                "accepted": True,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": None,
+                "dry_run": True,
+            }
 
         if not self._clob_client:
             await self._init_clob()
@@ -307,24 +555,72 @@ class PolymarketClient:
             return None
 
         try:
-            from py_clob_client.clob_types import MarketOrderArgs
-            order_args = MarketOrderArgs(token_id=token_id, amount=amount)
-            resp = self._clob_client.create_and_post_market_order(order_args)
-            logger.info(f"Order placed: {side} ${amount:.2f} -> {resp}")
-            return resp
+            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            from py_clob_client.order_builder.constants import BUY
+
+            order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=BUY)
+            signed = self._clob_client.create_market_order(order_args)
+            resp = self._clob_client.post_order(signed, orderType=OrderType.FOK)
+            result = self._normalize_execution_result(
+                mode="MARKET",
+                side=side,
+                token_id=token_id,
+                requested_amount=float(amount),
+                raw_payload=resp,
+                default_price=_to_optional_float(reference_price),
+            )
+            logger.info(
+                "Market/FOK order %s: status=%s filled=$%.2f",
+                side,
+                result.get("status"),
+                result.get("executed_notional", 0.0),
+            )
+            return result
         except Exception as e:
             logger.error(f"Order placement failed: {e}")
             return None
 
     async def place_limit_order(
-        self, token_id: str, side: str, price: float, size: float
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+        order_type: str = "GTC",
+        timeout_seconds: Optional[float] = None,
+        poll_interval_seconds: Optional[float] = None,
     ) -> Optional[dict]:
+        price = float(price)
+        size = float(size)
+        requested_amount = float(price * size)
+        mode = f"LIMIT_{str(order_type).strip().upper()}"
+
         if config.trading.dry_run:
             logger.info(
-                f"[DRY RUN] Limit {side} @ {price:.4f} x {size:.2f} shares "
+                f"[DRY RUN] {mode} {side} @ {price:.4f} x {size:.4f} shares "
                 f"(token={token_id[:16]}...)"
             )
-            return {"dry_run": True, "side": side, "price": price, "size": size}
+            return {
+                "ok": True,
+                "mode": mode,
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "dry_run",
+                "requested_amount": requested_amount,
+                "requested_size": size,
+                "requested_price": price,
+                "executed_notional": requested_amount,
+                "executed_size": size,
+                "executed_price": price,
+                "filled": True,
+                "accepted": True,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": None,
+                "dry_run": True,
+            }
 
         if not self._clob_client:
             await self._init_clob()
@@ -333,16 +629,245 @@ class PolymarketClient:
             return None
 
         try:
-            from py_clob_client.clob_types import OrderArgs
+            from py_clob_client.clob_types import OrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY
+
+            ot = str(order_type or "GTC").strip().upper()
+            order_type_value = getattr(OrderType, ot, OrderType.GTC)
             order_args = OrderArgs(token_id=token_id, price=price, size=size, side=BUY)
             signed = self._clob_client.create_order(order_args)
-            resp = self._clob_client.post_order(signed)
-            logger.info(f"Limit order: {side} @ {price:.4f} x {size:.2f} -> {resp}")
-            return resp
+            resp = self._clob_client.post_order(signed, orderType=order_type_value)
+
+            result = self._normalize_execution_result(
+                mode=mode,
+                side=side,
+                token_id=token_id,
+                requested_amount=requested_amount,
+                raw_payload=resp,
+                default_price=price,
+                requested_size=size,
+            )
+            order_id = result.get("order_id")
+
+            if ot == "GTC" and order_id:
+                timeout = (
+                    float(timeout_seconds)
+                    if timeout_seconds is not None
+                    else float(config.trading.limit_order_timeout_seconds)
+                )
+                poll = (
+                    float(poll_interval_seconds)
+                    if poll_interval_seconds is not None
+                    else float(config.trading.order_poll_interval_seconds)
+                )
+                timeout = max(0.25, timeout)
+                poll = max(0.05, poll)
+                deadline = time.monotonic() + timeout
+                latest_payload = resp
+
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(poll)
+                    try:
+                        state = self._clob_client.get_order(order_id)
+                        latest_payload = state
+                    except Exception as e:
+                        logger.debug(f"get_order({order_id}) failed: {e}")
+                        continue
+
+                    state_status = _extract_order_status(state)
+                    state_filled = _extract_filled_size(state) or 0.0
+                    if _is_terminal_status(state_status) or float(state_filled) >= float(size * 0.999):
+                        result = self._normalize_execution_result(
+                            mode=mode,
+                            side=side,
+                            token_id=token_id,
+                            requested_amount=requested_amount,
+                            raw_payload=state,
+                            default_price=price,
+                            requested_size=size,
+                            order_id_hint=order_id,
+                        )
+                        break
+                else:
+                    cancel_ok = False
+                    try:
+                        self._clob_client.cancel(order_id)
+                        cancel_ok = True
+                    except Exception as e:
+                        logger.warning(f"Cancel order failed ({order_id}): {e}")
+                    try:
+                        latest_payload = self._clob_client.get_order(order_id)
+                    except Exception:
+                        pass
+
+                    result = self._normalize_execution_result(
+                        mode=mode,
+                        side=side,
+                        token_id=token_id,
+                        requested_amount=requested_amount,
+                        raw_payload=latest_payload,
+                        default_price=price,
+                        requested_size=size,
+                        order_id_hint=order_id,
+                    )
+                    result["timed_out"] = True
+                    result["cancel_attempted"] = True
+                    result["cancelled"] = bool(cancel_ok)
+                    if not result.get("filled"):
+                        result["reason"] = (
+                            f"limit timeout ({timeout:.2f}s): unfilled size cancelled"
+                            if cancel_ok
+                            else f"limit timeout ({timeout:.2f}s): cancel failed"
+                        )
+
+            logger.info(
+                "%s order %s: status=%s filled=$%.2f",
+                mode,
+                side,
+                result.get("status"),
+                result.get("executed_notional", 0.0),
+            )
+            return result
         except Exception as e:
             logger.error(f"Limit order failed: {e}")
             return None
+
+    async def place_entry_order(
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+        reference_ask: Optional[float] = None,
+    ) -> Optional[dict]:
+        mode = str(config.trading.entry_order_mode or "LIMIT_GTC").strip().upper()
+        if mode not in {"LIMIT_GTC", "LIMIT_FAK", "MARKET"}:
+            logger.warning("Invalid ENTRY_ORDER_MODE=%s, fallback to LIMIT_GTC", mode)
+            mode = "LIMIT_GTC"
+
+        # Dry-run should not be blocked by live drift checks.
+        if config.trading.dry_run:
+            sim_ask = _to_optional_float(reference_ask)
+            if sim_ask is None or not (0.0 < sim_ask < 1.0):
+                sim_ask = 0.5
+
+            if mode == "MARKET":
+                return await self.place_market_order(
+                    token_id=token_id,
+                    side=side,
+                    amount=float(amount),
+                    reference_price=float(sim_ask),
+                )
+
+            return await self.place_limit_order(
+                token_id=token_id,
+                side=side,
+                price=float(sim_ask),
+                size=float(amount / sim_ask),
+                order_type=("FAK" if mode == "LIMIT_FAK" else "GTC"),
+                timeout_seconds=float(config.trading.limit_order_timeout_seconds),
+                poll_interval_seconds=float(config.trading.order_poll_interval_seconds),
+            )
+
+        # Protect against stale UI/model ask when the live orderbook has already moved.
+        drift_ok, live_ask, drift_reason = await self._check_entry_price_drift(token_id, reference_ask)
+        if not drift_ok:
+            logger.info(drift_reason)
+            return {
+                "ok": True,
+                "mode": mode,
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "rejected_drift",
+                "requested_amount": float(amount),
+                "requested_size": None,
+                "requested_price": _to_optional_float(reference_ask),
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": drift_reason,
+            }
+
+        working_ask = _to_optional_float(live_ask)
+        if working_ask is None:
+            working_ask = _to_optional_float(reference_ask)
+
+        if mode == "MARKET":
+            return await self.place_market_order(
+                token_id=token_id,
+                side=side,
+                amount=float(amount),
+                reference_price=working_ask,
+            )
+
+        if working_ask is None or not (0.0 < working_ask < 1.0):
+            return {
+                "ok": True,
+                "mode": mode,
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "invalid_price",
+                "requested_amount": float(amount),
+                "requested_size": None,
+                "requested_price": None,
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": "skip entry: no valid ask for limit order",
+            }
+
+        size = float(amount / working_ask)
+        if size <= 0.0:
+            return {
+                "ok": True,
+                "mode": mode,
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "invalid_size",
+                "requested_amount": float(amount),
+                "requested_size": 0.0,
+                "requested_price": float(working_ask),
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": "skip entry: computed share size <= 0",
+            }
+
+        if mode == "LIMIT_FAK":
+            return await self.place_limit_order(
+                token_id=token_id,
+                side=side,
+                price=float(working_ask),
+                size=float(size),
+                order_type="FAK",
+            )
+
+        return await self.place_limit_order(
+            token_id=token_id,
+            side=side,
+            price=float(working_ask),
+            size=float(size),
+            order_type="GTC",
+            timeout_seconds=float(config.trading.limit_order_timeout_seconds),
+            poll_interval_seconds=float(config.trading.order_poll_interval_seconds),
+        )
 
     async def close(self):
         self.stop_odds_polling()

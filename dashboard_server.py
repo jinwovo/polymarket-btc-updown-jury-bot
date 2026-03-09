@@ -112,13 +112,20 @@ class ManagedProcess:
                 self._exit_code = int(code)
                 self._ended_at = time.time()
 
-    def start(self, command: list[str], meta: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
+    def start(
+        self,
+        command: list[str],
+        meta: Optional[dict[str, Any]] = None,
+        env_overrides: Optional[dict[str, str]] = None,
+    ) -> tuple[bool, str]:
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:
                 return False, f"{self.name} already running"
 
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
+            for k, v in (env_overrides or {}).items():
+                env[str(k)] = str(v)
             try:
                 proc = subprocess.Popen(
                     command,
@@ -184,6 +191,7 @@ class ManagedProcess:
 
 PAPER_SIM_PROC = ManagedProcess("paper_trade_sim")
 BACKTEST_PROC = ManagedProcess("backtest")
+LIVE_TRADING_PROC = ManagedProcess("live_trading")
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -202,6 +210,101 @@ def _to_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_live_position_mode(raw: Any) -> str:
+    mode = str(raw or "BOTH").strip().upper()
+    if mode in ("UP_ONLY", "DOWN_ONLY", "BOTH"):
+        return mode
+    return "BOTH"
+
+
+def _find_numeric_field(payload: Any, candidates: set[str]) -> Optional[float]:
+    stack = [payload]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for key, val in cur.items():
+                lk = str(key).lower()
+                if lk in candidates:
+                    num = _to_float(val)
+                    if num is not None:
+                        return num
+                if isinstance(val, (dict, list, tuple)):
+                    stack.append(val)
+        elif isinstance(cur, (list, tuple)):
+            for item in cur:
+                if isinstance(item, (dict, list, tuple)):
+                    stack.append(item)
+    return None
+
+
+def _fetch_live_account_snapshot() -> dict[str, Any]:
+    api_key = str(config.polymarket.api_key or "").strip()
+    api_secret = str(config.polymarket.api_secret or "").strip()
+    api_passphrase = str(config.polymarket.api_passphrase or "").strip()
+    funder = str(config.polymarket.funder or "").strip()
+    configured = bool(api_key and api_secret and api_passphrase and funder)
+
+    if not configured:
+        return {
+            "ok": False,
+            "configured": False,
+            "error": "Missing API credentials or funder address in .env",
+            "funder": funder or None,
+            "collateral_balance": None,
+            "collateral_allowance": None,
+        }
+
+    try:
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams
+
+        creds = ApiCreds(
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+        )
+        client = ClobClient(
+            config.polymarket.clob_url,
+            chain_id=137,
+            creds=creds,
+            funder=funder,
+        )
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        payload = client.get_balance_allowance(params)
+
+        balance = _find_numeric_field(
+            payload,
+            {"balance", "available_balance", "asset_balance", "available"},
+        )
+        allowance = _find_numeric_field(
+            payload,
+            {"allowance", "available_allowance"},
+        )
+        return {
+            "ok": True,
+            "configured": True,
+            "error": None,
+            "funder": funder,
+            "collateral_balance": balance,
+            "collateral_allowance": allowance,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "configured": True,
+            "error": str(e),
+            "funder": funder,
+            "collateral_balance": None,
+            "collateral_allowance": None,
+        }
+
+
+def build_live_control_status() -> dict[str, Any]:
+    status = LIVE_TRADING_PROC.status()
+    status["account"] = _fetch_live_account_snapshot()
+    return status
 
 
 def _downsample(rows: list[dict], max_points: int = 320) -> list[dict]:
@@ -586,6 +689,12 @@ def _build_signal(
             seconds_elapsed=seconds_elapsed,
             jury_confidence=decision.avg_confidence,
             support_ratio=support_ratio,
+            seconds_remaining=seconds_remaining,
+            recent_prices=price_list,
+            recent_timestamps=ts_list,
+            poly_up_ask=_to_float(latest_odds.get("up_best_ask")),
+            poly_down_ask=_to_float(latest_odds.get("down_best_ask")),
+            recent_results=recent_results,
         )
 
     paper_filter_ok = True
@@ -658,6 +767,24 @@ def _build_signal(
     actionable = base_actionable and gate_result is not None and gate_result.allow and paper_filter_ok
     action_label = f"BUY {decision.direction}" if actionable else "WAIT"
 
+    blocked_by = "none"
+    blocked_reason = ""
+    if base_actionable and gate_result is None:
+        blocked_by = "invalid_entry_price"
+        blocked_reason = "skip invalid entry price for current orderbook"
+    elif base_actionable and gate_result is not None and not gate_result.allow:
+        blocked_by = "entry_gate"
+        blocked_reason = gate_result.reason
+    elif base_actionable and gate_result is not None and gate_result.allow and not paper_filter_ok:
+        blocked_by = "paper_filter"
+        blocked_reason = paper_filter_reason
+    elif not base_actionable:
+        blocked_by = "jury_or_timing"
+        blocked_reason = (
+            f"votes UP={vote_counts['UP']} DOWN={vote_counts['DOWN']} "
+            f"ABSTAIN={vote_counts['ABSTAIN']}"
+        )
+
     if actionable and gate_result is not None:
         summary = (
             f"{vote_counts[decision.direction]}/{jury_size} {decision.direction} votes | "
@@ -675,6 +802,23 @@ def _build_signal(
             f"ABSTAIN={vote_counts['ABSTAIN']}"
         )
 
+    gate_payload = {
+        "evaluated": bool(gate_result is not None),
+        "allow": (bool(gate_result.allow) if gate_result is not None else None),
+        "reason": gate_result.reason if gate_result is not None else None,
+        "expected_roi": gate_result.expected_roi if gate_result is not None else None,
+        "model_prob": gate_result.model_prob if gate_result is not None else None,
+        "fair_prob_up": gate_result.fair_prob_up if gate_result is not None else None,
+        "break_even_prob": gate_result.break_even_prob if gate_result is not None else None,
+        "dispersion": gate_result.dispersion if gate_result is not None else None,
+        "entry_price": entry_price,
+        "per_judge_probs": (
+            ({str(k): float(v) for k, v in (gate_result.per_judge_probs or {}).items()} if gate_result is not None else {})
+        ),
+        "blocked_by": blocked_by,
+        "blocked_reason": blocked_reason if blocked_reason else None,
+    }
+
     return {
         "direction": decision.direction,
         "actionable": actionable,
@@ -689,6 +833,9 @@ def _build_signal(
         "expected_roi": gate_result.expected_roi if gate_result is not None else None,
         "model_prob": gate_result.model_prob if gate_result is not None else None,
         "break_even_prob": gate_result.break_even_prob if gate_result is not None else None,
+        "fair_prob_up": gate_result.fair_prob_up if gate_result is not None else None,
+        "dispersion": gate_result.dispersion if gate_result is not None else None,
+        "gate": gate_payload,
         "judges": judge_rows,
     }
 
@@ -754,8 +901,8 @@ def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: 
             """INSERT INTO signal_history
                (ts, ts_utc, window_start, window_end, slug, history_type, support_direction, support_votes,
                 direction, avg_confidence, threshold,
-                reason, btc_change_pct, up_mid, down_mid, judges_json, dedupe_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                reason, btc_change_pct, up_mid, down_mid, judges_json, gate_json, dedupe_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 float(now_ts),
                 ts_utc,
@@ -773,6 +920,7 @@ def _record_signal_history(conn, now_ts: float, window: Optional[dict], market: 
                 _to_float(market.get("up_mid")),
                 _to_float(market.get("down_mid")),
                 json.dumps(judges, ensure_ascii=False),
+                json.dumps(signal.get("gate") or {}, ensure_ascii=False),
                 key,
             ),
         )
@@ -808,7 +956,7 @@ def build_signal_history(limit: int = 40, offset: int = 0, history_type: str = "
             conn,
             f"""SELECT ts, ts_utc, window_start, window_end, slug, history_type,
                       support_direction, support_votes, direction, avg_confidence,
-                      threshold, reason, btc_change_pct, up_mid, down_mid, judges_json
+                      threshold, reason, btc_change_pct, up_mid, down_mid, judges_json, gate_json
                FROM signal_history
                {where}
                ORDER BY ts DESC
@@ -822,6 +970,11 @@ def build_signal_history(limit: int = 40, offset: int = 0, history_type: str = "
                 judges = json.loads(judges_json) if judges_json else []
             except Exception:
                 judges = []
+            gate_json = r.get("gate_json")
+            try:
+                gate = json.loads(gate_json) if gate_json else {}
+            except Exception:
+                gate = {}
             items.append(
                 {
                     "ts": _to_float(r.get("ts")),
@@ -841,6 +994,7 @@ def build_signal_history(limit: int = 40, offset: int = 0, history_type: str = "
                         "up_mid": _to_float(r.get("up_mid")),
                         "down_mid": _to_float(r.get("down_mid")),
                     },
+                    "gate": gate if isinstance(gate, dict) else {},
                     "judges": judges,
                 }
             )
@@ -872,16 +1026,29 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         return {"ok": False, "error": f"Database connection error ({db_label()}): {e}"}
 
     try:
-        rows = fetch_all_dicts(
-            conn,
-            """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
-                      potential_win_pnl, signal_confidence, signal_reason, status,
-                      opened_at, closed_at, actual_outcome, won, pnl, roi_pct
-               FROM paper_trades
-               ORDER BY window_start DESC
-               LIMIT ? OFFSET ?""",
-            (lim, off),
-        )
+        try:
+            rows = fetch_all_dicts(
+                conn,
+                """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
+                          potential_win_pnl, signal_confidence, signal_reason, close_reason, status,
+                          opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                   FROM paper_trades
+                   ORDER BY window_start DESC
+                   LIMIT ? OFFSET ?""",
+                (lim, off),
+            )
+        except Exception:
+            # Backward compatibility: old schema without close_reason column.
+            rows = fetch_all_dicts(
+                conn,
+                """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
+                          potential_win_pnl, signal_confidence, signal_reason, status,
+                          opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                   FROM paper_trades
+                   ORDER BY window_start DESC
+                   LIMIT ? OFFSET ?""",
+                (lim, off),
+            )
     except Exception as e:
         conn.close()
         return {"ok": False, "error": f"paper_trades unavailable: {e}"}
@@ -1031,6 +1198,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     "to_win_pnl": to_win_pnl,
                     "signal_confidence": _to_float(r.get("signal_confidence")),
                     "signal_reason": str(r.get("signal_reason") or ""),
+                    "close_reason": str(r.get("close_reason") or "") if r.get("close_reason") else None,
                     "status": str(r.get("status") or "OPEN"),
                     "opened_at": opened_at,
                     "opened_at_utc": (
@@ -1346,6 +1514,63 @@ def control_paper_reset() -> dict:
     return status
 
 
+def control_live_start(stake: float, position_mode: str = "BOTH") -> dict:
+    per_trade_usd = max(0.01, float(stake))
+    mode = _normalize_live_position_mode(position_mode)
+    account = _fetch_live_account_snapshot()
+
+    if not account.get("configured", False):
+        status = LIVE_TRADING_PROC.status()
+        status["ok"] = False
+        status["message"] = account.get("error") or "API credentials are not configured"
+        status["account"] = account
+        return status
+
+    if not account.get("ok", False):
+        status = LIVE_TRADING_PROC.status()
+        status["ok"] = False
+        status["message"] = account.get("error") or "Failed to fetch collateral balance"
+        status["account"] = account
+        return status
+
+    balance = _to_float(account.get("collateral_balance"))
+    if balance is not None and per_trade_usd > balance:
+        status = LIVE_TRADING_PROC.status()
+        status["ok"] = False
+        status["message"] = (
+            f"Invest amount (${per_trade_usd:.2f}) exceeds collateral balance (${balance:.2f})"
+        )
+        status["account"] = account
+        return status
+
+    env_overrides = {
+        "DRY_RUN": "false",
+        "MAX_BET_SIZE": f"{per_trade_usd}",
+        "POSITION_MODE": mode,
+    }
+    ok, msg = LIVE_TRADING_PROC.start(
+        _python_command("main.py", []),
+        meta={
+            "stake_per_trade": per_trade_usd,
+            "position_mode": mode,
+            "dry_run": False,
+        },
+        env_overrides=env_overrides,
+    )
+    status = build_live_control_status()
+    status["ok"] = ok
+    status["message"] = msg
+    return status
+
+
+def control_live_stop() -> dict:
+    ok, msg = LIVE_TRADING_PROC.stop()
+    status = build_live_control_status()
+    status["ok"] = ok
+    status["message"] = msg
+    return status
+
+
 def control_backtest_run(payload: dict[str, Any]) -> dict:
     action_mode = str(payload.get("mode", "single")).strip().lower()
     args: list[str] = []
@@ -1530,6 +1755,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(PAPER_SIM_PROC.status(), code=200)
             return
 
+        if path == "/api/control/live":
+            self._send_json(build_live_control_status(), code=200)
+            return
+
         if path == "/api/control/backtest":
             self._send_json(BACKTEST_PROC.status(), code=200)
             return
@@ -1570,6 +1799,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_paper_reset(), code=200)
             except Exception as e:
                 logger.exception("paper reset error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/start":
+            stake = payload.get("stake", 5.0)
+            position_mode = str(payload.get("position_mode", "BOTH"))
+            try:
+                self._send_json(control_live_start(float(stake), position_mode=position_mode), code=200)
+            except Exception as e:
+                logger.exception("live start error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/stop":
+            try:
+                self._send_json(control_live_stop(), code=200)
+            except Exception as e:
+                logger.exception("live stop error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

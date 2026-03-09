@@ -48,6 +48,26 @@ interface SnapshotResponse {
     jury_size?: number;
     unanimous: boolean;
     reason: string;
+    entry_price?: number | null;
+    expected_roi?: number | null;
+    model_prob?: number | null;
+    break_even_prob?: number | null;
+    fair_prob_up?: number | null;
+    dispersion?: number | null;
+    gate?: {
+      evaluated: boolean;
+      allow: boolean | null;
+      reason: string | null;
+      expected_roi: number | null;
+      model_prob: number | null;
+      fair_prob_up: number | null;
+      break_even_prob: number | null;
+      dispersion: number | null;
+      entry_price: number | null;
+      per_judge_probs: Record<string, number>;
+      blocked_by: string;
+      blocked_reason: string | null;
+    };
     judges: Array<{
       name: string;
       vote: JudgeVote;
@@ -107,6 +127,17 @@ interface ProcessStatus {
   error?: string;
 }
 
+interface LiveControlStatus extends ProcessStatus {
+  account?: {
+    ok: boolean;
+    configured: boolean;
+    error?: string | null;
+    funder?: string | null;
+    collateral_balance?: number | null;
+    collateral_allowance?: number | null;
+  };
+}
+
 interface FailedSignalHistoryItem {
   ts: number;
   ts_utc: string;
@@ -124,6 +155,20 @@ interface FailedSignalHistoryItem {
     btc_change_pct: number | null;
     up_mid: number | null;
     down_mid: number | null;
+  };
+  gate?: {
+    evaluated?: boolean;
+    allow?: boolean | null;
+    reason?: string | null;
+    expected_roi?: number | null;
+    model_prob?: number | null;
+    fair_prob_up?: number | null;
+    break_even_prob?: number | null;
+    dispersion?: number | null;
+    entry_price?: number | null;
+    per_judge_probs?: Record<string, number>;
+    blocked_by?: string;
+    blocked_reason?: string | null;
   };
   judges: Array<{
     name: string;
@@ -157,6 +202,7 @@ interface PaperTradeHistoryItem {
   to_win_pnl: number | null;
   signal_confidence: number | null;
   signal_reason: string;
+  close_reason?: string | null;
   status: "OPEN" | "CLOSED";
   opened_at: number | null;
   opened_at_utc: string | null;
@@ -255,10 +301,13 @@ export function LiveDashboard() {
 
   const [paperStatus, setPaperStatus] = useState<ProcessStatus | null>(null);
   const [backtestStatus, setBacktestStatus] = useState<ProcessStatus | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveControlStatus | null>(null);
 
   const [paperStake, setPaperStake] = useState("1000");
   const [paperInterval, setPaperInterval] = useState("2");
   const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
+  const [liveStake, setLiveStake] = useState("5");
+  const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
 
   const [lastHours, setLastHours] = useState("24");
   const [runMode, setRunMode] = useState<"single" | "auto_sweep">("auto_sweep");
@@ -304,6 +353,11 @@ export function LiveDashboard() {
   async function loadBacktestStatus() {
     const res = await fetch("/api/control/backtest", { cache: "no-store" });
     return (await res.json()) as ProcessStatus;
+  }
+
+  async function loadLiveStatus() {
+    const res = await fetch("/api/control/live", { cache: "no-store" });
+    return (await res.json()) as LiveControlStatus;
   }
 
   async function loadFailedSignalHistory(
@@ -392,6 +446,30 @@ export function LiveDashboard() {
     const bt = await loadBacktestStatus();
     setBacktestStatus(bt);
     await loadPaperTradeSummary();
+  }
+
+  async function startLive() {
+    const res = await fetch("/api/control/live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "start",
+        stake: Number(liveStake || "0"),
+        position_mode: livePositionMode,
+      }),
+    });
+    const json = (await res.json()) as LiveControlStatus;
+    setLiveStatus(json);
+  }
+
+  async function stopLive() {
+    const res = await fetch("/api/control/live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "stop" }),
+    });
+    const json = (await res.json()) as LiveControlStatus;
+    setLiveStatus(json);
   }
 
   async function resetPaperHistory() {
@@ -522,10 +600,15 @@ export function LiveDashboard() {
     const loadControlOnce = async () => {
       if (!mounted) return;
       try {
-        const [paper, backtest] = await Promise.all([loadPaperStatus(), loadBacktestStatus()]);
+        const [paper, backtest, live] = await Promise.all([
+          loadPaperStatus(),
+          loadBacktestStatus(),
+          loadLiveStatus(),
+        ]);
         if (mounted) {
           setPaperStatus(paper);
           setBacktestStatus(backtest);
+          setLiveStatus(live);
         }
       } catch (_) {
         // Ignore transient control status errors.
@@ -568,6 +651,7 @@ export function LiveDashboard() {
   }, []);
 
   const signal = snapshot?.signal;
+  const gate = signal?.gate;
   const lastActionableSignal = snapshot?.last_actionable_signal;
   const market = snapshot?.market;
   const windowInfo = snapshot?.window;
@@ -583,6 +667,16 @@ export function LiveDashboard() {
   const accountRoiPct =
     paperHistorySummary?.equity_roi_pct ??
     (seedCapital > 0 ? (realizedPnl / seedCapital) * 100.0 : 0.0);
+  const liveBalance = liveStatus?.account?.collateral_balance ?? null;
+  const liveAllowance = liveStatus?.account?.collateral_allowance ?? null;
+  const liveStakeNum = Number(liveStake || "0");
+  const liveStakeValid = Number.isFinite(liveStakeNum) && liveStakeNum > 0;
+  const liveStakeOverBalance =
+    liveStakeValid &&
+    liveBalance !== null &&
+    liveBalance !== undefined &&
+    Number.isFinite(liveBalance) &&
+    liveStakeNum > Number(liveBalance);
 
   const bannerTitle = useMemo(() => {
     if (signal?.actionable) {
@@ -635,6 +729,22 @@ export function LiveDashboard() {
     if (signal.actionable && signal.direction === "DOWN") return "down";
     return "neutral";
   }, [signal]);
+
+  const gateJudgeProbRows = useMemo(() => {
+    const map = gate?.per_judge_probs ?? {};
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, prob]) => ({ name, prob }));
+  }, [gate?.per_judge_probs]);
+
+  const gateBlockLabel = useMemo(() => {
+    const code = gate?.blocked_by ?? "none";
+    if (code === "entry_gate") return "blocked by entry gate";
+    if (code === "paper_filter") return "blocked by paper filter";
+    if (code === "invalid_entry_price") return "blocked by invalid ask";
+    if (code === "jury_or_timing") return "blocked by jury/timing";
+    return "not blocked";
+  }, [gate?.blocked_by]);
 
   const bannerClasses =
     bannerTone === "up"
@@ -740,8 +850,8 @@ export function LiveDashboard() {
           </Card>
         </section>
 
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <Card className="xl:col-span-2">
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3 xl:items-start">
+          <Card className="xl:col-span-2 xl:self-start">
             <CardHeader>
               <CardTitle>Market Motion</CardTitle>
               <CardDescription>Last 30 minutes BTC / UP-DOWN odds trend</CardDescription>
@@ -793,12 +903,77 @@ export function LiveDashboard() {
                 Live {signal?.jury_size ?? signal?.judges?.length ?? 0}-judge consensus
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2.5">
+            <CardContent className="max-h-[36rem] space-y-2.5 overflow-y-auto pr-1">
+              {gate?.evaluated ? (
+                <div className="rounded-xl border border-border/70 bg-background/40 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">Gate Diagnostics</p>
+                    <Badge variant={gate.allow ? "success" : "danger"}>
+                      {gate.allow ? "PASS" : "BLOCKED"}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{gateBlockLabel}</p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Model Prob</p>
+                      <p className="font-mono">{formatNumber(gate.model_prob, 3)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Fair P(UP)</p>
+                      <p className="font-mono">{formatNumber(gate.fair_prob_up, 3)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Break-even P</p>
+                      <p className="font-mono">{formatNumber(gate.break_even_prob, 3)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Dispersion</p>
+                      <p className="font-mono">{formatNumber(gate.dispersion, 3)}</p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Expected ROI</p>
+                      <p className="font-mono">
+                        {gate.expected_roi === null || gate.expected_roi === undefined
+                          ? "--"
+                          : formatPct(gate.expected_roi * 100, 2)}
+                      </p>
+                    </div>
+                    <div className="rounded-md border border-border/60 bg-background/30 p-2">
+                      <p className="text-muted-foreground">Entry Ask</p>
+                      <p className="font-mono">{formatNumber(gate.entry_price, 3)}</p>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {gate.blocked_reason ?? gate.reason ?? "no gate reason"}
+                  </p>
+                  <div className="mt-2 rounded-md border border-border/60 bg-background/20 p-2">
+                    <p className="tiny-label">Per-judge p_up map</p>
+                    {gateJudgeProbRows.length === 0 ? (
+                      <p className="mt-1 text-xs text-muted-foreground">No probability map yet.</p>
+                    ) : (
+                      <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                        {gateJudgeProbRows.map((r) => (
+                          <div key={r.name} className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">{r.name}</span>
+                            <span className="font-mono">{formatNumber(r.prob, 3)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border/70 bg-background/30 p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Gate diagnostics will appear once entry-gate evaluation starts.
+                  </p>
+                </div>
+              )}
               {(signal?.judges ?? []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">Waiting for enough lookback data...</p>
               ) : (
                 signal?.judges?.map((j) => (
-                  <div key={j.name} className="rounded-xl border border-border/70 bg-background/40 p-3">
+                  <div key={j.name} className="rounded-xl border border-border/70 bg-background/40 p-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-medium">{j.name}</p>
                       <Badge
@@ -812,7 +987,7 @@ export function LiveDashboard() {
                     <p className="mt-1 font-mono text-xs text-muted-foreground">
                       confidence {formatNumber(j.confidence, 3)}
                     </p>
-                    <p className="mt-1 max-h-10 overflow-hidden text-xs text-muted-foreground">{j.reason}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{j.reason}</p>
                   </div>
                 ))
               )}
@@ -880,7 +1055,7 @@ export function LiveDashboard() {
           </CardContent>
         </Card>
 
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between gap-2">
@@ -992,7 +1167,110 @@ export function LiveDashboard() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="xl:self-start">
+            <CardHeader>
+              <CardTitle>Live Trading Control</CardTitle>
+              <CardDescription>Real Polymarket execution with balance guard</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">API Config</p>
+                  <p className="font-mono">
+                    {liveStatus?.account?.configured ? "configured" : "missing"}
+                  </p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Collateral Balance</p>
+                  <p className="font-mono">{formatUsd(liveBalance)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Collateral Allowance</p>
+                  <p className="font-mono">{formatUsd(liveAllowance)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Funder</p>
+                  <p className="truncate font-mono">{liveStatus?.account?.funder ?? "--"}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs text-muted-foreground">
+                  Invest Per Trade (USD)
+                  <input
+                    value={liveStake}
+                    onChange={(e) => setLiveStake(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Position Mode
+                  <select
+                    value={livePositionMode}
+                    onChange={(e) =>
+                      setLivePositionMode(e.target.value as "BOTH" | "UP_ONLY" | "DOWN_ONLY")
+                    }
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  >
+                    <option value="BOTH">BOTH</option>
+                    <option value="UP_ONLY">UP_ONLY</option>
+                    <option value="DOWN_ONLY">DOWN_ONLY</option>
+                  </select>
+                </label>
+              </div>
+
+              {!liveStakeValid ? (
+                <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+                  Invest amount must be a positive number.
+                </p>
+              ) : liveStakeOverBalance ? (
+                <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+                  Invest amount must be less than or equal to your collateral balance.
+                </p>
+              ) : null}
+
+              {liveStatus?.account?.error ? (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+                  {liveStatus.account.error}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => void startLive()}
+                  disabled={!liveStakeValid || Boolean(liveStakeOverBalance)}
+                  className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
+                >
+                  Start Live
+                </button>
+                <button
+                  onClick={() => void stopLive()}
+                  className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                >
+                  Stop
+                </button>
+                <button
+                  onClick={async () => setLiveStatus(await loadLiveStatus())}
+                  className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm"
+                >
+                  Refresh
+                </button>
+                <Badge variant={liveStatus?.running ? "success" : "neutral"}>
+                  {liveStatus?.running ? "RUNNING" : "STOPPED"}
+                </Badge>
+              </div>
+
+              <p className="font-mono text-xs text-muted-foreground">
+                pid={liveStatus?.pid ?? "-"} | exit={liveStatus?.exit_code ?? "-"} | mode={livePositionMode}
+              </p>
+
+              <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                {(liveStatus?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
+              </pre>
+            </CardContent>
+          </Card>
+
+          <Card className="xl:self-start">
             <CardHeader>
               <CardTitle>Backtest/Sweep Control</CardTitle>
               <CardDescription>Run single backtest or auto sweep from this UI</CardDescription>
@@ -1240,6 +1518,9 @@ export function LiveDashboard() {
                         <span className="font-mono text-muted-foreground">
                           conf {formatNumber(t.signal_confidence, 3)}
                         </span>
+                        {t.close_reason ? (
+                          <span className="font-mono text-amber-300/90">exit {t.close_reason}</span>
+                        ) : null}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
                     </div>
@@ -1372,6 +1653,62 @@ export function LiveDashboard() {
                         <span className="font-mono text-muted-foreground">BTC {formatPct(item.market?.btc_change_pct)}</span>
                       </div>
                       <p className="mt-1 text-sm">{item.reason}</p>
+                      <div className="mt-2 rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">Gate</span>
+                          <Badge
+                            variant={
+                              item.gate?.allow === true
+                                ? "success"
+                                : item.gate?.allow === false
+                                  ? "danger"
+                                  : "neutral"
+                            }
+                          >
+                            {item.gate?.allow === true ? "PASS" : item.gate?.allow === false ? "BLOCKED" : "N/A"}
+                          </Badge>
+                          <span className="font-mono text-muted-foreground">
+                            by {item.gate?.blocked_by ?? "--"}
+                          </span>
+                        </div>
+                        <div className="mt-1 grid grid-cols-2 gap-2 md:grid-cols-3">
+                          <span className="font-mono text-muted-foreground">
+                            p={formatNumber(item.gate?.model_prob, 3)}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            fair_up={formatNumber(item.gate?.fair_prob_up, 3)}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            breakeven={formatNumber(item.gate?.break_even_prob, 3)}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            disp={formatNumber(item.gate?.dispersion, 3)}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            ev={item.gate?.expected_roi === null || item.gate?.expected_roi === undefined
+                              ? "--"
+                              : formatPct(item.gate.expected_roi * 100, 2)}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            ask={formatNumber(item.gate?.entry_price, 3)}
+                          </span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+                          {item.gate?.blocked_reason || item.gate?.reason || "no gate reason"}
+                        </p>
+                        {Object.entries(item.gate?.per_judge_probs ?? {}).length > 0 ? (
+                          <div className="mt-1 grid grid-cols-1 gap-1 md:grid-cols-2">
+                            {Object.entries(item.gate?.per_judge_probs ?? {})
+                              .sort(([a], [b]) => a.localeCompare(b))
+                              .map(([name, prob]) => (
+                                <div key={`${item.ts}-${name}-prob`} className="flex items-center justify-between">
+                                  <span className="text-muted-foreground">{name}</span>
+                                  <span className="font-mono">{formatNumber(prob, 3)}</span>
+                                </div>
+                              ))}
+                          </div>
+                        ) : null}
+                      </div>
                       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
                         {(item.judges ?? []).map((j) => (
                           <div key={`${item.ts}-${j.name}`} className="rounded-md border border-border/60 bg-background/40 p-2">

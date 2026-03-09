@@ -25,6 +25,7 @@ This project is built to test **real collected orderbook data** and block low-qu
   - skip trade when expected net ROI is below threshold
   - avoid "100% confidence but no real payout" traps
 - Paper simulation from dashboard (start/stop + history popup)
+- Live trading control from dashboard (API balance check + per-trade cap + position mode)
 - Backtest + auto sweep for `JURY_THRESHOLD` and `MIN_EDGE`
 - Signal history (accepted/rejected) with DB persistence and paging
 
@@ -79,6 +80,7 @@ This starts:
   - entry price
   - 5m BTC start/end
   - UP/DOWN odds at entry
+  - close reason (`expiry_settlement` / early-exit trigger)
   - to-win total and to-win pnl
   - realized pnl / roi / outcome
 - `Backtest/Sweep Control`
@@ -94,6 +96,13 @@ This starts:
 4. **Net expected ROI gate must pass**:
    - includes configured fee/slippage drag
    - blocks low-EV entries
+5. **Market-implied consistency + directional hardening**:
+   - block trades when opposite-side implied probability is too high
+   - tighten DOWN entries when BTC is above window-start price
+6. **Early-exit risk controls (paper sim)**:
+   - close open trade when opposite probability surges
+   - stop-loss ROI exit
+   - time-stop exit when hold time is too long without sufficient edge
 
 ### Important payout note
 
@@ -137,7 +146,33 @@ Key parameters:
 - `TRADE_FEE_RATE` (default: `0.010`)
 - `MIN_EXPECTED_ROI` (default: `0.003`)
 - `MAX_BET_SIZE` (default: `5.0`)
+- `POSITION_MODE` (`BOTH` | `UP_ONLY` | `DOWN_ONLY`)
+- `ENTRY_ORDER_MODE` (`LIMIT_GTC` | `LIMIT_FAK` | `MARKET`)
+- `LIMIT_ORDER_TIMEOUT_SECONDS` (default: `2.5`)
+- `ORDER_POLL_INTERVAL_SECONDS` (default: `0.35`)
+- `MAX_ENTRY_PRICE_DRIFT_ABS` (default: `0.010`)
+- `MAX_ENTRY_PRICE_DRIFT_RATIO` (default: `0.03`)
+- `LIVE_ENTRY_START_SECONDS` (default: `75`)
+- `LIVE_MIN_SUPPORT_RATIO` (default: `0.70`)
+- `LIVE_REQUIRE_UNANIMOUS` (default: `false`)
+- `LIVE_RECENT_MOVE_LOOKBACK_SEC` / `LIVE_MIN_RECENT_MOVE_PCT`
+- `LIVE_MAX_OPPOSITE_IMPLIED` / `LIVE_MIN_ENTRY_SIDE_IMPLIED`
+- `LIVE_DOWN_ABOVE_START_BLOCK_PCT` / `LIVE_DOWN_ABOVE_START_MOMENTUM_EXTRA` / `LIVE_DOWN_ABOVE_START_EV_PENALTY`
 - `DAILY_LOSS_LIMIT` (default: `50.0`)
+
+Paper-sim guard parameters (optional):
+- `PAPER_MAX_OPPOSITE_IMPLIED`, `PAPER_MIN_ENTRY_SIDE_IMPLIED`
+- `PAPER_DOWN_ABOVE_START_BLOCK_PCT`, `PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA`, `PAPER_DOWN_ABOVE_START_EV_PENALTY`
+- `PAPER_ENABLE_EARLY_EXIT`, `PAPER_EARLY_EXIT_OPPOSITE_ASK`, `PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT`, `PAPER_EARLY_EXIT_MAX_HOLD_SEC`, `PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT`
+
+### Live execution policy
+
+- Every entry is tied to the active 5-minute market slug (`btc-updown-5m-{window_start}`), so traded token IDs rotate automatically each window.
+- Before order submission, bot compares live ask vs decision-time ask and blocks entries when drift exceeds thresholds.
+- Live filters enforce close-direction consistency (support ratio, short-horizon momentum, implied-probability alignment, and stricter DOWN gating when BTC is above start).
+- `LIMIT_GTC`: place a taker-limit near current ask, wait up to timeout, then cancel remaining size.
+- `LIMIT_FAK`: immediate fill-and-kill limit execution.
+- `MARKET`: FOK-style market order path (still drift-protected before submit).
 
 ### MariaDB quick setup
 

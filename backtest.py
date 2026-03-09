@@ -377,6 +377,12 @@ class Backtester:
                 seconds_elapsed=float(seconds_elapsed),
                 jury_confidence=float(decision.avg_confidence),
                 support_ratio=float(support_ratio),
+                seconds_remaining=float(seconds_remaining),
+                recent_prices=list(lookback),
+                recent_timestamps=list(lookback_ts),
+                poly_up_ask=float(odds["up_ask"]),
+                poly_down_ask=float(odds["down_ask"]),
+                recent_results=list(self.recent_results[-20:]),
             )
             if not gate.allow:
                 check_time += self.check_interval

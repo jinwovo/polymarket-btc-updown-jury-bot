@@ -3,7 +3,7 @@ Main bot loop - orchestrates Binance price feed, Polymarket real-time odds,
 jury deliberation, and trade execution for BTC Up/Down 5-minute markets.
 
 Core strategy: Speed arbitrage.
-Binance price moves → Polymarket odds lag → we buy the cheap side before odds adjust.
+Binance price moves first, Polymarket odds lag, so we buy the cheap side before odds adjust.
 """
 import asyncio
 import time
@@ -34,12 +34,66 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def _normalize_position_mode(raw: str) -> str:
+    mode = str(raw or "BOTH").strip().upper()
+    if mode in ("UP_ONLY", "DOWN_ONLY", "BOTH"):
+        return mode
+    return "BOTH"
+
+
+def _safe_prob(value: float | None) -> float | None:
+    try:
+        if value is None:
+            return None
+        v = float(value)
+        if 0.0 < v < 1.0:
+            return v
+    except Exception:
+        return None
+    return None
+
+
+def _recent_move_pct(
+    prices: list[float],
+    timestamps: list[float],
+    now_ts: float,
+    lookback_sec: float,
+) -> float | None:
+    n = min(len(prices), len(timestamps))
+    if n <= 1:
+        return None
+    lo_ts = now_ts - max(1.0, float(lookback_sec))
+    p0 = None
+    p1 = None
+    for i in range(n):
+        try:
+            ts = float(timestamps[i])
+            px = float(prices[i])
+        except Exception:
+            continue
+        if ts < lo_ts:
+            continue
+        if px <= 0.0:
+            continue
+        if p0 is None:
+            p0 = px
+        p1 = px
+    if p0 is None or p1 is None or p0 <= 0.0:
+        return None
+    return ((p1 - p0) / p0) * 100.0
+
+
 class TradingBot:
     def __init__(self):
         self.price_feed = BinancePriceFeed()
         self.poly_client = PolymarketClient()
         self.jury = Jury(threshold=config.trading.jury_threshold)
         self.risk_mgr = RiskManager()
+        self.position_mode = _normalize_position_mode(config.trading.position_mode)
 
         self.current_market: Optional[MarketInfo] = None
         self.current_trade: Optional[TradeRecord] = None
@@ -66,6 +120,27 @@ class TradingBot:
             config.trading.jury_threshold,
             self.jury.size,
             self._check_interval,
+        )
+        logger.info("Position mode: %s", self.position_mode)
+        logger.info(
+            "Entry execution: mode=%s | timeout=%.2fs | poll=%.2fs | drift_abs=%.4f | drift_ratio=%.2f%%",
+            config.trading.entry_order_mode,
+            float(config.trading.limit_order_timeout_seconds),
+            float(config.trading.order_poll_interval_seconds),
+            float(config.trading.max_entry_price_drift_abs),
+            float(config.trading.max_entry_price_drift_ratio) * 100.0,
+        )
+        logger.info(
+            "Live guards: entry_start=%.0fs support>=%.0f%% unanim=%s move>=%.4f%%(lookback=%.0fs) "
+            "implied(side>=%.2f opp<=%.2f) down_block>=%.4f%%",
+            float(config.trading.live_entry_start_seconds),
+            float(config.trading.live_min_support_ratio) * 100.0,
+            config.trading.live_require_unanimous,
+            float(config.trading.live_min_recent_move_pct),
+            float(config.trading.live_recent_move_lookback_sec),
+            float(config.trading.live_min_entry_side_implied),
+            float(config.trading.live_max_opposite_implied),
+            float(config.trading.live_down_above_start_block_pct),
         )
         logger.info("=" * 60)
 
@@ -145,7 +220,7 @@ class TradingBot:
         # ---- Timing filters ----
         if seconds_remaining < config.trading.cutoff_before_close_seconds:
             return
-        if seconds_elapsed < 10:  # Reduced from 30s - we want speed
+        if seconds_elapsed < float(config.trading.live_entry_start_seconds):
             return
 
         # ---- Risk check ----
@@ -188,6 +263,18 @@ class TradingBot:
         if decision.avg_confidence < config.trading.min_edge:
             return
 
+        if self.position_mode == "UP_ONLY" and decision.direction != "UP":
+            return
+        if self.position_mode == "DOWN_ONLY" and decision.direction != "DOWN":
+            return
+
+        support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
+        support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
+        if support_ratio < float(config.trading.live_min_support_ratio):
+            return
+        if config.trading.live_require_unanimous and not decision.unanimous:
+            return
+
         # ---- Size and execute (FAST) ----
         bet_size = self.risk_mgr.compute_bet_size(
             decision.avg_confidence, decision.max_edge
@@ -198,20 +285,94 @@ class TradingBot:
         if decision.direction == "UP":
             token_id = self.current_market.up_token_id
             # Buy at the ask price (taker)
-            price = self.current_market.up_best_ask
-            if price <= 0 or price >= 1:
-                price = self.current_market.up_price
+            price = (
+                _safe_prob(self.current_market.up_best_ask)
+                or _safe_prob(self.current_market.up_price)
+            )
         else:
             token_id = self.current_market.down_token_id
-            price = self.current_market.down_best_ask
-            if price <= 0 or price >= 1:
-                price = self.current_market.down_price
+            price = (
+                _safe_prob(self.current_market.down_best_ask)
+                or _safe_prob(self.current_market.down_price)
+            )
 
-        if price <= 0.01 or price >= 0.99 or not token_id:
+        if price is None or price <= 0.01 or price >= 0.99 or not token_id:
             return
 
-        support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
-        support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
+        up_ask = (
+            _safe_prob(self.current_market.up_best_ask)
+            or _safe_prob(self.current_market.up_price)
+        )
+        down_ask = (
+            _safe_prob(self.current_market.down_best_ask)
+            or _safe_prob(self.current_market.down_price)
+        )
+        side_ask = up_ask if decision.direction == "UP" else down_ask
+        opposite_ask = down_ask if decision.direction == "UP" else up_ask
+
+        if side_ask is not None and side_ask < float(config.trading.live_min_entry_side_implied):
+            logger.info(
+                "Skip live implied-side guard: dir=%s side_ask=%.3f < %.3f",
+                decision.direction,
+                side_ask,
+                float(config.trading.live_min_entry_side_implied),
+            )
+            return
+        if opposite_ask is not None and opposite_ask > float(config.trading.live_max_opposite_implied):
+            logger.info(
+                "Skip live opposite-implied guard: dir=%s opp_ask=%.3f > %.3f",
+                decision.direction,
+                opposite_ask,
+                float(config.trading.live_max_opposite_implied),
+            )
+            return
+
+        btc_move_from_start_pct = (
+            ((float(ctx.current_binance_price) - float(ctx.market_start_price)) / float(ctx.market_start_price)) * 100.0
+            if ctx.market_start_price > 0
+            else 0.0
+        )
+        recent_move = _recent_move_pct(
+            prices=list(ctx.recent_prices),
+            timestamps=list(ctx.recent_timestamps),
+            now_ts=now,
+            lookback_sec=float(config.trading.live_recent_move_lookback_sec),
+        )
+        if recent_move is None:
+            return
+        base_move_thr = float(config.trading.live_min_recent_move_pct)
+        if decision.direction == "UP" and recent_move < base_move_thr:
+            logger.info(
+                "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%%",
+                recent_move,
+                base_move_thr,
+            )
+            return
+        down_move_thr = base_move_thr
+        if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
+            down_move_thr += float(config.trading.live_down_above_start_momentum_extra)
+        if decision.direction == "DOWN" and recent_move > -down_move_thr:
+            logger.info(
+                "Skip live momentum guard: dir=DOWN move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
+                recent_move,
+                down_move_thr,
+                btc_move_from_start_pct,
+            )
+            return
+
+        dynamic_min_roi = float(config.trading.min_expected_roi)
+        if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
+            block_thr = float(config.trading.live_down_above_start_block_pct)
+            if btc_move_from_start_pct >= block_thr:
+                logger.info(
+                    "Skip live DOWN-above-start hard block: btc_vs_start=%+.4f%% >= %.4f%%",
+                    btc_move_from_start_pct,
+                    block_thr,
+                )
+                return
+            ratio = btc_move_from_start_pct / max(block_thr, 1e-9)
+            dynamic_min_roi += float(config.trading.live_down_above_start_ev_penalty) * _clamp(ratio, 0.0, 1.0)
+
         gate = evaluate_entry_gate(
             direction=decision.direction,
             entry_price=float(price),
@@ -220,9 +381,22 @@ class TradingBot:
             seconds_elapsed=float(seconds_elapsed),
             jury_confidence=float(decision.avg_confidence),
             support_ratio=float(support_ratio),
+            seconds_remaining=float(seconds_remaining),
+            recent_prices=list(ctx.recent_prices),
+            recent_timestamps=list(ctx.recent_timestamps),
+            poly_up_ask=ctx.poly_up_ask,
+            poly_down_ask=ctx.poly_down_ask,
+            recent_results=list(ctx.recent_results or []),
         )
         if not gate.allow:
             logger.info("Skip trade by entry gate: %s", gate.reason)
+            return
+        if gate.expected_roi < dynamic_min_roi:
+            logger.info(
+                "Skip live dynamic EV guard: net_ev=%+.3f%% < %.3f%%",
+                gate.expected_roi * 100.0,
+                dynamic_min_roi * 100.0,
+            )
             return
 
         logger.info(
@@ -233,13 +407,43 @@ class TradingBot:
             f"poly_up={ctx.poly_up_price:.3f} poly_down={ctx.poly_down_price:.3f}"
         )
 
-        result = await self.poly_client.place_market_order(
-            token_id=token_id, side=decision.direction, amount=bet_size,
+        result = await self.poly_client.place_entry_order(
+            token_id=token_id,
+            side=decision.direction,
+            amount=bet_size,
+            reference_ask=float(price),
         )
 
         if result is not None:
+            if not bool(result.get("accepted", True)):
+                logger.info(
+                    "Order blocked/rejected: mode=%s status=%s reason=%s",
+                    result.get("mode"),
+                    result.get("status"),
+                    result.get("reason"),
+                )
+                return
+
+            if not bool(result.get("filled", False)):
+                logger.info(
+                    "Order not filled: mode=%s status=%s reason=%s",
+                    result.get("mode"),
+                    result.get("status"),
+                    result.get("reason"),
+                )
+                return
+
+            executed_notional = float(result.get("executed_notional") or 0.0)
+            executed_price = float(result.get("executed_price") or 0.0)
+            if executed_notional <= 0.0:
+                executed_notional = float(bet_size)
+            if not (0.0 < executed_price < 1.0):
+                executed_price = float(price)
+
             self.current_trade = self.risk_mgr.record_trade(
-                direction=decision.direction, amount=bet_size, price=price,
+                direction=decision.direction,
+                amount=executed_notional,
+                price=executed_price,
             )
 
     async def _on_new_market(self, start_timestamp: int, seconds_elapsed: float):
@@ -299,7 +503,7 @@ class TradingBot:
 
             logger.info(
                 f"Market resolved: {actual_direction} | "
-                f"Trade={self.current_trade.direction} -> {'WIN ✓' if won else 'LOSS ✗'}"
+                f"Trade={self.current_trade.direction} -> {'WIN' if won else 'LOSS'}"
             )
 
     def _build_context(self, seconds_elapsed: float, seconds_remaining: float) -> Optional[MarketContext]:
