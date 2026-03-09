@@ -106,13 +106,24 @@ This project uses fee-aware filtering and fee-adjusted pnl in simulation/backtes
 
 ## Research-informed model update (2026-03)
 
-The mispricing judge now uses a short-horizon diffusion model on Binance tick data:
+Recent research-inspired upgrades now include:
 
-- estimate drift/volatility with MLE on log returns (`dlogS = mu*dt + sigma*dW`)
-- compute terminal UP probability with a normal-CDF formula
-- compare model probability vs Polymarket ask-implied probability (edge-based vote)
+- **Mispricing judge (diffusion probability)**
+  - estimate drift/volatility with MLE on log returns (`dlogS = mu*dt + sigma*dW`)
+  - compute terminal UP probability with a normal-CDF formula
+  - compare model probability vs Polymarket ask-implied probability (edge-based vote)
+- **Statistical judge (jump-robust regime decomposition)**
+  - compute realized variance (`RV`) and bipower variation (`BV`)
+  - derive jump component via `(RV - BV)+` and jump ratio
+  - use jump-adjusted standardized displacement (`z`) and edge logic to reduce noisy entries
 
 This keeps the bot lightweight while adding mathematically explicit probability modeling.
+
+Reference papers:
+- DeepLOB: Deep Convolutional Neural Networks for Limit Order Books (`arXiv:1808.03668`) - https://arxiv.org/abs/1808.03668
+- Deep Limit Order Book Forecasting: a Microstructural Guide (`arXiv:2403.09267`) - https://arxiv.org/abs/2403.09267
+- T-KAN: Temporal Knowledge-Aware Networks for LOB Forecasting (`arXiv:2601.02310`) - https://arxiv.org/abs/2601.02310
+- Bipower Variation and Jump Detection (Barndorff-Nielsen & Shephard, Journal of Financial Econometrics) - https://doi.org/10.1093/jjfinec/nbi022
 
 ## Configuration
 

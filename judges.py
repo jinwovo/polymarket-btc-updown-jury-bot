@@ -285,14 +285,44 @@ class ArbitrageJudge:
 class StatisticalJudge:
     name = "StatisticalJudge"
 
-    def _compute_volatility(self, prices: list[float]) -> float:
-        if len(prices) < 2:
-            return 0.0
-        arr = np.array(prices, dtype=float)
-        returns = np.diff(arr) / arr[:-1]
-        if len(returns) == 0:
-            return 0.0
-        return float(np.std(returns)) * math.sqrt(len(returns))
+    def _log_returns(
+        self, prices: list[float], timestamps: list[float]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        n = min(len(prices), len(timestamps))
+        if n < 3:
+            return np.array([], dtype=float), np.array([], dtype=float)
+        p = np.asarray(prices[:n], dtype=float)
+        ts = np.asarray(timestamps[:n], dtype=float)
+        if np.any(p <= 0):
+            return np.array([], dtype=float), np.array([], dtype=float)
+        logp = np.log(p)
+        dlog = np.diff(logp)
+        dt = np.diff(ts)
+        valid = dt > 1e-6
+        if not np.any(valid):
+            return np.array([], dtype=float), np.array([], dtype=float)
+        return dlog[valid], dt[valid]
+
+    def _realized_variation_parts(
+        self, prices: list[float], timestamps: list[float]
+    ) -> tuple[float, float, float]:
+        """
+        Returns (rv, bv, jump_var):
+        - rv: realized variance
+        - bv: bipower variation (jump-robust continuous variance proxy)
+        - jump_var: non-negative jump variation estimate (rv - bv)+
+        """
+        dlog, _dt = self._log_returns(prices, timestamps)
+        if len(dlog) < 2:
+            return 0.0, 0.0, 0.0
+
+        rv = float(np.sum(dlog ** 2))
+        abs_r = np.abs(dlog)
+        bv = float((math.pi / 2.0) * np.sum(abs_r[1:] * abs_r[:-1]))
+        # Numerical guard: bipower can exceed rv in finite samples.
+        bv = max(0.0, min(bv, rv))
+        jump_var = max(0.0, rv - bv)
+        return rv, bv, jump_var
 
     def _compute_trend_strength(self, prices: list[float]) -> float:
         if len(prices) < 5:
@@ -318,47 +348,84 @@ class StatisticalJudge:
         return (current, count)
 
     def judge(self, ctx: MarketContext) -> JudgeVerdict:
-        recent_ticks = ctx.recent_prices[-300:] if len(ctx.recent_prices) > 300 else ctx.recent_prices
-        vol = self._compute_volatility(recent_ticks)
-        price_change_pct = _safe_pct_change(ctx.current_binance_price, ctx.market_start_price)
-        high_vol = vol > 0.001
+        n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+        if n < 20 or ctx.market_start_price <= 0 or ctx.current_binance_price <= 0:
+            return JudgeVerdict(Vote.ABSTAIN, 0.0, "Insufficient statistical features", self.name)
 
-        signals: list[float] = []
+        look_prices = ctx.recent_prices[-300:] if len(ctx.recent_prices) > 300 else ctx.recent_prices
+        look_ts = ctx.recent_timestamps[-300:] if len(ctx.recent_timestamps) > 300 else ctx.recent_timestamps
+        rv, bv, jump_var = self._realized_variation_parts(look_prices, look_ts)
+        jump_ratio = jump_var / max(rv, 1e-12)
 
-        if high_vol and abs(price_change_pct) > 0.02:
-            signals.append(0.3 if price_change_pct > 0 else -0.3)
-        elif (not high_vol) and abs(price_change_pct) > 0.05:
-            signals.append(0.15 if price_change_pct > 0 else -0.15)
+        # Estimate diffusion sigma from jump-robust component.
+        elapsed = max(1.0, float(ctx.seconds_elapsed))
+        sigma_per_sqrt_sec = math.sqrt(max(bv, 1e-12) / elapsed)
+        rem = max(1.0, float(ctx.seconds_remaining))
+        denom = sigma_per_sqrt_sec * math.sqrt(rem)
 
-        if len(ctx.recent_prices) > 10:
-            trend = self._compute_trend_strength(ctx.recent_prices[-30:])
-            if abs(trend) > 0.001:
-                signals.append(0.25 if trend > 0 else -0.25)
+        x = math.log(ctx.current_binance_price / ctx.market_start_price)
+        z = (x / denom) if denom > 1e-10 else (8.0 if x > 0 else -8.0 if x < 0 else 0.0)
+        p_up = _clamp01(_norm_cdf(z))
 
-        results = ctx.recent_results or []
-        if len(results) >= 3:
-            streak_dir, streak_len = self._recent_streak(results)
-            if streak_len >= 4:
-                signals.append(-0.15 if streak_dir == "UP" else 0.15)
-            elif streak_len <= 2:
-                signals.append(0.1 if streak_dir == "UP" else -0.1)
+        up_px = (
+            ctx.poly_up_ask
+            if (ctx.poly_up_ask is not None and 0.0 < ctx.poly_up_ask < 1.0)
+            else ctx.poly_up_price
+        )
+        down_px = (
+            ctx.poly_down_ask
+            if (ctx.poly_down_ask is not None and 0.0 < ctx.poly_down_ask < 1.0)
+            else ctx.poly_down_price
+        )
+        if not (0.0 < up_px < 1.0 and 0.0 < down_px < 1.0):
+            return JudgeVerdict(Vote.ABSTAIN, 0.0, "Invalid market prices", self.name)
 
-        if ctx.seconds_remaining < 120 and abs(price_change_pct) > 0.01:
-            time_weight = 0.3 * (1.0 - ctx.seconds_remaining / 300.0)
-            signals.append(time_weight if price_change_pct > 0 else -time_weight)
+        trend = self._compute_trend_strength(look_prices[-40:] if len(look_prices) > 40 else look_prices)
+        streak_dir, streak_len = self._recent_streak(ctx.recent_results or [])
 
-        total = sum(signals)
-        confidence = min(abs(total), 1.0)
-        if total > 0.1:
+        # Base edges from jump-robust probability model.
+        up_edge = p_up - up_px
+        down_edge = (1.0 - p_up) - down_px
+
+        # Regime logic:
+        # - high jump ratio: reduce aggression and prefer near-close strong z moves only
+        # - low jump ratio: allow standard edge comparison
+        jumpy = jump_ratio > 0.35
+        edge_bar = 0.018 if not jumpy else 0.028
+
+        score = 0.0
+        if up_edge > down_edge + 0.004 and up_edge > edge_bar:
+            score += 0.55
+        elif down_edge > up_edge + 0.004 and down_edge > edge_bar:
+            score -= 0.55
+
+        # Trend consistency bonus.
+        if abs(trend) > 0.0008:
+            score += 0.20 if trend > 0 else -0.20
+
+        # In jumpy regimes, only trust very strong standardized displacement near close.
+        if jumpy:
+            if rem < 100 and abs(z) > 1.4:
+                score += 0.25 if z > 0 else -0.25
+            else:
+                # Avoid over-reacting to likely transient jumps early in the window.
+                score *= 0.55
+
+        # Small anti-streak regularizer (mean-reverting penalty only on long streaks).
+        if streak_len >= 5 and streak_dir in ("UP", "DOWN"):
+            score += -0.08 if streak_dir == "UP" else 0.08
+
+        if score > 0.18:
             vote = Vote.UP
-        elif total < -0.1:
+        elif score < -0.18:
             vote = Vote.DOWN
         else:
             vote = Vote.ABSTAIN
 
+        confidence = min(abs(score) * (0.85 + min(abs(z), 2.0) * 0.18), 1.0)
         reason = (
-            f"vol={vol:.6f}, move={price_change_pct:+.4f}%, "
-            f"signals={total:+.3f}, high_vol={high_vol}"
+            f"p_up={p_up:.3f}, z={z:+.2f}, edge=({up_edge:+.3f}/{down_edge:+.3f}), "
+            f"rv={rv:.2e}, bv={bv:.2e}, jump={jump_ratio:.2f}, trend={trend:+.4f}%"
         )
         return JudgeVerdict(vote, confidence, reason, self.name)
 
