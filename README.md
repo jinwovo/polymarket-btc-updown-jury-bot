@@ -107,6 +107,7 @@ This project uses fee-aware filtering and fee-adjusted pnl in simulation/backtes
 ## Configuration
 
 Create `.env` from `.env.example`, then edit values.
+Local `.env` files are ignored by git (`.env`, `.env.*`), so secrets do not get committed.
 
 Key parameters:
 
@@ -116,6 +117,24 @@ Key parameters:
 - `MIN_EXPECTED_ROI` (default: `0.003`)
 - `MAX_BET_SIZE` (default: `5.0`)
 - `DAILY_LOSS_LIMIT` (default: `50.0`)
+
+### MariaDB quick setup
+
+Set these in `.env` when using MariaDB:
+
+```env
+DB_BACKEND=mariadb
+MARIADB_HOST=127.0.0.1
+MARIADB_PORT=3306
+MARIADB_USER=root
+MARIADB_PASSWORD=your_password
+MARIADB_DATABASE=future_prediction
+```
+
+On first run, the app will automatically:
+- create the database if missing,
+- create core tables (`btc_ticks`, `poly_odds`, `market_windows`, `signal_history`, `paper_trades`),
+- apply lightweight schema migrations (column/index additions) for existing deployments.
 
 ## Useful commands
 
