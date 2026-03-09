@@ -96,7 +96,7 @@ class TradingConfig:
         default_factory=lambda: float(os.getenv("LIVE_MIN_RECENT_MOVE_PCT", "0.006"))
     )
     live_max_opposite_implied: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_MAX_OPPOSITE_IMPLIED", "0.56"))
+        default_factory=lambda: float(os.getenv("LIVE_MAX_OPPOSITE_IMPLIED", "0.62"))
     )
     live_min_entry_side_implied: float = field(
         default_factory=lambda: float(os.getenv("LIVE_MIN_ENTRY_SIDE_IMPLIED", "0.22"))

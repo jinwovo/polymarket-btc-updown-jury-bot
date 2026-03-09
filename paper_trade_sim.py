@@ -73,7 +73,7 @@ PAPER_HIGH_QUALITY_CONF = float(os.getenv("PAPER_HIGH_QUALITY_CONF", "0.50"))
 PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
 
 # Direction consistency filter (market-implied probability alignment).
-PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.56"))
+PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
 PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
 
 # DOWN-side hardening when BTC is above the window start.
