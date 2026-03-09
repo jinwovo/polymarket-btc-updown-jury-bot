@@ -886,6 +886,85 @@ class Jury:
         self.threshold = max(1, min(int(threshold), jury_size))
         self.min_score_margin = max(0.0, float(min_score_margin))
 
+    def _price_n_seconds_ago(self, ctx: MarketContext, seconds: float) -> Optional[float]:
+        n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+        if n == 0:
+            return None
+        latest_ts = float(ctx.recent_timestamps[n - 1])
+        target_ts = latest_ts - float(max(1.0, seconds))
+        for i in range(n - 1, -1, -1):
+            if float(ctx.recent_timestamps[i]) <= target_ts:
+                return float(ctx.recent_prices[i])
+        return float(ctx.recent_prices[0])
+
+    def _recent_move(self, ctx: MarketContext, seconds: float) -> float:
+        prev = self._price_n_seconds_ago(ctx, seconds)
+        if prev is None or prev <= 0.0:
+            return 0.0
+        return _safe_pct_change(float(ctx.current_binance_price), float(prev))
+
+    def _judge_base_weights(self, ctx: MarketContext) -> dict[str, float]:
+        weights = {j.name: 1.0 for j in self.judges}
+        progress = _clamp01(float(ctx.seconds_elapsed) / 300.0)
+        up_ask = ctx.poly_up_ask if ctx.poly_up_ask is not None else ctx.poly_up_price
+        down_ask = ctx.poly_down_ask if ctx.poly_down_ask is not None else ctx.poly_down_price
+        up_bid = ctx.poly_up_bid if ctx.poly_up_bid is not None else max(ctx.poly_up_price - 0.01, 0.0)
+        down_bid = ctx.poly_down_bid if ctx.poly_down_bid is not None else max(ctx.poly_down_price - 0.01, 0.0)
+
+        spread_wide = False
+        if 0.0 < up_ask < 1.0 and 0.0 < down_ask < 1.0:
+            up_spread = max(0.0, float(up_ask) - float(up_bid))
+            down_spread = max(0.0, float(down_ask) - float(down_bid))
+            overround = (float(up_ask) + float(down_ask)) - 1.0
+            spread_wide = (up_spread > 0.055) or (down_spread > 0.055) or (overround > 0.10)
+
+        move15 = abs(self._recent_move(ctx, 15.0))
+        move45 = abs(self._recent_move(ctx, 45.0))
+        whipsaw = (move15 > 0.02 and move45 < 0.01) or (move45 > 0.04 and move15 < 0.008)
+
+        # Regime-aware weighting:
+        # - Early window: reduce trend persistence influence (too noisy).
+        # - Late window: boost trend/statistical persistence.
+        # - Whipsaw: dampen pure trend/technical sensitivity.
+        # - Wide spreads/overround: downweight orderbook-derived confidence.
+        if progress < 0.25:
+            weights["TrendPersistenceJudge"] *= 0.88
+            weights["TechnicalJudge"] *= 0.94
+        elif progress > 0.65:
+            weights["TrendPersistenceJudge"] *= 1.10
+            weights["StatisticalJudge"] *= 1.08
+
+        if whipsaw:
+            weights["TrendPersistenceJudge"] *= 0.84
+            weights["TechnicalJudge"] *= 0.88
+            weights["StatisticalJudge"] *= 1.06
+
+        if spread_wide:
+            weights["OrderbookValueJudge"] *= 0.82
+
+        for k, v in list(weights.items()):
+            weights[k] = _clamp(v, 0.70, 1.20)
+        return weights
+
+    def _directional_alignment_multiplier(
+        self,
+        vote: Vote,
+        move15: float,
+        move45: float,
+    ) -> float:
+        if vote == Vote.ABSTAIN:
+            return 1.0
+
+        up_align = (move15 >= 0.0) + (move45 >= 0.0)
+        down_align = (move15 <= 0.0) + (move45 <= 0.0)
+        aligns = up_align if vote == Vote.UP else down_align
+
+        if aligns == 2:
+            return 1.08
+        if aligns == 1:
+            return 0.96
+        return 0.80
+
     @property
     def size(self) -> int:
         return len(self.judges)
@@ -901,8 +980,18 @@ class Jury:
 
         n_up = len(up_votes)
         n_down = len(down_votes)
-        up_score = sum(v.confidence for v in up_votes)
-        down_score = sum(v.confidence for v in down_votes)
+        base_weights = self._judge_base_weights(ctx)
+        move15 = self._recent_move(ctx, 15.0)
+        move45 = self._recent_move(ctx, 45.0)
+
+        weighted_conf: dict[str, float] = {}
+        for v in verdicts:
+            w_base = base_weights.get(v.judge_name, 1.0)
+            w_align = self._directional_alignment_multiplier(v.vote, move15, move45)
+            weighted_conf[v.judge_name] = _clamp01(v.confidence * w_base * w_align)
+
+        up_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in up_votes)
+        down_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in down_votes)
 
         if n_up >= self.threshold and up_score >= down_score + self.min_score_margin:
             direction = "UP"
@@ -917,20 +1006,29 @@ class Jury:
             final_vote = Vote.ABSTAIN
             winning = []
 
-        avg_confidence = sum(v.confidence for v in winning) / len(winning) if winning else 0.0
-        max_confidence = max((v.confidence for v in winning), default=0.0)
+        avg_confidence = (
+            sum(weighted_conf.get(v.judge_name, v.confidence) for v in winning) / len(winning)
+            if winning
+            else 0.0
+        )
+        max_confidence = max((weighted_conf.get(v.judge_name, v.confidence) for v in winning), default=0.0)
         unanimous = (n_up == self.size and self.size > 0) or (n_down == self.size and self.size > 0)
 
         for v in verdicts:
+            w = base_weights.get(v.judge_name, 1.0)
+            wc = weighted_conf.get(v.judge_name, v.confidence)
             logger.info(
-                "  [%s] %s (conf=%.3f): %s",
+                "  [%s] %s (conf=%.3f -> w=%.2f => %.3f): %s",
                 v.judge_name,
                 v.vote.value,
                 v.confidence,
+                w,
+                wc,
                 v.reason,
             )
         logger.info(
-            "  JURY: %s | votes UP=%d DOWN=%d ABSTAIN=%d | score UP=%.3f DOWN=%.3f | avg_conf=%.3f",
+            "  JURY: %s | votes UP=%d DOWN=%d ABSTAIN=%d | score UP=%.3f DOWN=%.3f | "
+            "avg_conf=%.3f | move15=%+.4f%% move45=%+.4f%%",
             direction,
             n_up,
             n_down,
@@ -938,6 +1036,8 @@ class Jury:
             up_score,
             down_score,
             avg_confidence,
+            move15,
+            move45,
         )
 
         return JuryDecision(

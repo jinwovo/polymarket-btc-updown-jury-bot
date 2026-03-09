@@ -49,9 +49,9 @@ PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
 PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.040"))
 PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
 PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
-PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
+PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.50"))
 PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
-PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.12"))
+PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.10"))
 PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "75"))
 PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
 PAPER_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
@@ -84,10 +84,18 @@ PAPER_DOWN_ABOVE_START_EV_PENALTY = float(os.getenv("PAPER_DOWN_ABOVE_START_EV_P
 # Early exit rules for open paper positions.
 PAPER_ENABLE_EARLY_EXIT = os.getenv("PAPER_ENABLE_EARLY_EXIT", "true").lower() == "true"
 PAPER_EARLY_EXIT_MIN_ELAPSED_SEC = float(os.getenv("PAPER_EARLY_EXIT_MIN_ELAPSED_SEC", "25"))
-PAPER_EARLY_EXIT_OPPOSITE_ASK = float(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_ASK", "0.70"))
-PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-45.0"))
-PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "95"))
-PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "5.0"))
+PAPER_EARLY_EXIT_OPPOSITE_ASK = float(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_ASK", "0.78"))
+PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT", "-20.0")
+)
+PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS = int(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
+PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "220"))
+PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
+PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
+
+# In-memory debounce for noisy opposite-probability spikes.
+_EARLY_EXIT_OPPOSITE_HITS: dict[int, int] = {}
 
 
 def init_paper_table(conn):
@@ -907,6 +915,7 @@ def resolve_open_trades(conn) -> int:
 
     resolved = 0
     for row in open_rows:
+        trade_id = int(row["id"])
         ws = int(row["window_start"])
         outcome_row = fetch_one(
             conn,
@@ -943,9 +952,10 @@ def resolve_open_trades(conn) -> int:
                        roi_pct=?,
                        close_reason='expiry_settlement'
                    WHERE id=?""",
-                (closed_at, outcome, won, pnl, roi_pct, int(row["id"])),
+                (closed_at, outcome, won, pnl, roi_pct, trade_id),
             )
             resolved += 1
+            _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
 
             if pnl > 0:
                 logger.warning(
@@ -999,27 +1009,46 @@ def resolve_open_trades(conn) -> int:
         opposite_ask = up_ask if direction == "DOWN" else down_ask
 
         early_reason = None
-        if opposite_ask is not None and opposite_ask >= PAPER_EARLY_EXIT_OPPOSITE_ASK:
-            early_reason = (
-                f"opposite_prob_surge(opposite_ask={opposite_ask:.3f}"
-                f" >= {PAPER_EARLY_EXIT_OPPOSITE_ASK:.3f})"
-            )
-        elif mtm_roi_pct <= PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:
+        if (
+            opposite_ask is not None
+            and opposite_ask >= PAPER_EARLY_EXIT_OPPOSITE_ASK
+            and mtm_roi_pct <= PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT
+        ):
+            hits = _EARLY_EXIT_OPPOSITE_HITS.get(trade_id, 0) + 1
+            _EARLY_EXIT_OPPOSITE_HITS[trade_id] = hits
+            if hits >= max(1, PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS):
+                early_reason = (
+                    f"opposite_prob_surge(opposite_ask={opposite_ask:.3f}"
+                    f" >= {PAPER_EARLY_EXIT_OPPOSITE_ASK:.3f},"
+                    f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT:+.2f}%,"
+                    f" hits={hits})"
+                )
+        else:
+            _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
+
+        if early_reason is None and mtm_roi_pct <= PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:
+            _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
             early_reason = (
                 f"stop_loss(roi={mtm_roi_pct:+.2f}%"
                 f" <= {PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:+.2f}%)"
             )
-        elif hold_sec >= PAPER_EARLY_EXIT_MAX_HOLD_SEC and mtm_roi_pct <= PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:
+        elif (
+            early_reason is None
+            and hold_sec >= PAPER_EARLY_EXIT_MAX_HOLD_SEC
+            and mtm_roi_pct <= PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT
+        ):
             remaining_sec = max(0.0, window_end - now_ts) if window_end > 0 else 0.0
-            early_reason = (
-                f"time_stop(hold={hold_sec:.1f}s, rem={remaining_sec:.1f}s,"
-                f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:+.2f}%)"
-            )
+            if remaining_sec <= PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC:
+                _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
+                early_reason = (
+                    f"time_stop(hold={hold_sec:.1f}s, rem={remaining_sec:.1f}s,"
+                    f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:+.2f}%)"
+                )
 
         if early_reason:
             closed = _close_trade_early(
                 conn,
-                trade_id=int(row["id"]),
+                trade_id=trade_id,
                 window_start=ws,
                 direction=direction,
                 stake=stake,
@@ -1029,6 +1058,7 @@ def resolve_open_trades(conn) -> int:
             )
             if closed:
                 resolved += 1
+                _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
 
     if resolved:
         conn.commit()
