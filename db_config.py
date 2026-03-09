@@ -271,6 +271,24 @@ def init_market_schema(conn):
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS feature_1s (
+                ts_sec INTEGER NOT NULL,
+                ts REAL NOT NULL,
+                window_start INTEGER NOT NULL,
+                slug TEXT,
+                seconds_elapsed REAL,
+                seconds_remaining REAL,
+                btc_start_price REAL,
+                btc_price REAL,
+                btc_move_pct REAL,
+                up_best_ask REAL,
+                down_best_ask REAL,
+                up_mid REAL,
+                down_mid REAL,
+                PRIMARY KEY (ts_sec, window_start)
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS market_windows (
                 window_start INTEGER PRIMARY KEY,
                 window_end INTEGER NOT NULL,
@@ -308,6 +326,8 @@ def init_market_schema(conn):
             """,
             "CREATE INDEX IF NOT EXISTS idx_btc_ts ON btc_ticks(ts)",
             "CREATE INDEX IF NOT EXISTS idx_odds_window ON poly_odds(window_start, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_feature_ts ON feature_1s(ts_sec)",
+            "CREATE INDEX IF NOT EXISTS idx_feature_window_ts ON feature_1s(window_start, ts_sec)",
             "CREATE INDEX IF NOT EXISTS idx_signal_ts ON signal_history(ts)",
         ]
         for stmt in sqlite_statements:
@@ -355,6 +375,26 @@ def init_market_schema(conn):
             down_best_ask DOUBLE NULL,
             PRIMARY KEY (ts, window_start),
             INDEX idx_odds_window (window_start, ts)
+        ) ENGINE=InnoDB
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS feature_1s (
+            ts_sec BIGINT NOT NULL,
+            ts DOUBLE NOT NULL,
+            window_start BIGINT NOT NULL,
+            slug VARCHAR(191) NULL,
+            seconds_elapsed DOUBLE NULL,
+            seconds_remaining DOUBLE NULL,
+            btc_start_price DOUBLE NULL,
+            btc_price DOUBLE NULL,
+            btc_move_pct DOUBLE NULL,
+            up_best_ask DOUBLE NULL,
+            down_best_ask DOUBLE NULL,
+            up_mid DOUBLE NULL,
+            down_mid DOUBLE NULL,
+            PRIMARY KEY (ts_sec, window_start),
+            INDEX idx_feature_ts (ts_sec),
+            INDEX idx_feature_window_ts (window_start, ts_sec)
         ) ENGINE=InnoDB
         """,
         """
@@ -448,6 +488,29 @@ def upsert_poly_odds_sql() -> str:
         "slug=VALUES(slug), up_mid=VALUES(up_mid), down_mid=VALUES(down_mid), "
         "up_best_bid=VALUES(up_best_bid), up_best_ask=VALUES(up_best_ask), "
         "down_best_bid=VALUES(down_best_bid), down_best_ask=VALUES(down_best_ask)"
+    )
+
+
+def upsert_feature_1s_sql() -> str:
+    if is_sqlite_backend():
+        return (
+            "INSERT OR REPLACE INTO feature_1s "
+            "(ts_sec, ts, window_start, slug, seconds_elapsed, seconds_remaining, "
+            "btc_start_price, btc_price, btc_move_pct, up_best_ask, down_best_ask, up_mid, down_mid) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+    return (
+        "INSERT INTO feature_1s "
+        "(ts_sec, ts, window_start, slug, seconds_elapsed, seconds_remaining, "
+        "btc_start_price, btc_price, btc_move_pct, up_best_ask, down_best_ask, up_mid, down_mid) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON DUPLICATE KEY UPDATE "
+        "ts=VALUES(ts), slug=VALUES(slug), "
+        "seconds_elapsed=VALUES(seconds_elapsed), seconds_remaining=VALUES(seconds_remaining), "
+        "btc_start_price=VALUES(btc_start_price), btc_price=VALUES(btc_price), "
+        "btc_move_pct=VALUES(btc_move_pct), "
+        "up_best_ask=VALUES(up_best_ask), down_best_ask=VALUES(down_best_ask), "
+        "up_mid=VALUES(up_mid), down_mid=VALUES(down_mid)"
     )
 
 

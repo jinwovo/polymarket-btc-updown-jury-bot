@@ -39,6 +39,7 @@ from db_config import (
     is_sqlite_backend,
     sqlite_db_path,
     upsert_btc_ticks_sql,
+    upsert_feature_1s_sql,
     upsert_market_window_sql,
     upsert_poly_odds_sql,
 )
@@ -86,12 +87,16 @@ class DataCollector:
         # Batch insert buffer
         self._tick_buffer: list[tuple] = []
         self._odds_buffer: list[tuple] = []
+        self._feature1s_buffer: list[tuple] = []
         # Flush odds faster than ticks to reduce visible UI latency.
         self._flush_loop_interval = 0.25
         self._tick_flush_interval = 1.0
         self._odds_flush_interval = 0.5
+        self._feature1s_flush_interval = 1.0
         self._last_tick_flush = 0.0
         self._last_odds_flush = 0.0
+        self._last_feature1s_flush = 0.0
+        self._last_feature1s_bucket: Optional[int] = None
         self._stopped = False
 
     async def start(self):
@@ -222,10 +227,91 @@ class DataCollector:
                     else:
                         logger.warning(f"Market not found for ts={window_start}")
 
+                # 1-second feature snapshots for model training.
+                self._collect_feature_1s(now)
+
             except Exception as e:
                 logger.error(f"Window tracker error: {e}")
 
             await asyncio.sleep(1.0)
+
+    def _collect_feature_1s(self, now_ts: float):
+        if self.current_window_start <= 0:
+            return
+
+        ts_sec = int(now_ts)
+        if self._last_feature1s_bucket == ts_sec:
+            return
+
+        window_end = self.current_window_start + config.polymarket.interval_seconds
+        seconds_elapsed = max(0.0, now_ts - float(self.current_window_start))
+        seconds_remaining = max(0.0, float(window_end) - now_ts)
+
+        start_price = self.window_start_price
+        if start_price is None:
+            row = fetch_one(
+                self.db,
+                "SELECT btc_start_price FROM market_windows WHERE window_start = ?",
+                (self.current_window_start,),
+            )
+            if row and row[0] is not None:
+                start_price = float(row[0])
+                self.window_start_price = start_price
+
+        btc_price = self.btc_price
+
+        slug = (
+            self.current_market.slug
+            if self.current_market and self.current_market.slug
+            else market_slug_for_timestamp(self.current_window_start)
+        )
+        up_ask = (
+            float(self.current_market.up_best_ask)
+            if self.current_market and self.current_market.up_best_ask is not None
+            else None
+        )
+        down_ask = (
+            float(self.current_market.down_best_ask)
+            if self.current_market and self.current_market.down_best_ask is not None
+            else None
+        )
+        up_mid = (
+            float(self.current_market.up_price)
+            if self.current_market and self.current_market.up_price is not None
+            else None
+        )
+        down_mid = (
+            float(self.current_market.down_price)
+            if self.current_market and self.current_market.down_price is not None
+            else None
+        )
+
+        # Keep feature table clean for training: require full core fields.
+        if start_price is None or btc_price is None or up_ask is None or down_ask is None:
+            return
+        if start_price <= 0:
+            return
+
+        btc_move_pct = ((btc_price - start_price) / start_price) * 100.0
+        self._last_feature1s_bucket = ts_sec
+
+        self._feature1s_buffer.append(
+            (
+                ts_sec,
+                now_ts,
+                self.current_window_start,
+                slug,
+                seconds_elapsed,
+                seconds_remaining,
+                float(start_price) if start_price is not None else None,
+                float(btc_price) if btc_price is not None else None,
+                float(btc_move_pct) if btc_move_pct is not None else None,
+                up_ask,
+                down_ask,
+                up_mid,
+                down_mid,
+            )
+        )
 
     def _record_window_start(self, start: int, end: int, market: MarketInfo):
         try:
@@ -313,6 +399,26 @@ class DataCollector:
                 logger.error(f"Odds flush error: {e}")
             self._odds_buffer.clear()
 
+        if self._feature1s_buffer and (
+            force or (now - self._last_feature1s_flush) >= self._feature1s_flush_interval
+        ):
+            # Keep only latest row for each (second, window) key.
+            seen = {}
+            for row in self._feature1s_buffer:
+                seen[(row[0], row[2])] = row
+            rows = list(seen.values())
+            try:
+                executemany_write(
+                    self.db,
+                    upsert_feature_1s_sql(),
+                    rows,
+                )
+                self.db.commit()
+                self._last_feature1s_flush = now
+            except Exception as e:
+                logger.error(f"Feature1s flush error: {e}")
+            self._feature1s_buffer.clear()
+
     def stop(self):
         if self._stopped:
             return
@@ -342,6 +448,7 @@ def show_status():
 
     tick_count = fetch_one(conn, "SELECT COUNT(*) FROM btc_ticks")[0]
     odds_count = fetch_one(conn, "SELECT COUNT(*) FROM poly_odds")[0]
+    feature1s_count = fetch_one(conn, "SELECT COUNT(*) FROM feature_1s")[0]
     window_count = fetch_one(conn, "SELECT COUNT(*) FROM market_windows")[0]
     resolved = fetch_one(
         conn,
@@ -378,6 +485,7 @@ def show_status():
 
   BTC Ticks:       {tick_count:,}
   Poly Odds:       {odds_count:,}
+  Feature 1s:      {feature1s_count:,}
   5-min Windows:   {window_count} ({resolved} resolved)
   
   Time range:      {first_dt} -> {last_dt}
@@ -454,6 +562,13 @@ def export_data():
     )
     df_windows.to_csv("market_windows.csv", index=False)
     print(f"Exported {len(df_windows)} windows to market_windows.csv")
+
+    # Export 1s features
+    df_feature = pd.DataFrame(
+        fetch_all_dicts(conn, "SELECT * FROM feature_1s ORDER BY ts_sec, window_start")
+    )
+    df_feature.to_csv("feature_1s.csv", index=False)
+    print(f"Exported {len(df_feature)} 1s feature rows to feature_1s.csv")
 
     conn.close()
 
