@@ -10,6 +10,7 @@ import time
 import signal
 import logging
 import sys
+import math
 from typing import Optional
 
 from config import config
@@ -87,6 +88,10 @@ def _recent_move_pct(
     return ((p1 - p0) / p0) * 100.0
 
 
+def _normal_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+
 class TradingBot:
     def __init__(self):
         self.price_feed = BinancePriceFeed()
@@ -104,6 +109,162 @@ class TradingBot:
         self._check_interval = 0.5  # 500ms - fast enough to catch odds lag
         self._odds_task: Optional[asyncio.Task] = None
         self._last_odds_fetch: float = 0.0
+
+    def _estimate_fast_lane_prob_up(self, ctx: MarketContext) -> float | None:
+        n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+        if n < 6:
+            return None
+        if ctx.market_start_price <= 0.0 or ctx.current_binance_price <= 0.0:
+            return None
+
+        now_ts = float(ctx.recent_timestamps[n - 1])
+        lookback = max(15.0, float(config.trading.fast_lane_vol_lookback_sec))
+        min_ts = now_ts - lookback
+
+        prices: list[float] = []
+        timestamps: list[float] = []
+        for i in range(n):
+            try:
+                ts = float(ctx.recent_timestamps[i])
+                px = float(ctx.recent_prices[i])
+            except Exception:
+                continue
+            if ts < min_ts or px <= 0.0:
+                continue
+            prices.append(px)
+            timestamps.append(ts)
+
+        if len(prices) < 6:
+            return None
+
+        dlogs: list[float] = []
+        dts: list[float] = []
+        for i in range(1, len(prices)):
+            dt = float(timestamps[i] - timestamps[i - 1])
+            if dt <= 1e-6:
+                continue
+            ratio = float(prices[i] / max(prices[i - 1], 1e-12))
+            if ratio <= 0.0:
+                continue
+            dlogs.append(math.log(ratio))
+            dts.append(dt)
+
+        if len(dlogs) < 4:
+            return None
+
+        total_dt = float(sum(dts))
+        if total_dt <= 1e-6:
+            return None
+
+        mu = float(sum(dlogs) / total_dt)
+        resid_sq = 0.0
+        for i in range(len(dlogs)):
+            dt = max(dts[i], 1e-6)
+            err = float(dlogs[i] - (mu * dt))
+            resid_sq += (err * err) / dt
+        var = float(resid_sq / max(len(dlogs), 1))
+        sigma = math.sqrt(max(var, 1e-12))
+
+        t = max(1.0, float(ctx.seconds_remaining))
+        x = math.log(float(ctx.current_binance_price) / float(ctx.market_start_price))
+        drift_weight = _clamp(float(config.trading.fast_lane_drift_weight), 0.0, 2.0)
+        drift = _clamp((mu - 0.5 * sigma * sigma) * t * drift_weight, -0.0035, 0.0035)
+        denom = max(sigma * math.sqrt(t), 1e-8)
+        z = _clamp((x + drift) / denom, -8.0, 8.0)
+        return _clamp(_normal_cdf(z), 0.001, 0.999)
+
+    def _evaluate_fast_lane_signal(
+        self,
+        ctx: MarketContext,
+        now_ts: float,
+    ) -> dict[str, float | str] | None:
+        if not bool(config.trading.fast_lane_enabled):
+            return None
+
+        elapsed = float(ctx.seconds_elapsed)
+        remaining = float(ctx.seconds_remaining)
+        if elapsed < float(config.trading.fast_lane_min_seconds_elapsed):
+            return None
+        if elapsed > float(config.trading.fast_lane_max_seconds_elapsed):
+            return None
+        if remaining < float(config.trading.fast_lane_min_seconds_remaining):
+            return None
+
+        start_price = float(ctx.market_start_price)
+        current_price = float(ctx.current_binance_price)
+        if start_price <= 0.0 or current_price <= 0.0:
+            return None
+
+        move_pct = ((current_price - start_price) / start_price) * 100.0
+        abs_move_pct = abs(move_pct)
+        if abs_move_pct < float(config.trading.fast_lane_min_move_pct):
+            return None
+        if abs_move_pct > float(config.trading.fast_lane_max_move_pct):
+            return None
+
+        direction = "UP" if move_pct > 0.0 else "DOWN"
+        recent_move = _recent_move_pct(
+            prices=list(ctx.recent_prices),
+            timestamps=list(ctx.recent_timestamps),
+            now_ts=float(now_ts),
+            lookback_sec=float(config.trading.fast_lane_recent_lookback_sec),
+        )
+        if recent_move is None:
+            return None
+        min_recent = float(config.trading.fast_lane_min_recent_move_pct)
+        if direction == "UP" and recent_move < min_recent:
+            return None
+        if direction == "DOWN" and recent_move > -min_recent:
+            return None
+
+        up_ask = _safe_prob(ctx.poly_up_ask) or _safe_prob(ctx.poly_up_price)
+        down_ask = _safe_prob(ctx.poly_down_ask) or _safe_prob(ctx.poly_down_price)
+        side_ask = up_ask if direction == "UP" else down_ask
+        if side_ask is None or not (0.01 < side_ask < 0.99):
+            return None
+        if side_ask > float(config.trading.fast_lane_max_entry_price):
+            return None
+
+        p_up = self._estimate_fast_lane_prob_up(ctx)
+        if p_up is None:
+            move_scale = max(float(config.trading.fast_lane_min_move_pct), 1e-6)
+            z = _clamp((move_pct / move_scale) * 0.60, -8.0, 8.0)
+            p_up = _clamp(_normal_cdf(z), 0.001, 0.999)
+        p_dir = p_up if direction == "UP" else (1.0 - p_up)
+        p_dir = _clamp(float(p_dir), 0.001, 0.999)
+        if p_dir < float(config.trading.fast_lane_min_direction_prob):
+            return None
+
+        prob_edge = float(p_dir - side_ask)
+        if prob_edge < float(config.trading.fast_lane_min_prob_edge):
+            return None
+
+        fee_rate = max(0.0, float(config.trading.fee_rate))
+        expected_roi = float((p_dir / side_ask) - 1.0 - fee_rate)
+        if expected_roi < float(config.trading.fast_lane_min_expected_roi):
+            return None
+
+        confidence = _clamp(
+            0.45 + (p_dir - 0.5) * 1.20 + prob_edge * 0.50,
+            0.0,
+            1.0,
+        )
+        reason = (
+            f"fast_lane: move={move_pct:+.4f}% recent={recent_move:+.4f}% "
+            f"p={p_dir:.3f} ask={side_ask:.3f} net_ev={expected_roi:+.3%}"
+        )
+
+        return {
+            "direction": direction,
+            "confidence": float(confidence),
+            "prob_edge": float(prob_edge),
+            "entry_price": float(side_ask),
+            "expected_roi": float(expected_roi),
+            "direction_prob": float(p_dir),
+            "move_pct": float(move_pct),
+            "recent_move_pct": float(recent_move),
+            "reason": reason,
+        }
 
     async def start(self):
         logger.info("=" * 60)
@@ -141,6 +302,21 @@ class TradingBot:
             float(config.trading.live_min_entry_side_implied),
             float(config.trading.live_max_opposite_implied),
             float(config.trading.live_down_above_start_block_pct),
+        )
+        logger.info(
+            "Fast-lane: enabled=%s elapsed=[%.0f, %.0f]s remain>=%.0fs move=[%.4f%%, %.4f%%] "
+            "recent>=%.4f%% ask<=%.3f p>=%.3f edge>=%.3f ev>=%.3f%%",
+            bool(config.trading.fast_lane_enabled),
+            float(config.trading.fast_lane_min_seconds_elapsed),
+            float(config.trading.fast_lane_max_seconds_elapsed),
+            float(config.trading.fast_lane_min_seconds_remaining),
+            float(config.trading.fast_lane_min_move_pct),
+            float(config.trading.fast_lane_max_move_pct),
+            float(config.trading.fast_lane_min_recent_move_pct),
+            float(config.trading.fast_lane_max_entry_price),
+            float(config.trading.fast_lane_min_direction_prob),
+            float(config.trading.fast_lane_min_prob_edge),
+            float(config.trading.fast_lane_min_expected_roi) * 100.0,
         )
         logger.info("=" * 60)
 
@@ -220,8 +396,6 @@ class TradingBot:
         # ---- Timing filters ----
         if seconds_remaining < config.trading.cutoff_before_close_seconds:
             return
-        if seconds_elapsed < float(config.trading.live_entry_start_seconds):
-            return
 
         # ---- Risk check ----
         can_trade, reason = self.risk_mgr.can_trade()
@@ -253,6 +427,99 @@ class TradingBot:
             # If BTC hasn't moved much, no opportunity
             if btc_change_pct < 0.02 and seconds_elapsed < 120:
                 return
+
+        # ---- Fast-lane: Binance lead / Polymarket lag (judge bypass) ----
+        fast_signal = self._evaluate_fast_lane_signal(ctx, now)
+        if fast_signal is not None:
+            fast_direction = str(fast_signal.get("direction", ""))
+            if self.position_mode == "UP_ONLY" and fast_direction != "UP":
+                fast_signal = None
+            elif self.position_mode == "DOWN_ONLY" and fast_direction != "DOWN":
+                fast_signal = None
+
+        if fast_signal is not None:
+            fast_direction = str(fast_signal["direction"])
+            fast_conf = float(fast_signal["confidence"])
+            fast_edge = float(fast_signal["prob_edge"])
+            fast_price = float(fast_signal["entry_price"])
+            fast_p = float(fast_signal["direction_prob"])
+            fast_ev = float(fast_signal["expected_roi"])
+            fast_move = float(fast_signal["move_pct"])
+            fast_recent = float(fast_signal["recent_move_pct"])
+
+            bet_size = self.risk_mgr.compute_bet_size(fast_conf, fast_edge)
+            if bet_size >= config.trading.min_bet_size:
+                if fast_direction == "UP":
+                    token_id = self.current_market.up_token_id
+                    price = (
+                        _safe_prob(self.current_market.up_best_ask)
+                        or _safe_prob(self.current_market.up_price)
+                    )
+                else:
+                    token_id = self.current_market.down_token_id
+                    price = (
+                        _safe_prob(self.current_market.down_best_ask)
+                        or _safe_prob(self.current_market.down_price)
+                    )
+
+                if price is None:
+                    price = fast_price
+
+                if price is not None and 0.01 < price < 0.99 and token_id:
+                    logger.info(
+                        ">>> FAST-LANE TRADE: %s | $%.2f @ %.4f | p=%.3f edge=%.3f ev=%+.3f%% | "
+                        "move=%+.4f%% recent=%+.4f%%",
+                        fast_direction,
+                        bet_size,
+                        float(price),
+                        fast_p,
+                        fast_edge,
+                        fast_ev * 100.0,
+                        fast_move,
+                        fast_recent,
+                    )
+                    result = await self.poly_client.place_entry_order(
+                        token_id=token_id,
+                        side=fast_direction,
+                        amount=bet_size,
+                        reference_ask=float(price),
+                    )
+                    if result is not None:
+                        if not bool(result.get("accepted", True)):
+                            logger.info(
+                                "Fast-lane order blocked/rejected: mode=%s status=%s reason=%s",
+                                result.get("mode"),
+                                result.get("status"),
+                                result.get("reason"),
+                            )
+                            return
+
+                        if not bool(result.get("filled", False)):
+                            logger.info(
+                                "Fast-lane order not filled: mode=%s status=%s reason=%s",
+                                result.get("mode"),
+                                result.get("status"),
+                                result.get("reason"),
+                            )
+                            return
+
+                        executed_notional = float(result.get("executed_notional") or 0.0)
+                        executed_price = float(result.get("executed_price") or 0.0)
+                        if executed_notional <= 0.0:
+                            executed_notional = float(bet_size)
+                        if not (0.0 < executed_price < 1.0):
+                            executed_price = float(price)
+
+                        self.current_trade = self.risk_mgr.record_trade(
+                            direction=fast_direction,
+                            amount=executed_notional,
+                            price=executed_price,
+                        )
+                        return
+
+        # Jury timing floor is separate from fast-lane timing.
+        if seconds_elapsed < float(config.trading.live_entry_start_seconds):
+            return
 
         # ---- Jury deliberation ----
         decision = self.jury.deliberate(ctx)

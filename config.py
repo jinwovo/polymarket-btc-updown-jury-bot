@@ -110,6 +110,50 @@ class TradingConfig:
     live_down_above_start_ev_penalty: float = field(
         default_factory=lambda: float(os.getenv("LIVE_DOWN_ABOVE_START_EV_PENALTY", "0.020"))
     )
+    # Fast-lane (judge bypass) for Binance lead vs Polymarket lag.
+    fast_lane_enabled: bool = field(
+        default_factory=lambda: os.getenv("FAST_LANE_ENABLED", "true").lower() == "true"
+    )
+    fast_lane_min_seconds_elapsed: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_SECONDS_ELAPSED", "20"))
+    )
+    fast_lane_max_seconds_elapsed: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MAX_SECONDS_ELAPSED", "160"))
+    )
+    fast_lane_min_seconds_remaining: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_SECONDS_REMAINING", "95"))
+    )
+    # Percent units (same convention as existing *_MOVE_PCT fields): 0.01 => 0.01%
+    fast_lane_min_move_pct: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_MOVE_PCT", "0.040"))
+    )
+    fast_lane_max_move_pct: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MAX_MOVE_PCT", "0.300"))
+    )
+    fast_lane_recent_lookback_sec: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_RECENT_LOOKBACK_SEC", "10"))
+    )
+    fast_lane_min_recent_move_pct: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_RECENT_MOVE_PCT", "0.015"))
+    )
+    fast_lane_vol_lookback_sec: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_VOL_LOOKBACK_SEC", "150"))
+    )
+    fast_lane_drift_weight: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_DRIFT_WEIGHT", "0.30"))
+    )
+    fast_lane_max_entry_price: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MAX_ENTRY_PRICE", "0.46"))
+    )
+    fast_lane_min_direction_prob: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_DIRECTION_PROB", "0.57"))
+    )
+    fast_lane_min_prob_edge: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_PROB_EDGE", "0.050"))
+    )
+    fast_lane_min_expected_roi: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_EXPECTED_ROI", "0.080"))
+    )
 
 
 @dataclass

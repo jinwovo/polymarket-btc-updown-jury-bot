@@ -24,6 +24,9 @@ This project is built to test **real collected orderbook data** and block low-qu
 - Fee-aware entry gate
   - skip trade when expected net ROI is below threshold
   - avoid "100% confidence but no real payout" traps
+- Fast-lane lag execution (optional)
+  - if Binance move leads and Polymarket ask lags, bypass jury and enter immediately
+  - only within strict timing/move/probability/EV bounds
 - Paper simulation from dashboard (start/stop + history popup)
 - Live trading control from dashboard (API balance check + per-trade cap + position mode)
 - Backtest + auto sweep for `JURY_THRESHOLD` and `MIN_EDGE`
@@ -99,7 +102,10 @@ This starts:
 5. **Market-implied consistency + directional hardening**:
    - block trades when opposite-side implied probability is too high
    - tighten DOWN entries when BTC is above window-start price
-6. **Early-exit risk controls (paper sim)**:
+6. **Fast-lane judge bypass (optional)**:
+   - allows immediate entry before jury when Binance impulse is strong and Polymarket price is still lagging
+   - still gated by move-size caps, directional probability, probability edge, and net EV floor
+7. **Early-exit risk controls (paper sim)**:
    - close open trade when opposite probability surges
    - stop-loss ROI exit
    - time-stop exit when hold time is too long without sufficient edge
@@ -158,6 +164,13 @@ Key parameters:
 - `LIVE_RECENT_MOVE_LOOKBACK_SEC` / `LIVE_MIN_RECENT_MOVE_PCT`
 - `LIVE_MAX_OPPOSITE_IMPLIED` / `LIVE_MIN_ENTRY_SIDE_IMPLIED`
 - `LIVE_DOWN_ABOVE_START_BLOCK_PCT` / `LIVE_DOWN_ABOVE_START_MOMENTUM_EXTRA` / `LIVE_DOWN_ABOVE_START_EV_PENALTY`
+- `FAST_LANE_ENABLED` (default: `true`)
+- `FAST_LANE_MIN_SECONDS_ELAPSED` / `FAST_LANE_MAX_SECONDS_ELAPSED` / `FAST_LANE_MIN_SECONDS_REMAINING`
+- `FAST_LANE_MIN_MOVE_PCT` / `FAST_LANE_MAX_MOVE_PCT`
+- `FAST_LANE_RECENT_LOOKBACK_SEC` / `FAST_LANE_MIN_RECENT_MOVE_PCT`
+- `FAST_LANE_VOL_LOOKBACK_SEC` / `FAST_LANE_DRIFT_WEIGHT`
+- `FAST_LANE_MAX_ENTRY_PRICE`
+- `FAST_LANE_MIN_DIRECTION_PROB` / `FAST_LANE_MIN_PROB_EDGE` / `FAST_LANE_MIN_EXPECTED_ROI`
 - `DAILY_LOSS_LIMIT` (default: `50.0`)
 
 Paper-sim guard parameters (optional):
@@ -170,6 +183,7 @@ Paper-sim guard parameters (optional):
 - Every entry is tied to the active 5-minute market slug (`btc-updown-5m-{window_start}`), so traded token IDs rotate automatically each window.
 - Before order submission, bot compares live ask vs decision-time ask and blocks entries when drift exceeds thresholds.
 - Live filters enforce close-direction consistency (support ratio, short-horizon momentum, implied-probability alignment, and stricter DOWN gating when BTC is above start).
+- Fast-lane (if enabled) runs before jury and can place immediate entry without votes when lag conditions pass; jury path remains unchanged as fallback.
 - `LIMIT_GTC`: place a taker-limit near current ask, wait up to timeout, then cancel remaining size.
 - `LIMIT_FAK`: immediate fill-and-kill limit execution.
 - `MARKET`: FOK-style market order path (still drift-protected before submit).
