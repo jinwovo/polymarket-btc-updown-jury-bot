@@ -1,4 +1,7 @@
 node_modules
+.env
+.env.*
+.pip-cache/
 market_data.db
 market_data.db-shm
 market_data.db-wal
