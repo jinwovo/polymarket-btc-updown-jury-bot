@@ -219,6 +219,13 @@ def _normalize_live_position_mode(raw: Any) -> str:
     return "BOTH"
 
 
+def _normalize_live_sizing_mode(raw: Any) -> str:
+    mode = str(raw or "adaptive").strip().lower()
+    if mode in ("adaptive", "fixed"):
+        return mode
+    return "adaptive"
+
+
 def _find_numeric_field(payload: Any, candidates: set[str]) -> Optional[float]:
     stack = [payload]
     while stack:
@@ -1514,9 +1521,14 @@ def control_paper_reset() -> dict:
     return status
 
 
-def control_live_start(stake: float, position_mode: str = "BOTH") -> dict:
-    per_trade_usd = max(0.01, float(stake))
+def control_live_start(
+    stake: float,
+    position_mode: str = "BOTH",
+    sizing_mode: str = "adaptive",
+) -> dict:
+    requested_stake = float(stake)
     mode = _normalize_live_position_mode(position_mode)
+    sizing = _normalize_live_sizing_mode(sizing_mode)
     account = _fetch_live_account_snapshot()
 
     if not account.get("configured", False):
@@ -1534,24 +1546,36 @@ def control_live_start(stake: float, position_mode: str = "BOTH") -> dict:
         return status
 
     balance = _to_float(account.get("collateral_balance"))
-    if balance is not None and per_trade_usd > balance:
-        status = LIVE_TRADING_PROC.status()
-        status["ok"] = False
-        status["message"] = (
-            f"Invest amount (${per_trade_usd:.2f}) exceeds collateral balance (${balance:.2f})"
-        )
-        status["account"] = account
-        return status
+    if sizing == "fixed":
+        per_trade_usd = max(0.01, requested_stake)
+        if balance is not None and per_trade_usd > balance:
+            status = LIVE_TRADING_PROC.status()
+            status["ok"] = False
+            status["message"] = (
+                f"Invest amount (${per_trade_usd:.2f}) exceeds collateral balance (${balance:.2f})"
+            )
+            status["account"] = account
+            return status
+    else:
+        # Adaptive mode keeps MAX_BET_SIZE as a dynamic cap from balance.
+        # Actual entry amount is still computed in main.py from confidence/edge.
+        if balance is not None and balance > 0:
+            per_trade_usd = max(1.0, min(balance, balance * 0.12))
+        else:
+            per_trade_usd = max(1.0, requested_stake if requested_stake > 0 else 5.0)
 
     env_overrides = {
         "DRY_RUN": "false",
         "MAX_BET_SIZE": f"{per_trade_usd}",
         "POSITION_MODE": mode,
+        "LIVE_SIZING_MODE": sizing.upper(),
     }
     ok, msg = LIVE_TRADING_PROC.start(
         _python_command("main.py", []),
         meta={
+            "sizing_mode": sizing,
             "stake_per_trade": per_trade_usd,
+            "requested_stake": requested_stake,
             "position_mode": mode,
             "dry_run": False,
         },
@@ -1803,10 +1827,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/control/live/start":
-            stake = payload.get("stake", 5.0)
+            stake_raw = payload.get("stake", 5.0)
             position_mode = str(payload.get("position_mode", "BOTH"))
+            sizing_mode = str(payload.get("sizing_mode", "adaptive"))
             try:
-                self._send_json(control_live_start(float(stake), position_mode=position_mode), code=200)
+                stake = _to_float(stake_raw)
+                if stake is None:
+                    stake = 0.0
+                self._send_json(
+                    control_live_start(
+                        float(stake),
+                        position_mode=position_mode,
+                        sizing_mode=sizing_mode,
+                    ),
+                    code=200,
+                )
             except Exception as e:
                 logger.exception("live start error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)

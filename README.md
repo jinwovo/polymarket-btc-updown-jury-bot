@@ -153,6 +153,7 @@ Key parameters:
 - `TRADE_FEE_RATE` (default: `0.010`)
 - `MIN_EXPECTED_ROI` (default: `0.003`)
 - `MAX_BET_SIZE` (default: `5.0`)
+- `LIVE_SIZING_MODE` (`ADAPTIVE` | `FIXED`)
 - `POSITION_MODE` (`BOTH` | `UP_ONLY` | `DOWN_ONLY`)
 - `ENTRY_ORDER_MODE` (`LIMIT_GTC` | `LIMIT_FAK` | `MARKET`)
 - `LIMIT_ORDER_TIMEOUT_SECONDS` (default: `2.5`)
@@ -187,6 +188,9 @@ Paper-sim guard parameters (optional):
 - Every entry is tied to the active 5-minute market slug (`btc-updown-5m-{window_start}`), so traded token IDs rotate automatically each window.
 - Before order submission, bot compares live ask vs decision-time ask and blocks entries when drift exceeds thresholds.
 - Live filters enforce close-direction consistency (support ratio, short-horizon momentum, implied-probability alignment, and stricter DOWN gating when BTC is above start).
+- Live sizing mode:
+  - `ADAPTIVE`: dynamic Kelly-style sizing (confidence/edge based)
+  - `FIXED`: use `MAX_BET_SIZE` as constant per-trade invest amount
 - Fast-lane (if enabled) runs before jury and can place immediate entry without votes when lag conditions pass; jury path remains unchanged as fallback.
 - `LIMIT_GTC`: place a taker-limit near current ask, wait up to timeout, then cancel remaining size.
 - `LIMIT_FAK`: immediate fill-and-kill limit execution.

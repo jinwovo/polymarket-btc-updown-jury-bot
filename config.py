@@ -38,6 +38,12 @@ class TradingConfig:
     dry_run: bool = field(default_factory=lambda: os.getenv("DRY_RUN", "true").lower() == "true")
     max_bet_size: float = field(default_factory=lambda: float(os.getenv("MAX_BET_SIZE", "5.0")))
     min_bet_size: float = 0.5
+    # Live sizing mode:
+    # - ADAPTIVE: confidence/edge based dynamic sizing (Kelly-style)
+    # - FIXED: always use MAX_BET_SIZE as per-trade amount
+    live_sizing_mode: str = field(
+        default_factory=lambda: os.getenv("LIVE_SIZING_MODE", "ADAPTIVE").strip().upper()
+    )
     # Position mode for live execution:
     # - BOTH: allow UP and DOWN
     # - UP_ONLY: only execute UP entries

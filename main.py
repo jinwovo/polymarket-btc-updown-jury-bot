@@ -46,6 +46,13 @@ def _normalize_position_mode(raw: str) -> str:
     return "BOTH"
 
 
+def _normalize_sizing_mode(raw: str) -> str:
+    mode = str(raw or "ADAPTIVE").strip().upper()
+    if mode in ("ADAPTIVE", "FIXED"):
+        return mode
+    return "ADAPTIVE"
+
+
 def _safe_prob(value: float | None) -> float | None:
     try:
         if value is None:
@@ -151,6 +158,7 @@ class TradingBot:
         self.jury = Jury(threshold=config.trading.jury_threshold)
         self.risk_mgr = RiskManager()
         self.position_mode = _normalize_position_mode(config.trading.position_mode)
+        self.live_sizing_mode = _normalize_sizing_mode(config.trading.live_sizing_mode)
 
         self.current_market: Optional[MarketInfo] = None
         self.current_trade: Optional[TradeRecord] = None
@@ -161,6 +169,17 @@ class TradingBot:
         self._check_interval = 0.5  # 500ms - fast enough to catch odds lag
         self._odds_task: Optional[asyncio.Task] = None
         self._last_odds_fetch: float = 0.0
+
+    def _compute_entry_bet_size(self, confidence: float, edge: float) -> float:
+        if self.live_sizing_mode == "FIXED":
+            fixed = float(config.trading.max_bet_size)
+            if fixed <= 0.0:
+                return 0.0
+            return round(
+                max(float(config.trading.min_bet_size), fixed),
+                2,
+            )
+        return self.risk_mgr.compute_bet_size(confidence, edge)
 
     def _estimate_fast_lane_prob_up(self, ctx: MarketContext) -> float | None:
         n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
@@ -334,7 +353,7 @@ class TradingBot:
             self.jury.size,
             self._check_interval,
         )
-        logger.info("Position mode: %s", self.position_mode)
+        logger.info("Position mode: %s | Sizing mode: %s", self.position_mode, self.live_sizing_mode)
         logger.info(
             "Entry execution: mode=%s | timeout=%.2fs | poll=%.2fs | drift_abs=%.4f | drift_ratio=%.2f%%",
             config.trading.entry_order_mode,
@@ -505,7 +524,7 @@ class TradingBot:
             fast_move = float(fast_signal["move_pct"])
             fast_recent = float(fast_signal["recent_move_pct"])
 
-            bet_size = self.risk_mgr.compute_bet_size(fast_conf, fast_edge)
+            bet_size = self._compute_entry_bet_size(fast_conf, fast_edge)
             if bet_size >= config.trading.min_bet_size:
                 if fast_direction == "UP":
                     token_id = self.current_market.up_token_id
@@ -601,7 +620,7 @@ class TradingBot:
             return
 
         # ---- Size and execute (FAST) ----
-        bet_size = self.risk_mgr.compute_bet_size(
+        bet_size = self._compute_entry_bet_size(
             decision.avg_confidence, decision.max_edge
         )
         if bet_size < config.trading.min_bet_size:

@@ -320,6 +320,7 @@ export function LiveDashboard() {
   const [paperInterval, setPaperInterval] = useState("2");
   const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
   const [liveStake, setLiveStake] = useState("5");
+  const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "fixed">("adaptive");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
 
   const [lastHours, setLastHours] = useState("24");
@@ -462,12 +463,15 @@ export function LiveDashboard() {
   }
 
   async function startLive() {
+    const parsedStake = Number(liveStake || "0");
+    const stakeForRequest = Number.isFinite(parsedStake) ? parsedStake : 0;
     const res = await fetch("/api/control/live", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "start",
-        stake: Number(liveStake || "0"),
+        stake: stakeForRequest,
+        sizing_mode: liveSizingMode,
         position_mode: livePositionMode,
       }),
     });
@@ -663,6 +667,23 @@ export function LiveDashboard() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const meta = (liveStatus?.meta ?? {}) as Record<string, unknown>;
+    const rawSizing = String(meta.sizing_mode ?? "").toLowerCase();
+    if (rawSizing === "adaptive" || rawSizing === "fixed") {
+      setLiveSizingMode(rawSizing);
+    }
+    const rawPos = String(meta.position_mode ?? "").toUpperCase();
+    if (rawPos === "BOTH" || rawPos === "UP_ONLY" || rawPos === "DOWN_ONLY") {
+      setLivePositionMode(rawPos);
+    }
+    const running = Boolean(liveStatus?.running);
+    const rawStake = Number(meta.requested_stake ?? meta.stake_per_trade);
+    if (!running && Number.isFinite(rawStake) && rawStake > 0) {
+      setLiveStake(String(rawStake));
+    }
+  }, [liveStatus]);
+
   const signal = snapshot?.signal;
   const gate = signal?.gate;
   const lastActionableSignal = snapshot?.last_actionable_signal;
@@ -683,8 +704,9 @@ export function LiveDashboard() {
   const liveBalance = liveStatus?.account?.collateral_balance ?? null;
   const liveAllowance = liveStatus?.account?.collateral_allowance ?? null;
   const liveStakeNum = Number(liveStake || "0");
-  const liveStakeValid = Number.isFinite(liveStakeNum) && liveStakeNum > 0;
+  const liveStakeValid = liveSizingMode === "adaptive" || (Number.isFinite(liveStakeNum) && liveStakeNum > 0);
   const liveStakeOverBalance =
+    liveSizingMode === "fixed" &&
     liveStakeValid &&
     liveBalance !== null &&
     liveBalance !== undefined &&
@@ -1122,7 +1144,7 @@ export function LiveDashboard() {
                   />
                 </label>
                 <label className="text-xs text-muted-foreground col-span-2">
-                  Position Mode
+                  Sizing Mode
                   <select
                     value={paperSizingMode}
                     onChange={(e) =>
@@ -1222,14 +1244,28 @@ export function LiveDashboard() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <label className="text-xs text-muted-foreground">
                   Invest Per Trade (USD)
                   <input
                     value={liveStake}
                     onChange={(e) => setLiveStake(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                    disabled={liveSizingMode === "adaptive"}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
                   />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Sizing Mode
+                  <select
+                    value={liveSizingMode}
+                    onChange={(e) =>
+                      setLiveSizingMode(e.target.value as "adaptive" | "fixed")
+                    }
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  >
+                    <option value="adaptive">adaptive (recommended)</option>
+                    <option value="fixed">fixed (use invest amount)</option>
+                  </select>
                 </label>
                 <label className="text-xs text-muted-foreground">
                   Position Mode
@@ -1246,12 +1282,17 @@ export function LiveDashboard() {
                   </select>
                 </label>
               </div>
+              {liveSizingMode === "adaptive" ? (
+                <p className="text-xs text-muted-foreground">
+                  Adaptive mode sizes entries dynamically from confidence/edge (Kelly-style) with balance-aware cap.
+                </p>
+              ) : null}
 
-              {!liveStakeValid ? (
+              {liveSizingMode === "fixed" && !liveStakeValid ? (
                 <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
                   Invest amount must be a positive number.
                 </p>
-              ) : liveStakeOverBalance ? (
+              ) : liveSizingMode === "fixed" && liveStakeOverBalance ? (
                 <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
                   Invest amount must be less than or equal to your collateral balance.
                 </p>
@@ -1289,7 +1330,7 @@ export function LiveDashboard() {
               </div>
 
               <p className="font-mono text-xs text-muted-foreground">
-                pid={liveStatus?.pid ?? "-"} | exit={liveStatus?.exit_code ?? "-"} | mode={livePositionMode}
+                pid={liveStatus?.pid ?? "-"} | exit={liveStatus?.exit_code ?? "-"} | sizing={liveSizingMode} | position={livePositionMode}
               </p>
 
               <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
