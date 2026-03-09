@@ -20,7 +20,7 @@ This project is built to test **real collected orderbook data** and block low-qu
 ## Core features
 
 - Real data pipeline (Binance trades + Polymarket orderbook)
-- 5-judge consensus engine (technical, arb, statistical, trend persistence, orderbook quality)
+- 5-judge consensus engine (technical, diffusion-based mispricing, statistical, trend persistence, orderbook quality)
 - Fee-aware entry gate
   - skip trade when expected net ROI is below threshold
   - avoid "100% confidence but no real payout" traps
@@ -103,6 +103,16 @@ Your effective result is:
 `net pnl = payout - stake - fees/slippage`
 
 This project uses fee-aware filtering and fee-adjusted pnl in simulation/backtest.
+
+## Research-informed model update (2026-03)
+
+The mispricing judge now uses a short-horizon diffusion model on Binance tick data:
+
+- estimate drift/volatility with MLE on log returns (`dlogS = mu*dt + sigma*dW`)
+- compute terminal UP probability with a normal-CDF formula
+- compare model probability vs Polymarket ask-implied probability (edge-based vote)
+
+This keeps the bot lightweight while adding mathematically explicit probability modeling.
 
 ## Configuration
 

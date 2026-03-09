@@ -64,6 +64,11 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+def _norm_cdf(z: float) -> float:
+    # Standard normal CDF via erf to avoid heavy dependencies.
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
 # ---------------------------------------------------------------------------
 # Judge 1: Technical Analysis
 # ---------------------------------------------------------------------------
@@ -167,41 +172,94 @@ class TechnicalJudge:
 class ArbitrageJudge:
     name = "ArbitrageJudge"
 
-    def __init__(self, min_price_move_pct: float = 0.03):
-        self.min_price_move_pct = min_price_move_pct
+    def __init__(self, min_edge: float = 0.02, min_samples: int = 24):
+        self.min_edge = max(0.0, float(min_edge))
+        self.min_samples = max(10, int(min_samples))
 
-    def _estimate_fair_prob(self, price_change_pct: float, seconds_remaining: float) -> float:
-        time_factor = max(0.1, 1.0 - (seconds_remaining / 300.0))
-        effective_move = price_change_pct * (1.0 + time_factor * 2.0)
-        k = 30.0
-        prob_up = 1.0 / (1.0 + math.exp(-k * effective_move / 100.0))
-        return _clamp01(prob_up)
+    def _estimate_diffusion_params(self, ctx: MarketContext) -> tuple[float, float] | tuple[None, None]:
+        n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+        if n < self.min_samples:
+            return (None, None)
+
+        prices = np.asarray(ctx.recent_prices[:n], dtype=float)
+        ts = np.asarray(ctx.recent_timestamps[:n], dtype=float)
+        if np.any(prices <= 0):
+            return (None, None)
+
+        logp = np.log(prices)
+        dlog = np.diff(logp)
+        dt = np.diff(ts)
+        valid = dt > 1e-6
+        if not np.any(valid):
+            return (None, None)
+
+        dlog = dlog[valid]
+        dt = dt[valid]
+        if len(dlog) < self.min_samples // 2:
+            return (None, None)
+
+        total_dt = float(np.sum(dt))
+        if total_dt <= 1e-6:
+            return (None, None)
+
+        # MLE under dlogS = mu*dt + sigma*dW.
+        mu = float(np.sum(dlog) / total_dt)
+        resid = dlog - (mu * dt)
+        var = float(np.sum((resid ** 2) / np.maximum(dt, 1e-6)) / len(resid))
+        sigma = math.sqrt(max(var, 1e-12))
+        return (mu, sigma)
+
+    def _estimate_fair_prob(self, ctx: MarketContext) -> float:
+        mu, sigma = self._estimate_diffusion_params(ctx)
+        if mu is None or sigma is None:
+            return 0.5
+
+        t = max(1.0, float(ctx.seconds_remaining))
+        if ctx.market_start_price <= 0 or ctx.current_binance_price <= 0:
+            return 0.5
+
+        x = math.log(ctx.current_binance_price / ctx.market_start_price)
+        drift = (mu - 0.5 * sigma * sigma) * t
+        denom = sigma * math.sqrt(t)
+        if denom < 1e-8:
+            return 1.0 if (x + drift) > 0 else 0.0
+        z = (x + drift) / denom
+        return _clamp01(_norm_cdf(z))
 
     def judge(self, ctx: MarketContext) -> JudgeVerdict:
         if ctx.market_start_price == 0:
             return JudgeVerdict(Vote.ABSTAIN, 0.0, "No market start price", self.name)
 
-        price_change_pct = _safe_pct_change(
-            ctx.current_binance_price,
-            ctx.market_start_price,
+        fair_prob_up = self._estimate_fair_prob(ctx)
+        fair_prob_down = 1.0 - fair_prob_up
+
+        up_px = (
+            ctx.poly_up_ask
+            if (ctx.poly_up_ask is not None and 0.0 < ctx.poly_up_ask < 1.0)
+            else ctx.poly_up_price
         )
-        if abs(price_change_pct) < self.min_price_move_pct:
+        down_px = (
+            ctx.poly_down_ask
+            if (ctx.poly_down_ask is not None and 0.0 < ctx.poly_down_ask < 1.0)
+            else ctx.poly_down_price
+        )
+
+        if not (0.0 < up_px < 1.0 and 0.0 < down_px < 1.0):
             return JudgeVerdict(
                 Vote.ABSTAIN,
                 0.0,
-                f"Price move too small: {price_change_pct:+.4f}%",
+                "Invalid market prices",
                 self.name,
             )
 
-        fair_prob_up = self._estimate_fair_prob(price_change_pct, ctx.seconds_remaining)
-        fair_prob_down = 1.0 - fair_prob_up
-        up_edge = fair_prob_up - ctx.poly_up_price
-        down_edge = fair_prob_down - ctx.poly_down_price
+        up_edge = fair_prob_up - up_px
+        down_edge = fair_prob_down - down_px
+        market_prob_up = up_px / max(1e-9, (up_px + down_px))
 
-        if up_edge > down_edge and up_edge > 0.05:
+        if up_edge > down_edge + 0.003 and up_edge > self.min_edge:
             vote = Vote.UP
             edge = up_edge
-        elif down_edge > up_edge and down_edge > 0.05:
+        elif down_edge > up_edge + 0.003 and down_edge > self.min_edge:
             vote = Vote.DOWN
             edge = down_edge
         else:
@@ -212,10 +270,11 @@ class ArbitrageJudge:
                 self.name,
             )
 
-        confidence = min(edge * 2.0, 1.0)
+        certainty = abs(fair_prob_up - 0.5) * 2.0
+        confidence = min(edge * (4.0 + 1.5 * certainty), 1.0)
         reason = (
-            f"fair_up={fair_prob_up:.3f}, fair_down={fair_prob_down:.3f}, "
-            f"edge={edge:+.3f}, move={price_change_pct:+.4f}%"
+            f"gbm_p_up={fair_prob_up:.3f}, mkt_p_up={market_prob_up:.3f}, "
+            f"ask=({up_px:.3f}/{down_px:.3f}), edge={edge:+.3f}"
         )
         return JudgeVerdict(vote, confidence, reason, self.name)
 
