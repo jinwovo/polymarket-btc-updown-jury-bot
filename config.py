@@ -77,6 +77,58 @@ class TradingConfig:
     fee_rate: float = field(default_factory=lambda: float(os.getenv("TRADE_FEE_RATE", "0.010")))
     # Require this minimum expected ROI (after fee_rate) before entry.
     min_expected_roi: float = field(default_factory=lambda: float(os.getenv("MIN_EXPECTED_ROI", "0.003")))
+    # Close-probability stability gate:
+    # - requires minimum directional displacement from window start
+    # - penalizes entries when BTC remains too close to start boundary vs expected noise
+    # Percent units: 0.015 => 0.015%
+    close_prob_min_aligned_move_pct: float = field(
+        default_factory=lambda: float(os.getenv("CLOSE_PROB_MIN_ALIGNED_MOVE_PCT", "0.015"))
+    )
+    # Probability-point penalty cap applied when alignment is weak.
+    close_prob_alignment_penalty_max: float = field(
+        default_factory=lambda: float(os.getenv("CLOSE_PROB_ALIGNMENT_PENALTY_MAX", "0.10"))
+    )
+    # Boundary uncertainty band multiplier (in sigma units).
+    close_prob_boundary_sigma_mult: float = field(
+        default_factory=lambda: float(os.getenv("CLOSE_PROB_BOUNDARY_SIGMA_MULT", "0.45"))
+    )
+    # Probability-point penalty cap for boundary uncertainty.
+    close_prob_uncertainty_penalty_max: float = field(
+        default_factory=lambda: float(os.getenv("CLOSE_PROB_UNCERTAINTY_PENALTY_MAX", "0.08"))
+    )
+    # UP-only meta filter (regime classifier):
+    # blocks UP entries in noisy/whipsaw regimes even when EV is positive.
+    up_regime_filter_enabled: bool = field(
+        default_factory=lambda: os.getenv("UP_REGIME_FILTER_ENABLED", "true").lower() == "true"
+    )
+    up_regime_min_score: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MIN_SCORE", "0.56"))
+    )
+    # Percent units (0.060 => 0.060%)
+    up_regime_move_scale_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MOVE_SCALE_PCT", "0.060"))
+    )
+    up_regime_mom10_scale_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MOM10_SCALE_PCT", "0.030"))
+    )
+    up_regime_mom30_scale_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MOM30_SCALE_PCT", "0.050"))
+    )
+    up_regime_mom60_scale_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MOM60_SCALE_PCT", "0.080"))
+    )
+    up_regime_whipsaw_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_WHIPSAW_PCT", "0.020"))
+    )
+    up_regime_max_jump_ratio: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MAX_JUMP_RATIO", "0.45"))
+    )
+    up_regime_min_mom30_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MIN_MOM30_PCT", "-0.010"))
+    )
+    up_regime_min_move_from_start_pct: float = field(
+        default_factory=lambda: float(os.getenv("UP_REGIME_MIN_MOVE_FROM_START_PCT", "0.005"))
+    )
     # Jury: minimum same-direction votes required to trade
     jury_threshold: int = field(default_factory=lambda: int(os.getenv("JURY_THRESHOLD", "3")))
     # How many seconds before market close to stop entering

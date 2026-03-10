@@ -831,6 +831,14 @@ def _build_signal(
         "fair_prob_up": gate_result.fair_prob_up if gate_result is not None else None,
         "break_even_prob": gate_result.break_even_prob if gate_result is not None else None,
         "dispersion": gate_result.dispersion if gate_result is not None else None,
+        "aligned_move_pct": gate_result.aligned_move_pct if gate_result is not None else None,
+        "boundary_dist_pct": gate_result.boundary_dist_pct if gate_result is not None else None,
+        "boundary_sigma_pct": gate_result.boundary_sigma_pct if gate_result is not None else None,
+        "alignment_penalty": gate_result.alignment_penalty if gate_result is not None else None,
+        "ambiguity_penalty": gate_result.ambiguity_penalty if gate_result is not None else None,
+        "up_regime_score": gate_result.up_regime_score if gate_result is not None else None,
+        "up_regime_pass": (bool(gate_result.up_regime_pass) if gate_result is not None else None),
+        "up_regime_reason": gate_result.up_regime_reason if gate_result is not None else None,
         "entry_price": entry_price,
         "per_judge_probs": (
             ({str(k): float(v) for k, v in (gate_result.per_judge_probs or {}).items()} if gate_result is not None else {})
@@ -855,6 +863,12 @@ def _build_signal(
         "break_even_prob": gate_result.break_even_prob if gate_result is not None else None,
         "fair_prob_up": gate_result.fair_prob_up if gate_result is not None else None,
         "dispersion": gate_result.dispersion if gate_result is not None else None,
+        "aligned_move_pct": gate_result.aligned_move_pct if gate_result is not None else None,
+        "alignment_penalty": gate_result.alignment_penalty if gate_result is not None else None,
+        "ambiguity_penalty": gate_result.ambiguity_penalty if gate_result is not None else None,
+        "up_regime_score": gate_result.up_regime_score if gate_result is not None else None,
+        "up_regime_pass": (bool(gate_result.up_regime_pass) if gate_result is not None else None),
+        "up_regime_reason": gate_result.up_regime_reason if gate_result is not None else None,
         "gate": gate_payload,
         "judges": judge_rows,
     }

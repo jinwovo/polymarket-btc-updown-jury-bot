@@ -114,6 +114,12 @@ This starts:
    - close open trade when opposite probability surges
    - stop-loss ROI exit
    - time-stop exit when hold time is too long without sufficient edge
+8. **Close-boundary uncertainty penalty (entry gate)**:
+   - penalize entries when BTC is too close to the 5m start-price boundary
+   - penalize entries when direction is not sufficiently aligned vs start price
+9. **UP-only regime meta filter**:
+   - additional UP-direction classifier using start alignment, 10s/30s/60s momentum consistency, and jump/whipsaw penalty
+   - blocks UP entries in unstable micro-regimes even if net EV is positive
 
 ### Important payout note
 
@@ -165,6 +171,15 @@ Key parameters:
 - `JURY_THRESHOLD` (default: `3`)
 - `TRADE_FEE_RATE` (default: `0.010`)
 - `MIN_EXPECTED_ROI` (default: `0.003`)
+- `CLOSE_PROB_MIN_ALIGNED_MOVE_PCT` (default: `0.015`)
+- `CLOSE_PROB_ALIGNMENT_PENALTY_MAX` (default: `0.10`)
+- `CLOSE_PROB_BOUNDARY_SIGMA_MULT` (default: `0.45`)
+- `CLOSE_PROB_UNCERTAINTY_PENALTY_MAX` (default: `0.08`)
+- `UP_REGIME_FILTER_ENABLED` (default: `true`)
+- `UP_REGIME_MIN_SCORE` (default: `0.56`)
+- `UP_REGIME_MOVE_SCALE_PCT`, `UP_REGIME_MOM10_SCALE_PCT`, `UP_REGIME_MOM30_SCALE_PCT`, `UP_REGIME_MOM60_SCALE_PCT`
+- `UP_REGIME_WHIPSAW_PCT`, `UP_REGIME_MAX_JUMP_RATIO`
+- `UP_REGIME_MIN_MOM30_PCT`, `UP_REGIME_MIN_MOVE_FROM_START_PCT`
 - `MAX_BET_SIZE` (default: `5.0`)
 - `LIVE_SIZING_MODE` (`ADAPTIVE` | `FIXED`)
 - `LIVE_ADAPTIVE_BASE_FRAC` / `LIVE_ADAPTIVE_MIN_FRAC` / `LIVE_ADAPTIVE_MAX_FRAC`
