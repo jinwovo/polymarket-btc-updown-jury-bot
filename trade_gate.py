@@ -161,6 +161,9 @@ class EntryGateResult:
     implied_prob: float
     model_prob: float
     break_even_prob: float
+    profit_break_even_prob: float
+    win_prob_floor: float
+    win_prob_pass: bool
     fair_prob_up: float
     dispersion: float
     aligned_move_pct: float
@@ -197,6 +200,9 @@ def evaluate_entry_gate(
             0.0,
             0.0,
             1.0,
+            1.0,
+            1.0,
+            False,
             0.5,
             1.0,
             0.0,
@@ -217,6 +223,9 @@ def evaluate_entry_gate(
             0.0,
             0.0,
             1.0,
+            1.0,
+            1.0,
+            False,
             0.5,
             1.0,
             0.0,
@@ -340,7 +349,22 @@ def evaluate_entry_gate(
     min_roi = float(config.trading.min_expected_roi)
     expected_roi = float((model_prob / entry_price) - 1.0 - fee_rate)
     break_even_prob = float(entry_price * (1.0 + fee_rate + min_roi))
-    allow = bool(expected_roi >= min_roi and up_regime_pass)
+    profit_break_even_prob = float(entry_price * (1.0 + fee_rate))
+    win_prob_floor = float(
+        max(
+            _clamp(float(config.trading.min_win_probability), 0.0, 0.999),
+            profit_break_even_prob + max(0.0, float(config.trading.win_prob_margin)),
+        )
+    )
+    win_prob_pass = bool(model_prob >= win_prob_floor)
+    mode = str(getattr(config.trading, "entry_decision_mode", "HYBRID")).strip().upper()
+    if mode == "EV_FIRST":
+        allow = bool(expected_roi >= min_roi and up_regime_pass)
+    elif mode == "PROBABILITY_FIRST":
+        allow = bool(win_prob_pass and up_regime_pass)
+    else:
+        # HYBRID (or unknown): require both EV and win-probability gates.
+        allow = bool(expected_roi >= min_roi and win_prob_pass and up_regime_pass)
 
     if (direction == "UP") and bool(config.trading.up_regime_filter_enabled) and (not up_regime_pass):
         reason = (
@@ -349,17 +373,25 @@ def evaluate_entry_gate(
             f"(p={model_prob:.3f}, fair_up={fair_up:.3f}, disp={dispersion:.3f}, "
             f"align={aligned_move_pct:+.4f}%, pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
         )
+    elif not win_prob_pass:
+        reason = (
+            f"skip low win_prob={model_prob:.3f} < floor={win_prob_floor:.3f} "
+            f"(mode={mode}, p_profit>={profit_break_even_prob:.3f}, "
+            f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+        )
     elif allow:
         reason = (
             f"net_ev={expected_roi:+.3%} >= target={min_roi:.3%} "
-            f"(p={model_prob:.3f}, fair_up={fair_up:.3f}, disp={dispersion:.3f}, "
-            f"align={aligned_move_pct:+.4f}%, pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"(mode={mode}, p={model_prob:.3f}, p_floor={win_prob_floor:.3f}, "
+            f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, align={aligned_move_pct:+.4f}%, "
+            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
         )
     else:
         reason = (
             f"skip low net_ev={expected_roi:+.3%} < target={min_roi:.3%} "
-            f"(need p>={break_even_prob:.3f}, p={model_prob:.3f}, fair_up={fair_up:.3f}, disp={dispersion:.3f}, "
-            f"align={aligned_move_pct:+.4f}%, pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"(mode={mode}, need p>={break_even_prob:.3f}, p={model_prob:.3f}, p_floor={win_prob_floor:.3f}, "
+            f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, align={aligned_move_pct:+.4f}%, "
+            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
         )
 
     return EntryGateResult(
@@ -368,6 +400,9 @@ def evaluate_entry_gate(
         implied_prob=float(entry_price),
         model_prob=float(model_prob),
         break_even_prob=float(break_even_prob),
+        profit_break_even_prob=float(profit_break_even_prob),
+        win_prob_floor=float(win_prob_floor),
+        win_prob_pass=bool(win_prob_pass),
         fair_prob_up=float(fair_up),
         dispersion=float(dispersion),
         aligned_move_pct=float(aligned_move_pct),

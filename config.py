@@ -77,6 +77,21 @@ class TradingConfig:
     fee_rate: float = field(default_factory=lambda: float(os.getenv("TRADE_FEE_RATE", "0.010")))
     # Require this minimum expected ROI (after fee_rate) before entry.
     min_expected_roi: float = field(default_factory=lambda: float(os.getenv("MIN_EXPECTED_ROI", "0.003")))
+    # Entry objective:
+    # - PROBABILITY_FIRST: prioritize win-probability gate (p_win) over raw EV magnitude
+    # - EV_FIRST: prioritize expected ROI gate
+    # - HYBRID: require both
+    entry_decision_mode: str = field(
+        default_factory=lambda: os.getenv("ENTRY_DECISION_MODE", "PROBABILITY_FIRST").strip().upper()
+    )
+    # Probability-first controls:
+    # require model p_win >= max(MIN_WIN_PROBABILITY, profit_break_even_prob + WIN_PROB_MARGIN)
+    min_win_probability: float = field(
+        default_factory=lambda: float(os.getenv("MIN_WIN_PROBABILITY", "0.53"))
+    )
+    win_prob_margin: float = field(
+        default_factory=lambda: float(os.getenv("WIN_PROB_MARGIN", "0.005"))
+    )
     # Close-probability stability gate:
     # - requires minimum directional displacement from window start
     # - penalizes entries when BTC remains too close to start boundary vs expected noise

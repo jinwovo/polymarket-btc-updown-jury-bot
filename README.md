@@ -104,20 +104,23 @@ This starts:
 4. **Net expected ROI gate must pass**:
    - includes configured fee/slippage drag
    - blocks low-EV entries
-5. **Market-implied consistency + directional hardening**:
+5. **Probability-first gate (poker-style)**:
+   - require close-direction win probability (`p_win`) to clear a floor
+   - floor uses both absolute minimum and profit break-even + safety margin
+6. **Market-implied consistency + directional hardening**:
    - block trades when opposite-side implied probability is too high
    - tighten DOWN entries when BTC is above window-start price
-6. **Fast-lane judge bypass (optional)**:
+7. **Fast-lane judge bypass (optional)**:
    - allows immediate entry before jury when Binance impulse is strong and Polymarket price is still lagging
    - still gated by move-size caps, directional probability, probability edge, and net EV floor
-7. **Early-exit risk controls (paper sim)**:
+8. **Early-exit risk controls (paper sim)**:
    - close open trade when opposite probability surges
    - stop-loss ROI exit
    - time-stop exit when hold time is too long without sufficient edge
-8. **Close-boundary uncertainty penalty (entry gate)**:
+9. **Close-boundary uncertainty penalty (entry gate)**:
    - penalize entries when BTC is too close to the 5m start-price boundary
    - penalize entries when direction is not sufficiently aligned vs start price
-9. **UP-only regime meta filter**:
+10. **UP-only regime meta filter**:
    - additional UP-direction classifier using start alignment, 10s/30s/60s momentum consistency, and jump/whipsaw penalty
    - blocks UP entries in unstable micro-regimes even if net EV is positive
 
@@ -171,6 +174,9 @@ Key parameters:
 - `JURY_THRESHOLD` (default: `3`)
 - `TRADE_FEE_RATE` (default: `0.010`)
 - `MIN_EXPECTED_ROI` (default: `0.003`)
+- `ENTRY_DECISION_MODE` (`PROBABILITY_FIRST` | `EV_FIRST` | `HYBRID`)
+- `MIN_WIN_PROBABILITY` (default: `0.53`)
+- `WIN_PROB_MARGIN` (default: `0.005`)
 - `CLOSE_PROB_MIN_ALIGNED_MOVE_PCT` (default: `0.015`)
 - `CLOSE_PROB_ALIGNMENT_PENALTY_MAX` (default: `0.10`)
 - `CLOSE_PROB_BOUNDARY_SIGMA_MULT` (default: `0.45`)
@@ -211,7 +217,10 @@ Key parameters:
 Paper-sim guard parameters (optional):
 - `PAPER_MAX_OPPOSITE_IMPLIED`, `PAPER_MIN_ENTRY_SIDE_IMPLIED`
 - `PAPER_DOWN_ABOVE_START_BLOCK_PCT`, `PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA`, `PAPER_DOWN_ABOVE_START_EV_PENALTY`
-- `PAPER_ENABLE_EARLY_EXIT`, `PAPER_EARLY_EXIT_OPPOSITE_ASK`, `PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT`, `PAPER_EARLY_EXIT_MAX_HOLD_SEC`, `PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT`
+- `PAPER_ENABLE_EARLY_EXIT`, `PAPER_EARLY_EXIT_OPPOSITE_ASK`, `PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT`
+- `PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC`, `PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF`, `PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC`
+- `PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF`, `PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT`
+- `PAPER_EARLY_EXIT_MAX_HOLD_SEC`, `PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT`
 
 ### Live execution policy
 

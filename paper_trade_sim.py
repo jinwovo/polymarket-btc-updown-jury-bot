@@ -97,6 +97,19 @@ PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT = float(
 )
 PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS = int(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
 PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC", "35"))
+PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF", "0.75")
+)
+PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC", "20")
+)
+PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF", "0.60")
+)
+PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT", "15")
+)
 PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "220"))
 PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
 PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
@@ -955,7 +968,7 @@ def resolve_open_trades(conn) -> int:
 
     open_rows = fetch_all_dicts(
         conn,
-        """SELECT id, window_start, window_end, direction, stake, shares, entry_price, opened_at
+        """SELECT id, window_start, window_end, direction, stake, shares, entry_price, opened_at, signal_confidence
            FROM paper_trades
            WHERE status = 'OPEN'
            ORDER BY window_start ASC""",
@@ -976,6 +989,7 @@ def resolve_open_trades(conn) -> int:
         stake = float(row["stake"])
         shares = float(row["shares"])
         opened_at = float(row.get("opened_at") or 0.0)
+        signal_confidence = float(row.get("signal_confidence") or 0.0)
         window_end = float(row.get("window_end") or 0.0)
 
         # 1) Expiry settlement (binary resolution)
@@ -1076,11 +1090,27 @@ def resolve_open_trades(conn) -> int:
         else:
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
 
-        if early_reason is None and mtm_roi_pct <= PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:
+        dynamic_stop_loss_roi = PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT
+        dynamic_stop_loss_min_hold = max(PAPER_EARLY_EXIT_MIN_ELAPSED_SEC, PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC)
+        if signal_confidence >= PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF:
+            dynamic_stop_loss_min_hold = min(
+                dynamic_stop_loss_min_hold,
+                max(PAPER_EARLY_EXIT_MIN_ELAPSED_SEC, PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC),
+            )
+        elif signal_confidence <= PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF:
+            dynamic_stop_loss_roi -= abs(PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT)
+
+        if (
+            early_reason is None
+            and hold_sec >= dynamic_stop_loss_min_hold
+            and mtm_roi_pct <= dynamic_stop_loss_roi
+        ):
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
             early_reason = (
                 f"stop_loss(roi={mtm_roi_pct:+.2f}%"
-                f" <= {PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT:+.2f}%)"
+                f" <= {dynamic_stop_loss_roi:+.2f}%"
+                f", hold={hold_sec:.1f}s >= {dynamic_stop_loss_min_hold:.1f}s"
+                f", conf={signal_confidence:.3f})"
             )
         elif (
             early_reason is None
@@ -1203,7 +1233,8 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s(at>=%.2f) "
         "stale_relax(start=%.0fs full=%.0fs max=%.0f%% ask_floor=%.2f) perf_pause=%.0fs "
         "align(side>=%.2f,opp<=%.2f) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
-        "early_exit=%s(opp>=%.2f,sl<=%.1f%%,hold>=%.0fs roi<=%.1f%%)",
+        "early_exit=%s(opp>=%.2f,sl<=%.1f%%@hold>=%.0fs highConf>=%.2f->%.0fs lowConf<=%.2f relax=%.1f%%,"
+        " maxHold=%.0fs ts<=%.1f%%)",
         initial_capital,
         mode,
         risk_fraction,
@@ -1232,6 +1263,11 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_ENABLE_EARLY_EXIT,
         PAPER_EARLY_EXIT_OPPOSITE_ASK,
         PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT,
+        PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC,
+        PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF,
+        PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC,
+        PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF,
+        PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT,
         PAPER_EARLY_EXIT_MAX_HOLD_SEC,
         PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT,
     )
