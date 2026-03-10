@@ -34,6 +34,8 @@ export async function POST(request: NextRequest) {
   const endpoint =
     action === "stop"
       ? "/api/control/live/stop"
+      : action === "claim_now"
+        ? "/api/control/live/claim"
       : action === "auth_config"
         ? "/api/control/live/auth-config"
         : "/api/control/live/start";

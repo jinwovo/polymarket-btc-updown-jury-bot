@@ -324,6 +324,40 @@ def init_market_schema(conn):
                 dedupe_key TEXT NOT NULL UNIQUE
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS bot_runtime_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                updated_at REAL NOT NULL,
+                risk_json TEXT NOT NULL,
+                trade_json TEXT,
+                kill_switch INTEGER NOT NULL DEFAULT 0,
+                kill_reason TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS live_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                window_start INTEGER NOT NULL UNIQUE,
+                window_end INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                stake REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                payout_multiple REAL NOT NULL,
+                shares REAL NOT NULL,
+                potential_win_pnl REAL NOT NULL,
+                signal_confidence REAL,
+                signal_reason TEXT,
+                entry_source TEXT,
+                close_reason TEXT,
+                status TEXT NOT NULL DEFAULT 'OPEN',
+                opened_at REAL NOT NULL,
+                closed_at REAL,
+                actual_outcome TEXT,
+                won INTEGER,
+                pnl REAL,
+                roi_pct REAL
+            )
+            """,
             "CREATE INDEX IF NOT EXISTS idx_btc_ts ON btc_ticks(ts)",
             "CREATE INDEX IF NOT EXISTS idx_odds_window ON poly_odds(window_start, ts)",
             "CREATE INDEX IF NOT EXISTS idx_feature_ts ON feature_1s(ts_sec)",
@@ -338,6 +372,12 @@ def init_market_schema(conn):
             "ALTER TABLE signal_history ADD COLUMN support_direction TEXT",
             "ALTER TABLE signal_history ADD COLUMN support_votes INTEGER",
             "ALTER TABLE signal_history ADD COLUMN gate_json TEXT",
+            "ALTER TABLE bot_runtime_state ADD COLUMN kill_switch INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE bot_runtime_state ADD COLUMN kill_reason TEXT",
+            "ALTER TABLE live_trades ADD COLUMN signal_confidence REAL",
+            "ALTER TABLE live_trades ADD COLUMN signal_reason TEXT",
+            "ALTER TABLE live_trades ADD COLUMN entry_source TEXT",
+            "ALTER TABLE live_trades ADD COLUMN close_reason TEXT",
         ]:
             try:
                 execute_write(conn, alter_sql)
@@ -346,6 +386,8 @@ def init_market_schema(conn):
         # Create after migration so old DBs without history_type do not crash.
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS idx_signal_type_ts ON signal_history(history_type, ts)",
+            "CREATE INDEX IF NOT EXISTS idx_live_trades_window ON live_trades(window_start)",
+            "CREATE INDEX IF NOT EXISTS idx_live_trades_status_opened ON live_trades(status, opened_at)",
         ]:
             try:
                 execute_write(conn, idx_sql)
@@ -438,6 +480,42 @@ def init_market_schema(conn):
             INDEX idx_signal_type_ts (history_type, ts)
         ) ENGINE=InnoDB
         """,
+        """
+        CREATE TABLE IF NOT EXISTS bot_runtime_state (
+            id TINYINT PRIMARY KEY,
+            updated_at DOUBLE NOT NULL,
+            risk_json LONGTEXT NOT NULL,
+            trade_json LONGTEXT NULL,
+            kill_switch TINYINT NOT NULL DEFAULT 0,
+            kill_reason TEXT NULL
+        ) ENGINE=InnoDB
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS live_trades (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            window_start BIGINT NOT NULL UNIQUE,
+            window_end BIGINT NOT NULL,
+            direction VARCHAR(16) NOT NULL,
+            stake DOUBLE NOT NULL,
+            entry_price DOUBLE NOT NULL,
+            payout_multiple DOUBLE NOT NULL,
+            shares DOUBLE NOT NULL,
+            potential_win_pnl DOUBLE NOT NULL,
+            signal_confidence DOUBLE NULL,
+            signal_reason TEXT NULL,
+            entry_source VARCHAR(32) NULL,
+            close_reason TEXT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+            opened_at DOUBLE NOT NULL,
+            closed_at DOUBLE NULL,
+            actual_outcome VARCHAR(16) NULL,
+            won TINYINT NULL,
+            pnl DOUBLE NULL,
+            roi_pct DOUBLE NULL,
+            INDEX idx_live_status_opened (status, opened_at),
+            INDEX idx_live_window (window_start)
+        ) ENGINE=InnoDB
+        """,
         "CREATE INDEX idx_btc_ts ON btc_ticks(ts)",
     ]
     for stmt in mariadb_statements:
@@ -455,6 +533,14 @@ def init_market_schema(conn):
         "ALTER TABLE signal_history ADD COLUMN support_votes INT NULL",
         "ALTER TABLE signal_history ADD COLUMN gate_json LONGTEXT NULL",
         "CREATE INDEX idx_signal_type_ts ON signal_history(history_type, ts)",
+        "ALTER TABLE bot_runtime_state ADD COLUMN kill_switch TINYINT NOT NULL DEFAULT 0",
+        "ALTER TABLE bot_runtime_state ADD COLUMN kill_reason TEXT NULL",
+        "ALTER TABLE live_trades ADD COLUMN signal_confidence DOUBLE NULL",
+        "ALTER TABLE live_trades ADD COLUMN signal_reason TEXT NULL",
+        "ALTER TABLE live_trades ADD COLUMN entry_source VARCHAR(32) NULL",
+        "ALTER TABLE live_trades ADD COLUMN close_reason TEXT NULL",
+        "CREATE INDEX idx_live_status_opened ON live_trades(status, opened_at)",
+        "CREATE INDEX idx_live_window ON live_trades(window_start)",
     ]:
         try:
             execute_write(conn, alter_sql)

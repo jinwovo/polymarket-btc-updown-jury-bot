@@ -28,6 +28,9 @@ _MANAGED_ENV_KEYS = (
     "POLYMARKET_API_KEY",
     "POLYMARKET_API_SECRET",
     "POLYMARKET_API_PASSPHRASE",
+    "POLY_BUILDER_API_KEY",
+    "POLY_BUILDER_API_SECRET",
+    "POLY_BUILDER_API_PASSPHRASE",
 )
 _ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
@@ -44,6 +47,9 @@ def _clean(value: Any) -> str:
         "your_api_key_here",
         "your_api_secret_here",
         "your_passphrase_here",
+        "your_builder_api_key_here",
+        "your_builder_api_secret_here",
+        "your_builder_passphrase_here",
     }
     if low in placeholder_values:
         return ""
@@ -88,14 +94,24 @@ def _set_runtime_var(key: str, value: str | None):
         os.environ[key] = str(value)
 
 
-def _update_runtime_config(private_key: str, funder: str, signature_type: int):
+def _update_runtime_config(
+    private_key: str,
+    funder: str,
+    signature_type: int,
+    builder_api_key: str,
+    builder_api_secret: str,
+    builder_api_passphrase: str,
+):
     config.polymarket.private_key = private_key
     config.polymarket.funder = funder
     config.polymarket.signature_type = int(signature_type)
-    # Force private-key flow after UI save.
+    # Trading auth should keep using runtime-derived creds from private key.
     config.polymarket.api_key = ""
     config.polymarket.api_secret = ""
     config.polymarket.api_passphrase = ""
+    config.polymarket.builder_api_key = builder_api_key
+    config.polymarket.builder_api_secret = builder_api_secret
+    config.polymarket.builder_api_passphrase = builder_api_passphrase
 
 
 def _update_env_file(path: Path, updates: dict[str, str | None]):
@@ -167,6 +183,20 @@ def clear_generated_credentials_file():
 
 
 def api_credentials_snapshot() -> dict[str, Any]:
+    # Prefer in-memory config first.
+    api_key = _clean(config.polymarket.api_key)
+    api_secret = _clean(config.polymarket.api_secret)
+    api_passphrase = _clean(config.polymarket.api_passphrase)
+    if api_key and api_secret and api_passphrase:
+        return {
+            "exists": True,
+            "source": "runtime_env",
+            "api_key": api_key,
+            "api_secret": api_secret,
+            "api_passphrase": api_passphrase,
+            "path": None,
+        }
+
     generated = _read_env_file(_GENERATED_ENV_PATH)
     api_key = _clean(generated.get("POLYMARKET_API_KEY"))
     api_secret = _clean(generated.get("POLYMARKET_API_SECRET"))
@@ -181,20 +211,6 @@ def api_credentials_snapshot() -> dict[str, Any]:
             "path": str(_GENERATED_ENV_PATH),
         }
 
-    # Fallback to in-memory config if generated file is missing.
-    api_key = _clean(config.polymarket.api_key)
-    api_secret = _clean(config.polymarket.api_secret)
-    api_passphrase = _clean(config.polymarket.api_passphrase)
-    if api_key and api_secret and api_passphrase:
-        return {
-            "exists": True,
-            "source": "runtime_env",
-            "api_key": api_key,
-            "api_secret": api_secret,
-            "api_passphrase": api_passphrase,
-            "path": None,
-        }
-
     return {
         "exists": False,
         "source": "none",
@@ -205,10 +221,48 @@ def api_credentials_snapshot() -> dict[str, Any]:
     }
 
 
+def builder_credentials_snapshot() -> dict[str, Any]:
+    api_key = _clean(config.polymarket.builder_api_key)
+    api_secret = _clean(config.polymarket.builder_api_secret)
+    api_passphrase = _clean(config.polymarket.builder_api_passphrase)
+    if api_key and api_secret and api_passphrase:
+        return {
+            "exists": True,
+            "source": "runtime_env",
+            "api_key": api_key,
+            "api_secret": api_secret,
+            "api_passphrase": api_passphrase,
+        }
+
+    env_data = _read_env_file(_ENV_PATH)
+    api_key = _clean(env_data.get("POLY_BUILDER_API_KEY"))
+    api_secret = _clean(env_data.get("POLY_BUILDER_API_SECRET"))
+    api_passphrase = _clean(env_data.get("POLY_BUILDER_API_PASSPHRASE"))
+    if api_key and api_secret and api_passphrase:
+        return {
+            "exists": True,
+            "source": "env_file",
+            "api_key": api_key,
+            "api_secret": api_secret,
+            "api_passphrase": api_passphrase,
+        }
+
+    return {
+        "exists": False,
+        "source": "none",
+        "api_key": None,
+        "api_secret": None,
+        "api_passphrase": None,
+    }
+
+
 def apply_runtime_auth(
     private_key: str,
     funder: str = "",
     signature_type: int = -1,
+    builder_api_key: str = "",
+    builder_api_secret: str = "",
+    builder_api_passphrase: str = "",
     persist_env: bool = True,
 ) -> dict[str, Any]:
     """
@@ -217,19 +271,50 @@ def apply_runtime_auth(
     pk = _normalize_private_key(private_key)
     fd = _clean(funder)
     sig = _normalize_signature_type(signature_type)
+    existing_builder = builder_credentials_snapshot()
+    raw_builder_api_key = _clean(builder_api_key)
+    raw_builder_api_secret = _clean(builder_api_secret)
+    raw_builder_api_passphrase = _clean(builder_api_passphrase)
+    has_builder_update = bool(raw_builder_api_key or raw_builder_api_secret or raw_builder_api_passphrase)
+
+    resolved_builder_api_key = raw_builder_api_key or _clean(existing_builder.get("api_key"))
+    resolved_builder_api_secret = raw_builder_api_secret or _clean(existing_builder.get("api_secret"))
+    resolved_builder_api_passphrase = raw_builder_api_passphrase or _clean(existing_builder.get("api_passphrase"))
+    has_full_builder = bool(
+        resolved_builder_api_key and resolved_builder_api_secret and resolved_builder_api_passphrase
+    )
 
     if not pk:
         raise ValueError("POLYMARKET_PRIVATE_KEY is required")
+    if has_builder_update and not has_full_builder:
+        raise ValueError(
+            "Builder credentials update requires full api key/secret/passphrase (new or existing merge)"
+        )
 
     _set_runtime_var("POLYMARKET_PRIVATE_KEY", pk)
     _set_runtime_var("POLYMARKET_FUNDER", fd if fd else None)
     _set_runtime_var("POLYMARKET_SIGNATURE_TYPE", str(sig))
-    # Clear manual API creds to avoid stale-key precedence.
+    # Trading auth: always force private-key derive flow (no manual CLOB key override from this modal).
     _set_runtime_var("POLYMARKET_API_KEY", None)
     _set_runtime_var("POLYMARKET_API_SECRET", None)
     _set_runtime_var("POLYMARKET_API_PASSPHRASE", None)
+    if has_full_builder:
+        _set_runtime_var("POLY_BUILDER_API_KEY", resolved_builder_api_key)
+        _set_runtime_var("POLY_BUILDER_API_SECRET", resolved_builder_api_secret)
+        _set_runtime_var("POLY_BUILDER_API_PASSPHRASE", resolved_builder_api_passphrase)
+    else:
+        _set_runtime_var("POLY_BUILDER_API_KEY", None)
+        _set_runtime_var("POLY_BUILDER_API_SECRET", None)
+        _set_runtime_var("POLY_BUILDER_API_PASSPHRASE", None)
 
-    _update_runtime_config(private_key=pk, funder=fd, signature_type=sig)
+    _update_runtime_config(
+        private_key=pk,
+        funder=fd,
+        signature_type=sig,
+        builder_api_key=resolved_builder_api_key if has_full_builder else "",
+        builder_api_secret=resolved_builder_api_secret if has_full_builder else "",
+        builder_api_passphrase=resolved_builder_api_passphrase if has_full_builder else "",
+    )
     invalidate_cached_auth()
     clear_generated_credentials_file()
 
@@ -239,10 +324,13 @@ def apply_runtime_auth(
             "POLYMARKET_PRIVATE_KEY": pk,
             "POLYMARKET_FUNDER": fd if fd else None,
             "POLYMARKET_SIGNATURE_TYPE": str(sig),
-            # Force runtime-generated API creds file as source of truth.
+            # Trading auth should remain derive-based from private key.
             "POLYMARKET_API_KEY": None,
             "POLYMARKET_API_SECRET": None,
             "POLYMARKET_API_PASSPHRASE": None,
+            "POLY_BUILDER_API_KEY": resolved_builder_api_key if has_full_builder else None,
+            "POLY_BUILDER_API_SECRET": resolved_builder_api_secret if has_full_builder else None,
+            "POLY_BUILDER_API_PASSPHRASE": resolved_builder_api_passphrase if has_full_builder else None,
         }
         _update_env_file(env_path, updates)
 
@@ -250,6 +338,7 @@ def apply_runtime_auth(
         "ok": True,
         "persisted_env": str(env_path),
         "generated_env": str(_GENERATED_ENV_PATH),
+        "builder_api_creds": bool(has_full_builder),
     }
 
 

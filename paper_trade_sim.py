@@ -75,8 +75,8 @@ PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lowe
 PAPER_PROFIT_MODE = str(os.getenv("PAPER_PROFIT_MODE", "aggressive")).strip().lower()
 PAPER_AGGRESSIVE_ENTRY_RELAX = float(os.getenv("PAPER_AGGRESSIVE_ENTRY_RELAX", "0.20"))
 PAPER_AGGRESSIVE_GAP_MULT = float(os.getenv("PAPER_AGGRESSIVE_GAP_MULT", "0.65"))
-PAPER_AGGRESSIVE_MAX_BET_FRAC = float(os.getenv("PAPER_AGGRESSIVE_MAX_BET_FRAC", "0.18"))
-PAPER_AGGRESSIVE_KELLY_FRAC = float(os.getenv("PAPER_AGGRESSIVE_KELLY_FRAC", "0.65"))
+PAPER_AGGRESSIVE_MAX_BET_FRAC = float(os.getenv("PAPER_AGGRESSIVE_MAX_BET_FRAC", "0.12"))
+PAPER_AGGRESSIVE_KELLY_FRAC = float(os.getenv("PAPER_AGGRESSIVE_KELLY_FRAC", "0.50"))
 PAPER_AGGRESSIVE_LOSS_DEBOOST = float(os.getenv("PAPER_AGGRESSIVE_LOSS_DEBOOST", "0.82"))
 # Anti-freeze controls: gradually relax strictness when no entry happens for long.
 PAPER_STALE_RELAX_START_SEC = float(os.getenv("PAPER_STALE_RELAX_START_SEC", "3600"))
@@ -89,6 +89,13 @@ PAPER_PERF_PAUSE_SEC = float(os.getenv("PAPER_PERF_PAUSE_SEC", "1800"))
 # Direction consistency filter (market-implied probability alignment).
 PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
 PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+# If opposite ask is materially higher than selected side ask, skip unless model/confidence are very strong.
+PAPER_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
+PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
+PAPER_CONTRA_OVERRIDE_MIN_CONF = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
+# Additional trend alignment to avoid entering on short-lived flips near local extrema.
+PAPER_TREND_ALIGN_LOOKBACK_SEC = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
+PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
 
 # DOWN-side hardening when BTC is above the window start.
 PAPER_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))
@@ -785,6 +792,35 @@ def open_trade_if_signal(
             btc_move_from_start_pct,
         )
         return False
+    trend_move_pct = _recent_move_pct(
+        conn,
+        int(window_start),
+        now_ts=now_ts,
+        lookback_sec=PAPER_TREND_ALIGN_LOOKBACK_SEC,
+    )
+    if trend_move_pct is None:
+        return False
+    opposing_thr = abs(PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT)
+    if direction == "UP" and trend_move_pct < -opposing_thr:
+        logger.warning(
+            "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
+            window_start,
+            direction,
+            trend_move_pct,
+            opposing_thr,
+            PAPER_TREND_ALIGN_LOOKBACK_SEC,
+        )
+        return False
+    if direction == "DOWN" and trend_move_pct > opposing_thr:
+        logger.warning(
+            "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
+            window_start,
+            direction,
+            trend_move_pct,
+            opposing_thr,
+            PAPER_TREND_ALIGN_LOOKBACK_SEC,
+        )
+        return False
 
     recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
 
@@ -805,6 +841,27 @@ def open_trade_if_signal(
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
         return False
+    contra_gap = None
+    if side_implied is not None and opposite_implied is not None:
+        contra_gap = float(opposite_implied) - float(side_implied)
+    if contra_gap is not None and contra_gap > PAPER_MAX_CONTRA_GAP:
+        strong_override = (
+            float(gate.model_prob) >= PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB
+            and float(confidence) >= PAPER_CONTRA_OVERRIDE_MIN_CONF
+        )
+        if not strong_override:
+            logger.warning(
+                "Skip contra-dominant ws=%s dir=%s: opp-side gap=+%.3f > %.3f (p=%.3f conf=%.3f, need p>=%.3f & conf>=%.3f)",
+                window_start,
+                direction,
+                contra_gap,
+                PAPER_MAX_CONTRA_GAP,
+                float(gate.model_prob),
+                float(confidence),
+                PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB,
+                PAPER_CONTRA_OVERRIDE_MIN_CONF,
+            )
+            return False
     loss_streak, recent_loss_rate = _recent_risk_state(conn)
     perf_count, perf_wr, perf_pnl = _recent_performance(conn, PAPER_RECENT_PERF_WINDOW)
     realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
@@ -1311,7 +1368,8 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f "
         "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s(at>=%.2f) "
         "stale_relax(start=%.0fs full=%.0fs max=%.0f%% ask_floor=%.2f) perf_pause=%.0fs "
-        "align(side>=%.2f,opp<=%.2f) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
+        "align(side>=%.2f,opp<=%.2f) contra_gap<=%.3f(ovr p>=%.2f conf>=%.2f) "
+        "trend_align(lookback=%.0fs opp<=%.4f%%) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
         "profit_mode=%s(relax=%.0f%% gapx=%.2f maxBetFrac=%.2f kelly=%.2f deboost=%.2f) "
         "early_exit=%s(opp>=%.2f,sl<=%.1f%%@hold>=%.0fs highConf>=%.2f->%.0fs lowConf<=%.2f relax=%.1f%%,"
         " btcAdv=%s@%.3f%% maxHold=%.0fs ts<=%.1f%%)",
@@ -1337,6 +1395,11 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_PERF_PAUSE_SEC,
         PAPER_MIN_ENTRY_SIDE_IMPLIED,
         PAPER_MAX_OPPOSITE_IMPLIED,
+        PAPER_MAX_CONTRA_GAP,
+        PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB,
+        PAPER_CONTRA_OVERRIDE_MIN_CONF,
+        PAPER_TREND_ALIGN_LOOKBACK_SEC,
+        PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT,
         PAPER_DOWN_ABOVE_START_BLOCK_PCT,
         PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA,
         PAPER_DOWN_ABOVE_START_EV_PENALTY * 100.0,

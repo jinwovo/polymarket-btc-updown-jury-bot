@@ -81,6 +81,16 @@ def _to_optional_float(value: Any) -> Optional[float]:
     return None
 
 
+def _normalize_order_side(side: Any, *, default: str = "BUY") -> str:
+    s = str(side or "").strip().upper()
+    if s in {"BUY", "B"}:
+        return "BUY"
+    if s in {"SELL", "S"}:
+        return "SELL"
+    d = str(default or "BUY").strip().upper()
+    return "SELL" if d == "SELL" else "BUY"
+
+
 def _find_nested_value(payload: Any, candidates: set[str]) -> Any:
     """Find first matching key value in a nested dict/list payload."""
     keys = {str(k).lower() for k in candidates}
@@ -164,6 +174,54 @@ def _extract_avg_price(payload: Any) -> Optional[float]:
     return price
 
 
+def _extract_balance_value(payload: Any) -> float:
+    val = _find_nested_value(
+        payload,
+        {
+            "balance",
+            "available_balance",
+            "asset_balance",
+            "available",
+            "amount",
+            "size",
+        },
+    )
+    num = _to_optional_float(val)
+    if num is None:
+        return 0.0
+    return max(0.0, float(num))
+
+
+def _normalize_collateral_amount(raw_value: Any, payload: Any) -> Optional[float]:
+    num = _to_optional_float(raw_value)
+    if num is None:
+        return None
+    value = float(num)
+    if value < 0.0:
+        value = 0.0
+
+    dec_raw = _find_nested_value(
+        payload,
+        {"decimals", "token_decimals", "asset_decimals", "collateral_decimals"},
+    )
+    dec_val = _to_optional_float(dec_raw)
+    if dec_val is not None:
+        try:
+            dec = int(dec_val)
+        except Exception:
+            dec = -1
+        if 0 <= dec <= 18:
+            scale = float(10 ** dec)
+            if scale > 1.0 and abs(value - round(value)) < 1e-9 and value >= scale:
+                value = float(value / scale)
+                return max(0.0, value)
+
+    # Fallback for USDC-like base units (6 decimals) when metadata is missing.
+    if abs(value - round(value)) < 1e-9 and value >= 1_000_000:
+        value = float(value / 1_000_000.0)
+    return max(0.0, value)
+
+
 def _is_terminal_status(status: Optional[str]) -> bool:
     if not status:
         return False
@@ -236,10 +294,11 @@ class PolymarketClient:
         self._http = httpx.AsyncClient(timeout=10.0)
         self._clob_client = None
         self._odds_polling = False
+        self._claim_unsupported_logged = False
 
-    async def _init_clob(self):
+    async def _init_clob(self, *, force: bool = False):
         """Initialize authenticated CLOB client for trading."""
-        if config.trading.dry_run:
+        if config.trading.dry_run and not force:
             logger.info("Dry-run mode: CLOB client not initialized")
             return
         try:
@@ -478,6 +537,25 @@ class PolymarketClient:
         except Exception:
             return None
 
+    async def _get_best_bid(self, token_id: str) -> Optional[float]:
+        if not token_id:
+            return None
+        try:
+            resp = await self._http.get(
+                f"{config.polymarket.clob_url}/book",
+                params={"token_id": token_id},
+            )
+            if resp.status_code != 200:
+                return None
+            book = resp.json()
+            bids = book.get("bids", [])
+            best_bid = max((float(b.get("price", 0.0)) for b in bids), default=0.0)
+            if 0.0 < best_bid < 1.0:
+                return float(best_bid)
+            return None
+        except Exception:
+            return None
+
     async def _check_entry_price_drift(
         self, token_id: str, reference_ask: Optional[float]
     ) -> tuple[bool, Optional[float], Optional[str]]:
@@ -507,6 +585,136 @@ class PolymarketClient:
                 ),
             )
         return True, current_ask, None
+
+    async def _get_conditional_balance(self, token_id: str) -> float:
+        if not token_id:
+            return 0.0
+        if config.trading.dry_run:
+            return 0.0
+        if not self._clob_client:
+            await self._init_clob()
+        if not self._clob_client:
+            return 0.0
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=str(token_id),
+            )
+            payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
+            return _extract_balance_value(payload)
+        except Exception as e:
+            logger.warning("conditional balance fetch failed (token=%s): %s", token_id, e)
+            return 0.0
+
+    async def get_collateral_balance(self) -> Optional[float]:
+        """
+        Return available collateral balance in UI units (e.g., USDC),
+        normalized from API base units when needed.
+        """
+        if config.trading.dry_run:
+            return None
+        if not self._clob_client:
+            await self._init_clob()
+        if not self._clob_client:
+            return None
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
+            bal_raw = _find_nested_value(
+                payload,
+                {"available_balance", "asset_balance", "balance", "available", "amount", "size"},
+            )
+            normalized = _normalize_collateral_amount(bal_raw, payload)
+            if normalized is None:
+                extracted = _extract_balance_value(payload)
+                normalized = _normalize_collateral_amount(extracted, payload)
+            return normalized
+        except Exception as e:
+            logger.warning("collateral balance fetch failed: %s", e)
+            return None
+
+    async def _get_open_orders_for_asset(self, asset_id: str) -> list[dict]:
+        if not asset_id:
+            return []
+        if config.trading.dry_run:
+            return []
+        if not self._clob_client:
+            await self._init_clob()
+        if not self._clob_client:
+            return []
+        try:
+            from py_clob_client.clob_types import OpenOrderParams
+
+            params = OpenOrderParams(asset_id=str(asset_id))
+            payload = await asyncio.to_thread(self._clob_client.get_orders, params)
+            if isinstance(payload, list):
+                return [x for x in payload if isinstance(x, dict)]
+            if isinstance(payload, dict):
+                # py-clob-client may wrap results as {data:[...]} / {orders:[...]}
+                for key in ("data", "orders", "items", "results"):
+                    items = payload.get(key)
+                    if isinstance(items, list):
+                        return [x for x in items if isinstance(x, dict)]
+            return []
+        except Exception as e:
+            logger.warning("open-order fetch failed (asset=%s): %s", asset_id, e)
+            return []
+
+    async def inspect_market_exposure(self, market: MarketInfo) -> dict:
+        up_token = str(market.up_token_id or "")
+        down_token = str(market.down_token_id or "")
+        if not up_token or not down_token:
+            return {
+                "ok": False,
+                "error": "missing market token ids",
+                "up_balance": 0.0,
+                "down_balance": 0.0,
+                "up_open_orders": 0,
+                "down_open_orders": 0,
+                "open_orders_total": 0,
+            }
+
+        up_balance, down_balance, up_orders, down_orders = await asyncio.gather(
+            self._get_conditional_balance(up_token),
+            self._get_conditional_balance(down_token),
+            self._get_open_orders_for_asset(up_token),
+            self._get_open_orders_for_asset(down_token),
+        )
+        up_count = len(up_orders)
+        down_count = len(down_orders)
+        return {
+            "ok": True,
+            "error": None,
+            "up_balance": float(up_balance),
+            "down_balance": float(down_balance),
+            "up_open_orders": int(up_count),
+            "down_open_orders": int(down_count),
+            "open_orders_total": int(up_count + down_count),
+        }
+
+    async def cancel_market_orders(self, market: MarketInfo) -> dict:
+        if config.trading.dry_run:
+            return {"ok": True, "cancelled": 0, "errors": []}
+        if not self._clob_client:
+            await self._init_clob()
+        if not self._clob_client:
+            return {"ok": False, "cancelled": 0, "errors": ["clob client unavailable"]}
+
+        cancelled = 0
+        errors: list[str] = []
+        for token_id in [str(market.up_token_id or ""), str(market.down_token_id or "")]:
+            if not token_id:
+                continue
+            try:
+                await asyncio.to_thread(self._clob_client.cancel_market_orders, "", token_id)
+                cancelled += 1
+            except Exception as e:
+                errors.append(f"{token_id[:12]}...: {e}")
+        return {"ok": len(errors) == 0, "cancelled": cancelled, "errors": errors}
 
     async def place_market_order(
         self,
@@ -552,14 +760,16 @@ class PolymarketClient:
 
         try:
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
-            from py_clob_client.order_builder.constants import BUY
+            from py_clob_client.order_builder.constants import BUY, SELL
 
-            order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=BUY)
+            order_side = _normalize_order_side(side, default="BUY")
+            side_const = BUY if order_side == "BUY" else SELL
+            order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
             signed = self._clob_client.create_market_order(order_args)
             resp = self._clob_client.post_order(signed, orderType=OrderType.FOK)
             result = self._normalize_execution_result(
                 mode="MARKET",
-                side=side,
+                side=order_side,
                 token_id=token_id,
                 requested_amount=float(amount),
                 raw_payload=resp,
@@ -574,7 +784,27 @@ class PolymarketClient:
             return result
         except Exception as e:
             logger.error(f"Order placement failed: {e}")
-            return None
+            return {
+                "ok": False,
+                "mode": "MARKET",
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "unknown_error",
+                "requested_amount": float(amount),
+                "requested_size": None,
+                "requested_price": _to_optional_float(reference_price),
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "uncertain_fill": True,
+                "reason": f"market order exception: {e}",
+            }
 
     async def place_limit_order(
         self,
@@ -626,17 +856,19 @@ class PolymarketClient:
 
         try:
             from py_clob_client.clob_types import OrderArgs, OrderType
-            from py_clob_client.order_builder.constants import BUY
+            from py_clob_client.order_builder.constants import BUY, SELL
 
             ot = str(order_type or "GTC").strip().upper()
             order_type_value = getattr(OrderType, ot, OrderType.GTC)
-            order_args = OrderArgs(token_id=token_id, price=price, size=size, side=BUY)
+            order_side = _normalize_order_side(side, default="BUY")
+            side_const = BUY if order_side == "BUY" else SELL
+            order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
             signed = self._clob_client.create_order(order_args)
             resp = self._clob_client.post_order(signed, orderType=order_type_value)
 
             result = self._normalize_execution_result(
                 mode=mode,
-                side=side,
+                side=order_side,
                 token_id=token_id,
                 requested_amount=requested_amount,
                 raw_payload=resp,
@@ -675,7 +907,7 @@ class PolymarketClient:
                     if _is_terminal_status(state_status) or float(state_filled) >= float(size * 0.999):
                         result = self._normalize_execution_result(
                             mode=mode,
-                            side=side,
+                            side=order_side,
                             token_id=token_id,
                             requested_amount=requested_amount,
                             raw_payload=state,
@@ -698,7 +930,7 @@ class PolymarketClient:
 
                     result = self._normalize_execution_result(
                         mode=mode,
-                        side=side,
+                        side=order_side,
                         token_id=token_id,
                         requested_amount=requested_amount,
                         raw_payload=latest_payload,
@@ -726,7 +958,27 @@ class PolymarketClient:
             return result
         except Exception as e:
             logger.error(f"Limit order failed: {e}")
-            return None
+            return {
+                "ok": False,
+                "mode": mode,
+                "side": str(side),
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "unknown_error",
+                "requested_amount": requested_amount,
+                "requested_size": size,
+                "requested_price": price,
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "uncertain_fill": True,
+                "reason": f"limit order exception: {e}",
+            }
 
     async def place_entry_order(
         self,
@@ -864,6 +1116,419 @@ class PolymarketClient:
             timeout_seconds=float(config.trading.limit_order_timeout_seconds),
             poll_interval_seconds=float(config.trading.order_poll_interval_seconds),
         )
+
+    async def place_exit_order(
+        self,
+        token_id: str,
+        side: str,
+        shares: float,
+        reference_bid: Optional[float] = None,
+    ) -> Optional[dict]:
+        """
+        Exit an open position by selling shares (taker-ish LIMIT_FAK at current best bid).
+        """
+        side_norm = _normalize_order_side(side, default="SELL")
+        if side_norm != "SELL":
+            side_norm = "SELL"
+
+        sz = float(shares or 0.0)
+        if sz <= 0.0:
+            return {
+                "ok": True,
+                "mode": "LIMIT_FAK",
+                "side": side_norm,
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "invalid_size",
+                "requested_amount": 0.0,
+                "requested_size": 0.0,
+                "requested_price": _to_optional_float(reference_bid),
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": "skip exit: computed size <= 0",
+            }
+
+        working_bid = await self._get_best_bid(token_id)
+        if working_bid is None:
+            working_bid = _to_optional_float(reference_bid)
+        if working_bid is None or not (0.0 < float(working_bid) < 1.0):
+            return {
+                "ok": True,
+                "mode": "LIMIT_FAK",
+                "side": side_norm,
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "invalid_price",
+                "requested_amount": 0.0,
+                "requested_size": float(sz),
+                "requested_price": None,
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": "skip exit: no valid live bid",
+            }
+
+        price = float(working_bid)
+        return await self.place_limit_order(
+            token_id=token_id,
+            side=side_norm,
+            price=price,
+            size=float(sz),
+            order_type="FAK",
+        )
+
+    def _normalize_hex_bytes32(self, value: Any) -> Optional[bytes]:
+        s = str(value or "").strip().lower()
+        if not s:
+            return None
+        if s.startswith("0x"):
+            s = s[2:]
+        if len(s) != 64:
+            return None
+        try:
+            return bytes.fromhex(s)
+        except Exception:
+            return None
+
+    def _resolve_claim_owner(self) -> Optional[str]:
+        owner = str(config.polymarket.funder or "").strip()
+        if owner:
+            return owner
+        if self._clob_client:
+            try:
+                addr = str(self._clob_client.get_address() or "").strip()
+                if addr:
+                    return addr
+            except Exception:
+                pass
+        return None
+
+    def _build_relay_client(self):
+        from py_builder_relayer_client.client import RelayClient
+        from py_builder_signing_sdk.config import BuilderConfig
+        from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+
+        private_key = str(config.polymarket.private_key or "").strip()
+        if private_key and not private_key.startswith("0x") and len(private_key) == 64:
+            private_key = f"0x{private_key}"
+        if not private_key:
+            raise RuntimeError("POLYMARKET_PRIVATE_KEY missing for relayer claim")
+
+        builder_key = str(config.polymarket.builder_api_key or "").strip()
+        builder_secret = str(config.polymarket.builder_api_secret or "").strip()
+        builder_passphrase = str(config.polymarket.builder_api_passphrase or "").strip()
+        if not (builder_key and builder_secret and builder_passphrase):
+            raise RuntimeError(
+                "POLY_BUILDER_API_KEY/SECRET/PASSPHRASE required for relayer redeemPositions"
+            )
+
+        relayer_url = str(config.polymarket.relayer_url or "").strip()
+        if not relayer_url:
+            raise RuntimeError("POLYMARKET_RELAYER_URL missing")
+
+        chain_id = int(getattr(config.polymarket, "relayer_chain_id", 137) or 137)
+        builder_config = BuilderConfig(
+            local_builder_creds=BuilderApiKeyCreds(
+                key=builder_key,
+                secret=builder_secret,
+                passphrase=builder_passphrase,
+            )
+        )
+        return RelayClient(
+            relayer_url=relayer_url,
+            chain_id=chain_id,
+            private_key=private_key,
+            builder_config=builder_config,
+        )
+
+    async def _fetch_redeemable_positions(self, owner: str) -> list[dict[str, Any]]:
+        data_api_url = str(config.polymarket.data_api_url or "").rstrip("/")
+        if not data_api_url:
+            return []
+        try:
+            resp = await self._http.get(
+                f"{data_api_url}/positions",
+                params={
+                    "user": owner,
+                    "redeemable": "true",
+                    "sizeThreshold": "0",
+                },
+            )
+            if resp.status_code != 200:
+                return []
+            payload = resp.json()
+            if isinstance(payload, list):
+                return [x for x in payload if isinstance(x, dict)]
+            if isinstance(payload, dict):
+                for key in ("data", "items", "positions", "results"):
+                    items = payload.get(key)
+                    if isinstance(items, list):
+                        return [x for x in items if isinstance(x, dict)]
+            return []
+        except Exception:
+            return []
+
+    async def _build_redeem_transactions(self, owner: str):
+        from py_builder_relayer_client.models import OperationType, SafeTransaction
+
+        positions = await self._fetch_redeemable_positions(owner)
+        if not positions:
+            return [], {}, []
+
+        grouped_index_sets: dict[str, set[int]] = {}
+        grouped_current_value: dict[str, float] = {}
+
+        for pos in positions:
+            condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
+            condition_bytes = self._normalize_hex_bytes32(condition_id)
+            if condition_bytes is None:
+                continue
+
+            index_set_val = _to_optional_float(pos.get("indexSet"))
+            if index_set_val is None:
+                outcome_idx = _to_optional_float(pos.get("outcomeIndex"))
+                if outcome_idx is not None and int(outcome_idx) >= 0:
+                    index_set_val = float(1 << int(outcome_idx))
+            if index_set_val is None:
+                continue
+
+            index_set = int(index_set_val)
+            if index_set <= 0:
+                continue
+
+            grouped_index_sets.setdefault(condition_id, set()).add(index_set)
+            current_value = float(_to_optional_float(pos.get("currentValue")) or 0.0)
+            grouped_current_value[condition_id] = grouped_current_value.get(condition_id, 0.0) + current_value
+
+        if not grouped_index_sets:
+            return [], {}, positions
+
+        collateral = ""
+        conditional_tokens = ""
+        if self._clob_client:
+            try:
+                collateral = str(self._clob_client.get_collateral_address() or "").strip()
+                conditional_tokens = str(self._clob_client.get_conditional_address() or "").strip()
+            except Exception:
+                collateral = ""
+                conditional_tokens = ""
+        if not collateral or not conditional_tokens:
+            from py_clob_client.config import get_contract_config
+
+            cfg = get_contract_config(int(getattr(config.polymarket, "relayer_chain_id", 137) or 137))
+            collateral = str(cfg.collateral)
+            conditional_tokens = str(cfg.conditional_tokens)
+
+        from eth_abi import encode as abi_encode
+        from eth_utils import keccak, to_checksum_address
+
+        selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+        parent_collection_id = b"\x00" * 32
+        collateral_addr = to_checksum_address(collateral)
+        ctf_addr = to_checksum_address(conditional_tokens)
+
+        transactions: list[SafeTransaction] = []
+        for condition_id, idx_sets in grouped_index_sets.items():
+            condition_bytes = self._normalize_hex_bytes32(condition_id)
+            if condition_bytes is None:
+                continue
+            sorted_sets = sorted({int(x) for x in idx_sets if int(x) > 0})
+            if not sorted_sets:
+                continue
+            calldata = selector + abi_encode(
+                ["address", "bytes32", "bytes32", "uint256[]"],
+                [collateral_addr, parent_collection_id, condition_bytes, sorted_sets],
+            )
+            transactions.append(
+                SafeTransaction(
+                    to=ctf_addr,
+                    operation=OperationType.Call,
+                    data=f"0x{calldata.hex()}",
+                    value="0",
+                )
+            )
+
+        return transactions, grouped_current_value, positions
+
+    async def _claim_via_relayer(self, *, owner: str) -> dict:
+        try:
+            relay = self._build_relay_client()
+            expected_safe = str(await asyncio.to_thread(relay.get_expected_safe) or "").strip()
+            if expected_safe and expected_safe.lower() != owner.lower():
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "claimed": 0.0,
+                    "status": "claim_error",
+                    "method": "relayer_redeemPositions",
+                    "owner": owner,
+                    "expected_safe": expected_safe,
+                    "error": (
+                        "relayer signer/private key maps to a different proxy safe; "
+                        "set funder to expected safe or use matching signer key"
+                    ),
+                }
+
+            if expected_safe:
+                deployed = bool(await asyncio.to_thread(relay.get_deployed, expected_safe))
+                if not deployed:
+                    return {
+                        "ok": False,
+                        "supported": True,
+                        "claimed": 0.0,
+                        "status": "claim_error",
+                        "method": "relayer_redeemPositions",
+                        "owner": owner,
+                        "expected_safe": expected_safe,
+                        "error": f"expected safe {expected_safe} is not deployed",
+                    }
+
+            txs, grouped_current_value, positions = await self._build_redeem_transactions(owner)
+            if not txs:
+                return {
+                    "ok": True,
+                    "supported": True,
+                    "claimed": 0.0,
+                    "status": "nothing_to_claim",
+                    "method": "relayer_redeemPositions",
+                    "owner": owner,
+                    "positions_found": len(positions),
+                    "conditions": 0,
+                }
+
+            response = await asyncio.to_thread(relay.execute, txs, "auto_redeem_positions")
+            wait_payload = await asyncio.to_thread(response.wait)
+            tx_state = str(_find_nested_value(wait_payload, {"state"}) or "").strip().upper()
+            ok = bool(wait_payload) and tx_state in {"STATE_MINED", "STATE_CONFIRMED"}
+            estimated_claim = float(sum(grouped_current_value.values()))
+            return {
+                "ok": ok,
+                "supported": True,
+                "claimed": estimated_claim if ok else 0.0,
+                "status": "claimed" if ok else "claim_pending",
+                "method": "relayer_redeemPositions",
+                "owner": owner,
+                "positions_found": len(positions),
+                "conditions": len(txs),
+                "transaction_id": getattr(response, "transaction_id", None),
+                "transaction_hash": getattr(response, "transaction_hash", None),
+                "state": tx_state or None,
+                "raw": wait_payload,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "supported": True,
+                "claimed": 0.0,
+                "status": "claim_error",
+                "method": "relayer_redeemPositions",
+                "owner": owner,
+                "error": str(e),
+            }
+
+    async def auto_claim_winnings(self, *, ignore_dry_run: bool = False) -> dict:
+        """
+        Best-effort auto-claim hook.
+        Tries native py_clob_client claim APIs first, then relayer redeemPositions.
+        """
+        if config.trading.dry_run and not ignore_dry_run:
+            return {"ok": True, "supported": False, "claimed": 0.0, "status": "dry_run"}
+
+        if not self._clob_client:
+            await self._init_clob(force=ignore_dry_run)
+        if not self._clob_client and not ignore_dry_run:
+            return {"ok": False, "supported": False, "claimed": 0.0, "status": "no_client"}
+
+        candidate_methods = (
+            "claim",
+            "redeem",
+            "redeem_positions",
+            "settle",
+            "settle_positions",
+            "claim_rewards",
+        )
+        funder = str(config.polymarket.funder or "").strip()
+        arg_trials: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
+            (tuple(), {}),
+        ]
+        if funder:
+            arg_trials.append(((funder,), {}))
+            arg_trials.append((tuple(), {"funder": funder}))
+
+        if self._clob_client:
+            for method_name in candidate_methods:
+                fn = getattr(self._clob_client, method_name, None)
+                if not callable(fn):
+                    continue
+                last_err: Optional[str] = None
+                for args, kwargs in arg_trials:
+                    try:
+                        payload = await asyncio.to_thread(fn, *args, **kwargs)
+                        claimed_raw = _find_nested_value(
+                            payload,
+                            {"claimed", "redeemed", "amount", "value", "payout", "usdc"},
+                        )
+                        claimed = float(_to_optional_float(claimed_raw) or 0.0)
+                        if claimed <= 0.0:
+                            claimed = 0.0
+                        return {
+                            "ok": True,
+                            "supported": True,
+                            "claimed": float(claimed),
+                            "status": "claimed",
+                            "method": method_name,
+                            "raw": payload,
+                        }
+                    except TypeError as e:
+                        last_err = str(e)
+                        continue
+                    except Exception as e:
+                        return {
+                            "ok": False,
+                            "supported": True,
+                            "claimed": 0.0,
+                            "status": "claim_error",
+                            "method": method_name,
+                            "error": str(e),
+                        }
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "claimed": 0.0,
+                    "status": "claim_signature_mismatch",
+                    "method": method_name,
+                    "error": last_err or "unsupported argument signature",
+                }
+
+            if not self._claim_unsupported_logged:
+                logger.warning(
+                    "Auto-claim unavailable: this py_clob_client build exposes no claim/redeem API. "
+                    "Falling back to relayer redeemPositions."
+                )
+                self._claim_unsupported_logged = True
+
+        owner = self._resolve_claim_owner()
+        if not owner:
+            return {
+                "ok": False,
+                "supported": True,
+                "claimed": 0.0,
+                "status": "claim_error",
+                "method": "relayer_redeemPositions",
+                "error": "missing funder/owner address for redeem lookup",
+            }
+        return await self._claim_via_relayer(owner=owner)
 
     async def close(self):
         self.stop_odds_polling()

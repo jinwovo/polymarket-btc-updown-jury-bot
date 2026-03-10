@@ -27,6 +27,9 @@ class BinanceConfig:
 class PolymarketConfig:
     clob_url: str = "https://clob.polymarket.com"
     gamma_url: str = "https://gamma-api.polymarket.com"
+    data_api_url: str = field(default_factory=lambda: os.getenv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"))
+    relayer_url: str = field(default_factory=lambda: os.getenv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com"))
+    relayer_chain_id: int = field(default_factory=lambda: int(os.getenv("POLYMARKET_RELAYER_CHAIN_ID", "137")))
     private_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_PRIVATE_KEY", ""))
     # Optional signature type override:
     # 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE, -1=auto-detect.
@@ -34,6 +37,10 @@ class PolymarketConfig:
     api_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_KEY", ""))
     api_secret: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_SECRET", ""))
     api_passphrase: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_PASSPHRASE", ""))
+    # Builder creds are for relayer/redeem workflows, not CLOB trading auth.
+    builder_api_key: str = field(default_factory=lambda: os.getenv("POLY_BUILDER_API_KEY", ""))
+    builder_api_secret: str = field(default_factory=lambda: os.getenv("POLY_BUILDER_API_SECRET", ""))
+    builder_api_passphrase: str = field(default_factory=lambda: os.getenv("POLY_BUILDER_API_PASSPHRASE", ""))
     funder: str = field(default_factory=lambda: os.getenv("POLYMARKET_FUNDER", ""))
     market_slug_prefix: str = "btc-updown-5m"
     interval_seconds: int = 300  # 5 minutes
@@ -66,10 +73,10 @@ class TradingConfig:
         default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_SUPPORT_RELAX", "0.10"))
     )
     live_aggressive_max_frac: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_MAX_FRAC", "0.18"))
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_MAX_FRAC", "0.12"))
     )
     live_aggressive_kelly_frac: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_KELLY_FRAC", "0.65"))
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_KELLY_FRAC", "0.50"))
     )
     live_aggressive_loss_deboost: float = field(
         default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_LOSS_DEBOOST", "0.82"))
@@ -208,17 +215,125 @@ class TradingConfig:
     live_require_unanimous: bool = field(
         default_factory=lambda: os.getenv("LIVE_REQUIRE_UNANIMOUS", "false").lower() == "true"
     )
+    # In adaptive live sizing, refresh collateral balance cap at this interval.
+    # Also refreshed immediately after a filled entry.
+    live_balance_refresh_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_BALANCE_REFRESH_SECONDS", "30"))
+    )
+    # Attempt auto-claim/redeem on a rolling interval (best-effort).
+    live_auto_claim_enabled: bool = field(
+        default_factory=lambda: os.getenv("LIVE_AUTO_CLAIM_ENABLED", "true").lower() == "true"
+    )
+    live_auto_claim_interval_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AUTO_CLAIM_INTERVAL_SECONDS", "90"))
+    )
+    # Post-settlement liquidation for previous 5m winning position.
+    # Attempts to SELL the *previous* window position after rollover, then fall back to claim.
+    live_settlement_exit_enabled: bool = field(
+        default_factory=lambda: os.getenv("LIVE_SETTLEMENT_EXIT_ENABLED", "true").lower() == "true"
+    )
+    live_settlement_exit_delay1_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_SETTLEMENT_EXIT_DELAY1_SEC", "10"))
+    )
+    live_settlement_exit_delay2_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_SETTLEMENT_EXIT_DELAY2_SEC", "20"))
+    )
+    live_settlement_exit_min_bid: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_SETTLEMENT_EXIT_MIN_BID", "0.90"))
+    )
+    # Do not liquidate if this SELL would be interpreted as a loss.
+    live_settlement_exit_min_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_SETTLEMENT_EXIT_MIN_ROI_PCT", "0.0"))
+    )
+    # Live early-exit risk controls (mirrors paper sim behavior).
+    live_enable_early_exit: bool = field(
+        default_factory=lambda: os.getenv("LIVE_ENABLE_EARLY_EXIT", "true").lower() == "true"
+    )
+    live_early_exit_min_elapsed_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_MIN_ELAPSED_SEC", "25"))
+    )
+    live_early_exit_opposite_ask: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_OPPOSITE_ASK", "0.78"))
+    )
+    live_early_exit_opposite_min_loss_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT", "-20.0"))
+    )
+    live_early_exit_opposite_confirm_polls: int = field(
+        default_factory=lambda: int(os.getenv("LIVE_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
+    )
+    live_early_exit_stop_loss_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+    )
+    live_early_exit_stop_loss_min_hold_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC", "35"))
+    )
+    live_early_exit_stop_loss_high_conf_cutoff: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF", "0.75"))
+    )
+    live_early_exit_stop_loss_high_conf_min_hold_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC", "20"))
+    )
+    live_early_exit_stop_loss_low_conf_cutoff: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF", "0.60"))
+    )
+    live_early_exit_stop_loss_low_conf_relax_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT", "15"))
+    )
+    live_early_exit_stop_loss_require_btc_adverse: bool = field(
+        default_factory=lambda: os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE", "true").lower() == "true"
+    )
+    live_early_exit_stop_loss_btc_adverse_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT", "0.090"))
+    )
+    live_early_exit_max_hold_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_MAX_HOLD_SEC", "220"))
+    )
+    live_early_exit_timestop_max_remain_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
+    )
+    live_early_exit_timestop_max_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
+    )
+    # Optional profit-locking liquidation near expiry to reduce claim dependency.
+    # If enabled, bot will attempt SELL FAK close when remaining time is short and bid is strong enough.
+    live_pre_expiry_liquidation_enabled: bool = field(
+        default_factory=lambda: os.getenv("LIVE_PRE_EXPIRY_LIQUIDATION_ENABLED", "false").lower() == "true"
+    )
+    live_pre_expiry_liquidation_remain_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_PRE_EXPIRY_LIQUIDATION_REMAIN_SEC", "12"))
+    )
+    live_pre_expiry_liquidation_min_bid: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_PRE_EXPIRY_LIQUIDATION_MIN_BID", "0.90"))
+    )
+    live_pre_expiry_liquidation_min_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_PRE_EXPIRY_LIQUIDATION_MIN_ROI_PCT", "0.0"))
+    )
     live_recent_move_lookback_sec: float = field(
         default_factory=lambda: float(os.getenv("LIVE_RECENT_MOVE_LOOKBACK_SEC", "20"))
     )
     live_min_recent_move_pct: float = field(
         default_factory=lambda: float(os.getenv("LIVE_MIN_RECENT_MOVE_PCT", "0.006"))
     )
+    live_trend_align_lookback_sec: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_TREND_ALIGN_LOOKBACK_SEC", "75"))
+    )
+    live_trend_align_max_opposing_move_pct: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
+    )
     live_max_opposite_implied: float = field(
         default_factory=lambda: float(os.getenv("LIVE_MAX_OPPOSITE_IMPLIED", "0.62"))
     )
     live_min_entry_side_implied: float = field(
         default_factory=lambda: float(os.getenv("LIVE_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+    )
+    live_max_contra_gap: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_MAX_CONTRA_GAP", "0.030"))
+    )
+    live_contra_override_min_model_prob: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
+    )
+    live_contra_override_min_conf: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
     )
     live_down_above_start_block_pct: float = field(
         default_factory=lambda: float(os.getenv("LIVE_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))

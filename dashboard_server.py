@@ -6,6 +6,7 @@ Usage:
     python dashboard_server.py --host 0.0.0.0 --port 8080
 """
 import argparse
+import asyncio
 import os
 import json
 import logging
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from clob_auth import (
     api_credentials_snapshot,
+    builder_credentials_snapshot,
     apply_runtime_auth,
     auth_config_status,
     create_authenticated_clob_client,
@@ -68,6 +70,9 @@ logger = logging.getLogger("dashboard")
 
 # Keep jury logs quiet for UI polling.
 logging.getLogger("judges").setLevel(logging.WARNING)
+# Suppress noisy request-level HTTP logs; show only actual errors.
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("httpcore").setLevel(logging.ERROR)
 JURY = Jury(threshold=config.trading.jury_threshold)
 _LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
 _LAST_SIGNAL_HISTORY_TS: dict[str, float] = {}
@@ -252,9 +257,39 @@ def _find_numeric_field(payload: Any, candidates: set[str]) -> Optional[float]:
     return None
 
 
+def _normalize_collateral_amount(raw_value: Optional[float], payload: Any) -> Optional[float]:
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+    decimals = _find_numeric_field(
+        payload,
+        {"decimals", "token_decimals", "asset_decimals", "collateral_decimals"},
+    )
+    if decimals is not None:
+        try:
+            dec = int(decimals)
+        except (TypeError, ValueError):
+            dec = -1
+        if 0 <= dec <= 18:
+            scale = float(10 ** dec)
+            if scale > 1.0 and abs(value - round(value)) < 1e-9 and value >= scale:
+                return float(value / scale)
+
+    # Fallback for USDC-style 6 decimals when API omits decimals metadata.
+    if abs(value - round(value)) < 1e-9 and value >= 1_000_000:
+        return float(value / 1_000_000.0)
+
+    return value
+
+
 def _fetch_live_account_snapshot() -> dict[str, Any]:
     auth_status = auth_config_status()
     creds_snapshot = api_credentials_snapshot()
+    builder_snapshot = builder_credentials_snapshot()
     if not bool(auth_status.get("configured")):
         missing = ", ".join(auth_status.get("missing", [])) or "unknown"
         return {
@@ -269,6 +304,7 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             "private_key_set": bool(auth_status.get("private_key_set")),
             "warnings": list(auth_status.get("warnings") or []),
             "api_credentials": creds_snapshot,
+            "builder_credentials": builder_snapshot,
             "collateral_balance": None,
             "collateral_allowance": None,
         }
@@ -288,6 +324,8 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             payload,
             {"allowance", "available_allowance"},
         )
+        balance = _normalize_collateral_amount(balance, payload)
+        allowance = _normalize_collateral_amount(allowance, payload)
         return {
             "ok": True,
             "configured": True,
@@ -300,6 +338,7 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             "private_key_set": bool(meta.get("private_key_set")),
             "warnings": list(meta.get("warnings") or []),
             "api_credentials": api_credentials_snapshot(),
+            "builder_credentials": builder_snapshot,
             "collateral_balance": balance,
             "collateral_allowance": allowance,
         }
@@ -316,6 +355,7 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             "private_key_set": bool(auth_status.get("private_key_set")),
             "warnings": list(auth_status.get("warnings") or []),
             "api_credentials": creds_snapshot,
+            "builder_credentials": builder_snapshot,
             "collateral_balance": None,
             "collateral_allowance": None,
         }
@@ -1299,6 +1339,180 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         conn.close()
 
 
+def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
+    lim = max(1, min(int(limit), 200))
+    off = max(0, int(offset))
+    try:
+        conn = _connect_db()
+    except Exception as e:
+        return {"ok": False, "error": f"Database connection error ({db_label()}): {e}"}
+
+    try:
+        try:
+            rows = fetch_all_dicts(
+                conn,
+                """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
+                          potential_win_pnl, signal_confidence, signal_reason, entry_source, close_reason, status,
+                          opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                   FROM live_trades
+                   ORDER BY window_start DESC
+                   LIMIT ? OFFSET ?""",
+                (lim, off),
+            )
+        except Exception:
+            rows = fetch_all_dicts(
+                conn,
+                """SELECT id, window_start, window_end, direction, stake, entry_price, payout_multiple, shares,
+                          potential_win_pnl, signal_confidence, signal_reason, status,
+                          opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                   FROM live_trades
+                   ORDER BY window_start DESC
+                   LIMIT ? OFFSET ?""",
+                (lim, off),
+            )
+    except Exception as e:
+        conn.close()
+        return {"ok": False, "error": f"live_trades unavailable: {e}"}
+
+    try:
+        count_row = fetch_one(conn, "SELECT COUNT(*) FROM live_trades")
+        count = int(count_row[0]) if count_row else len(rows)
+        stats_row = fetch_one(
+            conn,
+            """SELECT
+                   SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END),
+                   COALESCE(SUM(pnl), 0),
+                   AVG(CASE WHEN status='CLOSED' THEN roi_pct ELSE NULL END),
+                   AVG(CASE WHEN status='CLOSED' THEN stake ELSE NULL END)
+               FROM live_trades""",
+        )
+        open_cnt = int(stats_row[0] or 0) if stats_row else 0
+        closed_cnt = int(stats_row[1] or 0) if stats_row else 0
+        wins = int(stats_row[2] or 0) if stats_row else 0
+        losses = int(stats_row[3] or 0) if stats_row else 0
+        total_pnl = float(stats_row[4] or 0.0) if stats_row else 0.0
+        avg_roi_pct = float(stats_row[5] or 0.0) if stats_row and stats_row[5] is not None else 0.0
+        avg_stake = float(stats_row[6] or 0.0) if stats_row and stats_row[6] is not None else 0.0
+
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            ws = _to_int(r.get("window_start"))
+            opened_at = _to_float(r.get("opened_at"))
+
+            window_row = None
+            if ws is not None:
+                window_row = fetch_one_dict(
+                    conn,
+                    """SELECT slug, btc_start_price, btc_end_price, actual_outcome
+                       FROM market_windows
+                       WHERE window_start = ?
+                       LIMIT 1""",
+                    (ws,),
+                )
+
+            odds_row = None
+            if ws is not None and opened_at is not None:
+                odds_row = fetch_one_dict(
+                    conn,
+                    """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
+                       FROM poly_odds
+                       WHERE window_start = ?
+                       ORDER BY ABS(ts - ?) ASC
+                       LIMIT 1""",
+                    (ws, opened_at),
+                )
+
+            direction = str(r.get("direction") or "NO_TRADE")
+            entry_price = _to_float(r.get("entry_price"))
+            shares = _to_float(r.get("shares"))
+            stake = _to_float(r.get("stake"))
+            to_win_total = shares
+            to_win_pnl = _to_float(r.get("potential_win_pnl"))
+            if to_win_pnl is None and shares is not None and stake is not None:
+                to_win_pnl = shares - stake
+
+            entry_side_price = None
+            if odds_row:
+                if direction == "UP":
+                    entry_side_price = _to_float(odds_row.get("up_best_ask")) or _to_float(odds_row.get("up_mid"))
+                elif direction == "DOWN":
+                    entry_side_price = _to_float(odds_row.get("down_best_ask")) or _to_float(odds_row.get("down_mid"))
+
+            items.append(
+                {
+                    "id": _to_int(r.get("id")),
+                    "window_start": ws,
+                    "window_end": _to_int(r.get("window_end")),
+                    "direction": direction,
+                    "stake": stake,
+                    "entry_price": entry_price,
+                    "entry_side_price_at_signal": entry_side_price,
+                    "payout_multiple": _to_float(r.get("payout_multiple")),
+                    "shares": shares,
+                    "to_win_total": to_win_total,
+                    "to_win_pnl": to_win_pnl,
+                    "signal_confidence": _to_float(r.get("signal_confidence")),
+                    "signal_reason": str(r.get("signal_reason") or ""),
+                    "entry_source": str(r.get("entry_source") or "") if r.get("entry_source") else None,
+                    "close_reason": str(r.get("close_reason") or "") if r.get("close_reason") else None,
+                    "status": str(r.get("status") or "OPEN"),
+                    "opened_at": opened_at,
+                    "opened_at_utc": (
+                        datetime.fromtimestamp(opened_at, tz=timezone.utc).isoformat()
+                        if opened_at is not None
+                        else None
+                    ),
+                    "closed_at": _to_float(r.get("closed_at")),
+                    "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
+                    "won": _to_int(r.get("won")),
+                    "pnl": _to_float(r.get("pnl")),
+                    "roi_pct": _to_float(r.get("roi_pct")),
+                    "window": {
+                        "slug": str(window_row.get("slug")) if window_row and window_row.get("slug") else None,
+                        "btc_start_price": _to_float(window_row.get("btc_start_price")) if window_row else None,
+                        "btc_end_price": _to_float(window_row.get("btc_end_price")) if window_row else None,
+                        "actual_outcome": (
+                            str(window_row.get("actual_outcome"))
+                            if window_row and window_row.get("actual_outcome")
+                            else None
+                        ),
+                    },
+                    "odds_at_entry": {
+                        "ts": _to_float(odds_row.get("ts")) if odds_row else None,
+                        "up_mid": _to_float(odds_row.get("up_mid")) if odds_row else None,
+                        "down_mid": _to_float(odds_row.get("down_mid")) if odds_row else None,
+                        "up_bid": _to_float(odds_row.get("up_best_bid")) if odds_row else None,
+                        "up_ask": _to_float(odds_row.get("up_best_ask")) if odds_row else None,
+                        "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
+                        "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
+                    },
+                }
+            )
+
+        return {
+            "ok": True,
+            "items": items,
+            "count": count,
+            "limit": lim,
+            "offset": off,
+            "summary": {
+                "open": open_cnt,
+                "closed": closed_cnt,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": (wins / closed_cnt) if closed_cnt > 0 else 0.0,
+                "total_pnl": total_pnl,
+                "avg_roi_pct": avg_roi_pct,
+                "avg_stake": avg_stake,
+            },
+        }
+    finally:
+        conn.close()
+
+
 def build_snapshot() -> dict:
     now_ts = time.time()
     now_iso = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
@@ -1634,23 +1848,76 @@ def control_live_stop() -> dict:
     return status
 
 
+def control_live_claim_now() -> dict:
+    status = build_live_control_status()
+    try:
+        from polymarket_client import PolymarketClient
+
+        async def _run_claim() -> dict[str, Any]:
+            client = PolymarketClient()
+            try:
+                return await client.auto_claim_winnings(ignore_dry_run=True)
+            finally:
+                await client.close()
+
+        result = asyncio.run(_run_claim())
+        status["claim"] = result
+        status["ok"] = bool(result.get("ok"))
+        if status["ok"]:
+            claimed = float(result.get("claimed") or 0.0)
+            if claimed > 0.0:
+                status["message"] = (
+                    f"Claim success via {result.get('method') or 'unknown'}: +${claimed:.2f}"
+                )
+            else:
+                status["message"] = (
+                    f"Claim check completed: {result.get('status') or 'no-op'}"
+                )
+        else:
+            status["message"] = (
+                result.get("error")
+                or result.get("status")
+                or "Claim failed"
+            )
+        return status
+    except Exception as e:
+        status["ok"] = False
+        status["message"] = f"claim execution failed: {e}"
+        status["claim"] = {"ok": False, "error": str(e)}
+        return status
+
+
 def control_live_auth_configure(
     private_key: str,
     funder: str = "",
     signature_type: int = -1,
+    builder_api_key: str = "",
+    builder_api_secret: str = "",
+    builder_api_passphrase: str = "",
 ) -> dict:
     key = str(private_key or "").strip()
     if not key:
+        key = str(getattr(config.polymarket, "private_key", "") or "").strip()
+        if key and not key.startswith("0x") and len(key) == 64:
+            key = f"0x{key}"
+    resolved_funder = str(funder or "").strip()
+    if not resolved_funder:
+        resolved_funder = str(getattr(config.polymarket, "funder", "") or "").strip()
+
+    if not key:
         status = build_live_control_status()
         status["ok"] = False
-        status["message"] = "private_key is required"
+        status["message"] = "private_key is required (or keep an existing configured key)"
         return status
 
     try:
         apply_meta = apply_runtime_auth(
             private_key=key,
-            funder=str(funder or "").strip(),
+            funder=resolved_funder,
             signature_type=int(signature_type),
+            builder_api_key=str(builder_api_key or "").strip(),
+            builder_api_secret=str(builder_api_secret or "").strip(),
+            builder_api_passphrase=str(builder_api_passphrase or "").strip(),
             persist_env=True,
         )
         # Force derive/validate now so user can trade without restarting server.
@@ -1658,12 +1925,18 @@ def control_live_auth_configure(
         status = build_live_control_status()
         status["ok"] = bool(account.get("ok"))
         if status["ok"]:
-            status["message"] = (
-                "Auth saved and API credentials derived. "
-                "If live process is already running, restart it to apply new auth."
-            )
+            if bool(apply_meta.get("builder_api_creds")):
+                status["message"] = (
+                    "Auth saved (trading auth + Builder creds separated). "
+                    "If live process is already running, restart it to apply new auth."
+                )
+            else:
+                status["message"] = (
+                    "Auth saved and API credentials derived. "
+                    "If live process is already running, restart it to apply new auth."
+                )
         else:
-            status["message"] = account.get("error") or "Auth saved, but credential verification failed"
+            status["message"] = str(account.get("error") or "") or "Auth saved, but credential verification failed"
         status["auth"] = apply_meta
         return status
     except Exception as e:
@@ -1853,6 +2126,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
+        if path == "/api/live-trade-history":
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int(qs.get("limit", ["30"])[0])
+            except ValueError:
+                limit = 30
+            try:
+                offset = int(qs.get("offset", ["0"])[0])
+            except ValueError:
+                offset = 0
+            try:
+                self._send_json(build_live_trade_history(limit=limit, offset=offset), code=200)
+            except Exception as e:
+                logger.exception("live-trade-history error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
         if path == "/api/control/paper":
             self._send_json(PAPER_SIM_PROC.status(), code=200)
             return
@@ -1929,6 +2219,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             private_key = str(payload.get("private_key", ""))
             funder = str(payload.get("funder", ""))
             signature_type_raw = payload.get("signature_type", -1)
+            builder_api_key = str(payload.get("builder_api_key", ""))
+            builder_api_secret = str(payload.get("builder_api_secret", ""))
+            builder_api_passphrase = str(payload.get("builder_api_passphrase", ""))
             try:
                 signature_type = int(signature_type_raw)
             except Exception:
@@ -1939,6 +2232,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         private_key=private_key,
                         funder=funder,
                         signature_type=signature_type,
+                        builder_api_key=builder_api_key,
+                        builder_api_secret=builder_api_secret,
+                        builder_api_passphrase=builder_api_passphrase,
                     ),
                     code=200,
                 )
@@ -1952,6 +2248,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_live_stop(), code=200)
             except Exception as e:
                 logger.exception("live stop error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/claim":
+            try:
+                self._send_json(control_live_claim_now(), code=200)
+            except Exception as e:
+                logger.exception("live claim error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

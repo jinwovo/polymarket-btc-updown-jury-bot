@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, Gauge, Timer } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -147,6 +147,13 @@ interface LiveControlStatus extends ProcessStatus {
       api_passphrase?: string | null;
       path?: string | null;
     };
+    builder_credentials?: {
+      exists?: boolean;
+      source?: string | null;
+      api_key?: string | null;
+      api_secret?: string | null;
+      api_passphrase?: string | null;
+    };
     collateral_balance?: number | null;
     collateral_allowance?: number | null;
   };
@@ -273,6 +280,31 @@ interface PaperTradeHistoryResponse {
   error?: string;
 }
 
+interface LiveTradeHistoryItem extends PaperTradeHistoryItem {
+  entry_source?: string | null;
+}
+
+interface LiveTradeHistorySummary {
+  open: number;
+  closed: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  total_pnl: number;
+  avg_roi_pct?: number;
+  avg_stake?: number;
+}
+
+interface LiveTradeHistoryResponse {
+  ok: boolean;
+  items: LiveTradeHistoryItem[];
+  count: number;
+  limit: number;
+  offset: number;
+  summary?: LiveTradeHistorySummary;
+  error?: string;
+}
+
 function formatNumber(value: number | null | undefined, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) return "--";
   return value.toLocaleString(undefined, {
@@ -378,6 +410,15 @@ export function LiveDashboard() {
   const [paperHistoryOffset, setPaperHistoryOffset] = useState(0);
   const [paperHistorySummary, setPaperHistorySummary] = useState<PaperTradeHistorySummary | null>(null);
   const paperHistoryPageSize = 20;
+  const [liveHistoryOpen, setLiveHistoryOpen] = useState(false);
+  const [liveHistoryLoading, setLiveHistoryLoading] = useState(false);
+  const [liveHistory, setLiveHistory] = useState<LiveTradeHistoryItem[]>([]);
+  const [liveHistoryTotal, setLiveHistoryTotal] = useState(0);
+  const [liveHistoryOffset, setLiveHistoryOffset] = useState(0);
+  const [liveHistorySummary, setLiveHistorySummary] = useState<LiveTradeHistorySummary | null>(null);
+  const liveHistoryPageSize = 20;
+  const marketMotionCardRef = useRef<HTMLDivElement | null>(null);
+  const [marketMotionCardHeight, setMarketMotionCardHeight] = useState<number | null>(null);
 
   async function loadSnapshot() {
     const res = await fetch("/api/live/snapshot", { cache: "no-store" });
@@ -385,6 +426,32 @@ export function LiveDashboard() {
     if (!json.ok) throw new Error(json.error || "Snapshot unavailable");
     return json;
   }
+
+  useEffect(() => {
+    const el = marketMotionCardRef.current;
+    if (!el) return;
+
+    let raf = 0;
+    const syncHeight = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const next = Math.round(el.getBoundingClientRect().height);
+        if (next > 0) {
+          setMarketMotionCardHeight((prev) => (prev === next ? prev : next));
+        }
+      });
+    };
+
+    syncHeight();
+    const ro = new ResizeObserver(syncHeight);
+    ro.observe(el);
+    window.addEventListener("resize", syncHeight);
+    return () => {
+      window.removeEventListener("resize", syncHeight);
+      ro.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, [history, snapshot]);
 
   async function loadHistory() {
     const res = await fetch("/api/live/history?minutes=30", { cache: "no-store" });
@@ -465,6 +532,28 @@ export function LiveDashboard() {
     }
   }
 
+  async function loadLiveTradeHistory(
+    params: { limit?: number; offset?: number } = {},
+  ) {
+    const limit = params.limit ?? liveHistoryPageSize;
+    const offset = params.offset ?? liveHistoryOffset;
+    setLiveHistoryLoading(true);
+    try {
+      const res = await fetch(`/api/live/live-trade-history?limit=${limit}&offset=${offset}`, {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as LiveTradeHistoryResponse;
+      if (json.ok) {
+        setLiveHistory(json.items ?? []);
+        setLiveHistoryTotal(json.count ?? 0);
+        setLiveHistoryOffset(json.offset ?? offset);
+        setLiveHistorySummary(json.summary ?? null);
+      }
+    } finally {
+      setLiveHistoryLoading(false);
+    }
+  }
+
   async function startPaper() {
     const res = await fetch("/api/control/paper", {
       method: "POST",
@@ -523,10 +612,21 @@ export function LiveDashboard() {
     setLiveStatus(json);
   }
 
+  async function claimLiveNow() {
+    const res = await fetch("/api/control/live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "claim_now" }),
+    });
+    const json = (await res.json()) as LiveControlStatus;
+    setLiveStatus(json);
+  }
+
   async function saveLiveAuth() {
     const pk = authPrivateKey.trim();
-    if (!pk) {
-      setAuthError("Private key is required.");
+    const hasExistingPrivateKey = Boolean(liveStatus?.account?.private_key_set);
+    if (!pk && !hasExistingPrivateKey) {
+      setAuthError("Private key is required for first-time setup.");
       return;
     }
     setAuthSaving(true);
@@ -668,6 +768,7 @@ export function LiveDashboard() {
     let snapshotTimer: number | null = null;
     let historyTimer: number | null = null;
     let paperSummaryTimer: number | null = null;
+    let liveStatusTimer: number | null = null;
 
     const pollSnapshot = async () => {
       if (!mounted) return;
@@ -743,16 +844,32 @@ export function LiveDashboard() {
       }
     };
 
+    const pollLiveStatus = async () => {
+      if (!mounted) return;
+      try {
+        const live = await loadLiveStatus();
+        if (mounted) setLiveStatus(live);
+      } catch (_) {
+        // Ignore transient live status errors.
+      }
+      if (mounted) {
+        // Balance/account snapshot refresh cadence: 30s.
+        liveStatusTimer = window.setTimeout(() => void pollLiveStatus(), 30000);
+      }
+    };
+
     void pollSnapshot();
     void pollHistory();
     void loadControlOnce();
     void pollPaperSummary();
+    void pollLiveStatus();
 
     return () => {
       mounted = false;
       if (snapshotTimer !== null) window.clearTimeout(snapshotTimer);
       if (historyTimer !== null) window.clearTimeout(historyTimer);
       if (paperSummaryTimer !== null) window.clearTimeout(paperSummaryTimer);
+      if (liveStatusTimer !== null) window.clearTimeout(liveStatusTimer);
     };
   }, []);
 
@@ -983,7 +1100,7 @@ export function LiveDashboard() {
         </section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-3 xl:items-start">
-          <Card className="xl:col-span-2 xl:self-start">
+          <Card ref={marketMotionCardRef} className="xl:col-span-2">
             <CardHeader>
               <CardTitle>Market Motion</CardTitle>
               <CardDescription>Last 30 minutes BTC / UP-DOWN odds trend</CardDescription>
@@ -1029,7 +1146,14 @@ export function LiveDashboard() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card
+            className="flex flex-col xl:h-[var(--market-motion-h)]"
+            style={
+              marketMotionCardHeight
+                ? ({ "--market-motion-h": `${marketMotionCardHeight}px` } as CSSProperties)
+                : undefined
+            }
+          >
             <CardHeader>
               <div className="flex items-center justify-between gap-2">
                 <CardTitle>Judge Votes</CardTitle>
@@ -1049,7 +1173,7 @@ export function LiveDashboard() {
                 Live {signal?.jury_size ?? signal?.judges?.length ?? 0}-judge consensus
               </CardDescription>
             </CardHeader>
-            <CardContent className="max-h-[36rem] space-y-2.5 overflow-y-auto pr-1">
+            <CardContent className="flex-1 min-h-0 space-y-2.5 overflow-y-auto pr-1">
               {gate?.evaluated ? (
                 <div className="rounded-xl border border-border/70 bg-background/40 p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -1436,6 +1560,22 @@ export function LiveDashboard() {
                   Refresh
                 </button>
                 <button
+                  onClick={() => void claimLiveNow()}
+                  className="rounded-md border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-sm"
+                >
+                  Claim Now
+                </button>
+                <button
+                  onClick={() => {
+                    setLiveHistoryOpen(true);
+                    setLiveHistoryOffset(0);
+                    void loadLiveTradeHistory({ limit: liveHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm"
+                >
+                  Trade History
+                </button>
+                <button
                   onClick={openAuthModal}
                   className="rounded-md border border-cyan-400/50 bg-cyan-500/20 px-3 py-1.5 text-sm"
                 >
@@ -1587,12 +1727,16 @@ export function LiveDashboard() {
                 ) : null}
 
                 <label className="block text-xs text-muted-foreground">
-                  Private Key (required)
+                  Private Key (required for first-time setup)
                   <input
                     type="password"
                     value={authPrivateKey}
                     onChange={(e) => setAuthPrivateKey(e.target.value)}
-                    placeholder={authEditEnabled ? "0x..." : "Click 'Enable Edit' first"}
+                    placeholder={
+                      authEditEnabled
+                        ? "Leave blank to keep existing key"
+                        : "Click 'Enable Edit' first"
+                    }
                     disabled={!authEditEnabled}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 font-mono text-sm disabled:cursor-not-allowed disabled:opacity-60"
                   />
@@ -1626,14 +1770,14 @@ export function LiveDashboard() {
                 </div>
 
                 <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
-                  Save creates/updates <span className="font-mono">.env</span> and derives API creds into{" "}
-                  <span className="font-mono">.env.polymarket.generated</span> (both local, git-ignored).
+                  Save updates <span className="font-mono">.env</span>. Trading auth uses private-key derived
+                  API creds in <span className="font-mono">.env.polymarket.generated</span>.
                 </p>
 
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <p className="text-muted-foreground">
-                      Generated API Credentials ({liveApiCreds?.source ?? "none"})
+                      Trading API Credentials ({liveApiCreds?.source ?? "none"})
                     </p>
                     <button
                       onClick={() => setAuthShowSecrets((prev) => !prev)}
@@ -1673,7 +1817,7 @@ export function LiveDashboard() {
                     disabled={authSaving || !authEditEnabled}
                     className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
                   >
-                    {authSaving ? "Saving..." : "Save & Generate"}
+                    {authSaving ? "Saving..." : "Save Auth"}
                   </button>
                   <button
                     onClick={enableAuthEdit}
@@ -1688,6 +1832,176 @@ export function LiveDashboard() {
                     className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm disabled:opacity-40"
                   >
                     Refresh Status
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {liveHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Live Trade History</p>
+                  <p className="text-xs text-muted-foreground">
+                    Filled entries, 5m market context, and realized PnL from live execution.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadLiveTradeHistory({
+                        limit: liveHistoryPageSize,
+                        offset: liveHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setLiveHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-7">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{liveHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{liveHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {liveHistorySummary?.wins ?? 0}/{liveHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((liveHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg Stake</p>
+                  <p className="font-mono text-sm">{formatUsd(liveHistorySummary?.avg_stake)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg ROI</p>
+                  <p className="font-mono text-sm">{formatPct(liveHistorySummary?.avg_roi_pct, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(liveHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {liveHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : liveHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No live trades yet.</p>
+                ) : (
+                  liveHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        {t.entry_source ? (
+                          <Badge variant="neutral">{t.entry_source.toUpperCase()}</Badge>
+                        ) : null}
+                        <span className="font-mono text-muted-foreground">{t.opened_at_utc ?? "--"}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">
+                            {formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            signal-side px {formatNumber(t.entry_side_price_at_signal, 3)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">5m BTC Start/End</p>
+                          <p className="font-mono">
+                            {formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">
+                            {formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">
+                          conf {formatNumber(t.signal_confidence, 3)}
+                        </span>
+                        {t.close_reason ? (
+                          <span className="font-mono text-amber-300/90">exit {t.close_reason}</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {liveHistoryTotal} | showing {liveHistoryTotal === 0 ? 0 : liveHistoryOffset + 1}-
+                  {Math.min(liveHistoryOffset + liveHistory.length, liveHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={liveHistoryLoading || liveHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, liveHistoryOffset - liveHistoryPageSize);
+                      setLiveHistoryOffset(nextOffset);
+                      void loadLiveTradeHistory({ limit: liveHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={liveHistoryLoading || liveHistoryOffset + liveHistoryPageSize >= liveHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = liveHistoryOffset + liveHistoryPageSize;
+                      setLiveHistoryOffset(nextOffset);
+                      void loadLiveTradeHistory({ limit: liveHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
                   </button>
                 </div>
               </div>
