@@ -20,6 +20,12 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
+from clob_auth import (
+    api_credentials_snapshot,
+    apply_runtime_auth,
+    auth_config_status,
+    create_authenticated_clob_client,
+)
 from config import config
 from db_config import (
     connect_db,
@@ -247,37 +253,30 @@ def _find_numeric_field(payload: Any, candidates: set[str]) -> Optional[float]:
 
 
 def _fetch_live_account_snapshot() -> dict[str, Any]:
-    api_key = str(config.polymarket.api_key or "").strip()
-    api_secret = str(config.polymarket.api_secret or "").strip()
-    api_passphrase = str(config.polymarket.api_passphrase or "").strip()
-    funder = str(config.polymarket.funder or "").strip()
-    configured = bool(api_key and api_secret and api_passphrase and funder)
-
-    if not configured:
+    auth_status = auth_config_status()
+    creds_snapshot = api_credentials_snapshot()
+    if not bool(auth_status.get("configured")):
+        missing = ", ".join(auth_status.get("missing", [])) or "unknown"
         return {
             "ok": False,
             "configured": False,
-            "error": "Missing API credentials or funder address in .env",
-            "funder": funder or None,
+            "error": f"Missing required env: {missing}",
+            "funder": auth_status.get("funder"),
+            "funder_source": auth_status.get("funder_source"),
+            "signature_type": auth_status.get("signature_type"),
+            "signature_type_source": auth_status.get("signature_type_source"),
+            "direct_api_creds": bool(auth_status.get("direct_api_creds")),
+            "private_key_set": bool(auth_status.get("private_key_set")),
+            "warnings": list(auth_status.get("warnings") or []),
+            "api_credentials": creds_snapshot,
             "collateral_balance": None,
             "collateral_allowance": None,
         }
 
     try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
-        creds = ApiCreds(
-            api_key=api_key,
-            api_secret=api_secret,
-            api_passphrase=api_passphrase,
-        )
-        client = ClobClient(
-            config.polymarket.clob_url,
-            chain_id=137,
-            creds=creds,
-            funder=funder,
-        )
+        client, meta = create_authenticated_clob_client()
         params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         payload = client.get_balance_allowance(params)
 
@@ -293,7 +292,14 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             "ok": True,
             "configured": True,
             "error": None,
-            "funder": funder,
+            "funder": meta.get("funder"),
+            "funder_source": meta.get("funder_source"),
+            "signature_type": meta.get("signature_type"),
+            "signature_type_source": meta.get("signature_type_source"),
+            "creds_source": meta.get("creds_source"),
+            "private_key_set": bool(meta.get("private_key_set")),
+            "warnings": list(meta.get("warnings") or []),
+            "api_credentials": api_credentials_snapshot(),
             "collateral_balance": balance,
             "collateral_allowance": allowance,
         }
@@ -302,7 +308,14 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
             "ok": False,
             "configured": True,
             "error": str(e),
-            "funder": funder,
+            "funder": auth_status.get("funder"),
+            "funder_source": auth_status.get("funder_source"),
+            "signature_type": auth_status.get("signature_type"),
+            "signature_type_source": auth_status.get("signature_type_source"),
+            "direct_api_creds": bool(auth_status.get("direct_api_creds")),
+            "private_key_set": bool(auth_status.get("private_key_set")),
+            "warnings": list(auth_status.get("warnings") or []),
+            "api_credentials": creds_snapshot,
             "collateral_balance": None,
             "collateral_allowance": None,
         }
@@ -1534,7 +1547,7 @@ def control_live_start(
     if not account.get("configured", False):
         status = LIVE_TRADING_PROC.status()
         status["ok"] = False
-        status["message"] = account.get("error") or "API credentials are not configured"
+        status["message"] = account.get("error") or "Polymarket auth is not configured"
         status["account"] = account
         return status
 
@@ -1557,12 +1570,18 @@ def control_live_start(
             status["account"] = account
             return status
     else:
-        # Adaptive mode keeps MAX_BET_SIZE as a dynamic cap from balance.
-        # Actual entry amount is still computed in main.py from confidence/edge.
-        if balance is not None and balance > 0:
-            per_trade_usd = max(1.0, min(balance, balance * 0.12))
+        # Adaptive mode uses MAX_BET_SIZE as account-size cap so dynamic sizing
+        # in main.py scales proportionally (e.g., 100 -> ~7~12, 1000 -> ~70~120).
+        if balance is not None:
+            if balance <= 0.0:
+                status = LIVE_TRADING_PROC.status()
+                status["ok"] = False
+                status["message"] = "Collateral balance is zero; cannot start adaptive live mode"
+                status["account"] = account
+                return status
+            per_trade_usd = float(balance)
         else:
-            per_trade_usd = max(1.0, requested_stake if requested_stake > 0 else 5.0)
+            per_trade_usd = max(5.0, requested_stake if requested_stake > 0 else 50.0)
 
     env_overrides = {
         "DRY_RUN": "false",
@@ -1593,6 +1612,45 @@ def control_live_stop() -> dict:
     status["ok"] = ok
     status["message"] = msg
     return status
+
+
+def control_live_auth_configure(
+    private_key: str,
+    funder: str = "",
+    signature_type: int = -1,
+) -> dict:
+    key = str(private_key or "").strip()
+    if not key:
+        status = build_live_control_status()
+        status["ok"] = False
+        status["message"] = "private_key is required"
+        return status
+
+    try:
+        apply_meta = apply_runtime_auth(
+            private_key=key,
+            funder=str(funder or "").strip(),
+            signature_type=int(signature_type),
+            persist_env=True,
+        )
+        # Force derive/validate now so user can trade without restarting server.
+        account = _fetch_live_account_snapshot()
+        status = build_live_control_status()
+        status["ok"] = bool(account.get("ok"))
+        if status["ok"]:
+            status["message"] = (
+                "Auth saved and API credentials derived. "
+                "If live process is already running, restart it to apply new auth."
+            )
+        else:
+            status["message"] = account.get("error") or "Auth saved, but credential verification failed"
+        status["auth"] = apply_meta
+        return status
+    except Exception as e:
+        status = build_live_control_status()
+        status["ok"] = False
+        status["message"] = f"auth configure failed: {e}"
+        return status
 
 
 def control_backtest_run(payload: dict[str, Any]) -> dict:
@@ -1844,6 +1902,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 logger.exception("live start error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/auth-config":
+            private_key = str(payload.get("private_key", ""))
+            funder = str(payload.get("funder", ""))
+            signature_type_raw = payload.get("signature_type", -1)
+            try:
+                signature_type = int(signature_type_raw)
+            except Exception:
+                signature_type = -1
+            try:
+                self._send_json(
+                    control_live_auth_configure(
+                        private_key=private_key,
+                        funder=funder,
+                        signature_type=signature_type,
+                    ),
+                    code=200,
+                )
+            except Exception as e:
+                logger.exception("live auth-config error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

@@ -133,8 +133,27 @@ interface LiveControlStatus extends ProcessStatus {
     configured: boolean;
     error?: string | null;
     funder?: string | null;
+    funder_source?: string | null;
+    signature_type?: number | null;
+    signature_type_source?: string | null;
+    creds_source?: string | null;
+    private_key_set?: boolean;
+    warnings?: string[];
+    api_credentials?: {
+      exists?: boolean;
+      source?: string | null;
+      api_key?: string | null;
+      api_secret?: string | null;
+      api_passphrase?: string | null;
+      path?: string | null;
+    };
     collateral_balance?: number | null;
     collateral_allowance?: number | null;
+  };
+  auth?: {
+    ok?: boolean;
+    persisted_env?: string;
+    generated_env?: string;
   };
 }
 
@@ -290,6 +309,13 @@ function ageText(sec: number | null | undefined) {
   return `${Math.floor(sec / 60)}m ago`;
 }
 
+function maskSecret(value: string | null | undefined) {
+  const s = String(value ?? "");
+  if (!s) return "--";
+  if (s.length <= 10) return `${s.slice(0, 2)}***${s.slice(-2)}`;
+  return `${s.slice(0, 6)}...${s.slice(-4)}`;
+}
+
 function windowSeries(
   points: Array<{ ts: number; value: number }> | null | undefined,
   windowSec: number,
@@ -322,6 +348,14 @@ export function LiveDashboard() {
   const [liveStake, setLiveStake] = useState("5");
   const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "fixed">("adaptive");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authPrivateKey, setAuthPrivateKey] = useState("");
+  const [authFunder, setAuthFunder] = useState("");
+  const [authSignatureType, setAuthSignatureType] = useState("-1");
+  const [authSaving, setAuthSaving] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authEditEnabled, setAuthEditEnabled] = useState(false);
+  const [authShowSecrets, setAuthShowSecrets] = useState(false);
 
   const [lastHours, setLastHours] = useState("24");
   const [runMode, setRunMode] = useState<"single" | "auto_sweep">("auto_sweep");
@@ -487,6 +521,66 @@ export function LiveDashboard() {
     });
     const json = (await res.json()) as LiveControlStatus;
     setLiveStatus(json);
+  }
+
+  async function saveLiveAuth() {
+    const pk = authPrivateKey.trim();
+    if (!pk) {
+      setAuthError("Private key is required.");
+      return;
+    }
+    setAuthSaving(true);
+    setAuthError(null);
+    try {
+      const sig = Number(authSignatureType || "-1");
+      const payload = {
+        action: "auth_config",
+        private_key: pk,
+        funder: authFunder.trim(),
+        signature_type: Number.isFinite(sig) ? sig : -1,
+      };
+      const res = await fetch("/api/control/live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = (await res.json()) as LiveControlStatus;
+      setLiveStatus(json);
+      if (!json.ok) {
+        setAuthError(json.message || json.error || "Failed to save auth");
+        return;
+      }
+      setAuthPrivateKey("");
+      setAuthEditEnabled(false);
+      setAuthModalOpen(false);
+    } catch (e) {
+      setAuthError(e instanceof Error ? e.message : "Failed to save auth");
+    } finally {
+      setAuthSaving(false);
+    }
+  }
+
+  function openAuthModal() {
+    setAuthError(null);
+    setAuthPrivateKey("");
+    setAuthFunder(liveStatus?.account?.funder ?? "");
+    const sig = liveStatus?.account?.signature_type;
+    setAuthSignatureType(sig === 0 || sig === 1 || sig === 2 ? String(sig) : "-1");
+    setAuthEditEnabled(!Boolean(liveStatus?.account?.private_key_set));
+    setAuthShowSecrets(false);
+    setAuthModalOpen(true);
+  }
+
+  function enableAuthEdit() {
+    const hasExistingCreds = Boolean(liveStatus?.account?.api_credentials?.exists);
+    if (hasExistingCreds) {
+      const ok = window.confirm(
+        "기존 API Key/Secret/Passphrase가 교체됩니다. 계속 수정할까요?",
+      );
+      if (!ok) return;
+    }
+    setAuthEditEnabled(true);
+    setAuthError(null);
   }
 
   async function resetPaperHistory() {
@@ -703,6 +797,8 @@ export function LiveDashboard() {
     (seedCapital > 0 ? (realizedPnl / seedCapital) * 100.0 : 0.0);
   const liveBalance = liveStatus?.account?.collateral_balance ?? null;
   const liveAllowance = liveStatus?.account?.collateral_allowance ?? null;
+  const liveApiCreds = liveStatus?.account?.api_credentials;
+  const hasLiveApiCreds = Boolean(liveApiCreds?.exists);
   const liveStakeNum = Number(liveStake || "0");
   const liveStakeValid = liveSizingMode === "adaptive" || (Number.isFinite(liveStakeNum) && liveStakeNum > 0);
   const liveStakeOverBalance =
@@ -1242,6 +1338,16 @@ export function LiveDashboard() {
                   <p className="text-muted-foreground">Funder</p>
                   <p className="truncate font-mono">{liveStatus?.account?.funder ?? "--"}</p>
                 </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Signer Key</p>
+                  <p className="font-mono">{liveStatus?.account?.private_key_set ? "set" : "missing"}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Sig/Auth</p>
+                  <p className="font-mono">
+                    sig={liveStatus?.account?.signature_type ?? "--"} | {liveStatus?.account?.creds_source ?? "--"}
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -1284,7 +1390,7 @@ export function LiveDashboard() {
               </div>
               {liveSizingMode === "adaptive" ? (
                 <p className="text-xs text-muted-foreground">
-                  Adaptive mode sizes entries dynamically from confidence/edge (Kelly-style) with balance-aware cap.
+                  Adaptive mode sizes entries proportionally from confidence/edge and account balance cap.
                 </p>
               ) : null}
 
@@ -1301,6 +1407,11 @@ export function LiveDashboard() {
               {liveStatus?.account?.error ? (
                 <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
                   {liveStatus.account.error}
+                </p>
+              ) : null}
+              {(liveStatus?.account?.warnings ?? []).length > 0 ? (
+                <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+                  {(liveStatus?.account?.warnings ?? []).join(" | ")}
                 </p>
               ) : null}
 
@@ -1323,6 +1434,12 @@ export function LiveDashboard() {
                   className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm"
                 >
                   Refresh
+                </button>
+                <button
+                  onClick={openAuthModal}
+                  className="rounded-md border border-cyan-400/50 bg-cyan-500/20 px-3 py-1.5 text-sm"
+                >
+                  Private Key Edit
                 </button>
                 <Badge variant={liveStatus?.running ? "success" : "neutral"}>
                   {liveStatus?.running ? "RUNNING" : "STOPPED"}
@@ -1441,6 +1558,142 @@ export function LiveDashboard() {
             </CardContent>
           </Card>
         </section>
+
+        {authModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Polymarket Auth Setup</p>
+                  <p className="text-xs text-muted-foreground">
+                    Save private key/funder to local .env, derive API creds, no server restart.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!authSaving) setAuthModalOpen(false);
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {!authEditEnabled ? (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+                    수정하면 기존 API Key / Secret / Passphrase가 지워지고 새 값으로 재생성됩니다.
+                  </div>
+                ) : null}
+
+                <label className="block text-xs text-muted-foreground">
+                  Private Key (required)
+                  <input
+                    type="password"
+                    value={authPrivateKey}
+                    onChange={(e) => setAuthPrivateKey(e.target.value)}
+                    placeholder={authEditEnabled ? "0x..." : "Click 'Enable Edit' first"}
+                    disabled={!authEditEnabled}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 font-mono text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </label>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="text-xs text-muted-foreground">
+                    Funder Address (optional)
+                    <input
+                      value={authFunder}
+                      onChange={(e) => setAuthFunder(e.target.value)}
+                      placeholder="0x... (Polymarket shown wallet)"
+                      disabled={!authEditEnabled}
+                      className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 font-mono text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                  </label>
+                  <label className="text-xs text-muted-foreground">
+                    Signature Type
+                    <select
+                      value={authSignatureType}
+                      onChange={(e) => setAuthSignatureType(e.target.value)}
+                      disabled={!authEditEnabled}
+                      className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <option value="-1">auto (-1)</option>
+                      <option value="0">EOA (0)</option>
+                      <option value="1">POLY_PROXY (1)</option>
+                      <option value="2">POLY_GNOSIS_SAFE (2)</option>
+                    </select>
+                  </label>
+                </div>
+
+                <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                  Save creates/updates <span className="font-mono">.env</span> and derives API creds into{" "}
+                  <span className="font-mono">.env.polymarket.generated</span> (both local, git-ignored).
+                </p>
+
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <p className="text-muted-foreground">
+                      Generated API Credentials ({liveApiCreds?.source ?? "none"})
+                    </p>
+                    <button
+                      onClick={() => setAuthShowSecrets((prev) => !prev)}
+                      className="rounded border border-border/70 px-2 py-0.5 text-[11px]"
+                    >
+                      {authShowSecrets ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                  {hasLiveApiCreds ? (
+                    <div className="space-y-1 font-mono text-[11px]">
+                      <p>apiKey: {authShowSecrets ? liveApiCreds?.api_key : maskSecret(liveApiCreds?.api_key)}</p>
+                      <p>secret: {authShowSecrets ? liveApiCreds?.api_secret : maskSecret(liveApiCreds?.api_secret)}</p>
+                      <p>
+                        passphrase:{" "}
+                        {authShowSecrets ? liveApiCreds?.api_passphrase : maskSecret(liveApiCreds?.api_passphrase)}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">No derived credentials yet.</p>
+                  )}
+                </div>
+
+                {authError ? (
+                  <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+                    {authError}
+                  </p>
+                ) : null}
+                {liveStatus?.message ? (
+                  <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                    {liveStatus.message}
+                  </p>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void saveLiveAuth()}
+                    disabled={authSaving || !authEditEnabled}
+                    className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    {authSaving ? "Saving..." : "Save & Generate"}
+                  </button>
+                  <button
+                    onClick={enableAuthEdit}
+                    disabled={authSaving || authEditEnabled}
+                    className="rounded-md border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    Enable Edit
+                  </button>
+                  <button
+                    onClick={async () => setLiveStatus(await loadLiveStatus())}
+                    disabled={authSaving}
+                    className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    Refresh Status
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {paperHistoryOpen ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">

@@ -179,7 +179,28 @@ class TradingBot:
                 max(float(config.trading.min_bet_size), fixed),
                 2,
             )
-        return self.risk_mgr.compute_bet_size(confidence, edge)
+
+        cap = float(config.trading.max_bet_size)
+        if cap <= 0.0:
+            return 0.0
+
+        conf = _clamp(float(confidence), 0.0, 1.0)
+        edge_v = _clamp(float(edge), 0.0, 0.30)
+        base_frac = _clamp(float(config.trading.live_adaptive_base_frac), 0.005, 0.80)
+        min_frac = _clamp(float(config.trading.live_adaptive_min_frac), 0.005, 0.80)
+        max_frac = _clamp(float(config.trading.live_adaptive_max_frac), min_frac, 0.80)
+        edge_boost = max(0.0, float(config.trading.live_adaptive_edge_boost))
+        conf_boost = max(0.0, float(config.trading.live_adaptive_conf_boost))
+
+        frac = base_frac + (edge_v * edge_boost) + (max(0.0, conf - 0.50) * conf_boost)
+        frac = _clamp(frac, min_frac, max_frac)
+        bet = cap * frac
+
+        if self.risk_mgr.consecutive_losses > 0:
+            bet *= 0.8 ** min(self.risk_mgr.consecutive_losses, 3)
+
+        bet = _clamp(bet, float(config.trading.min_bet_size), cap)
+        return round(float(bet), 2)
 
     def _estimate_fast_lane_prob_up(self, ctx: MarketContext) -> float | None:
         n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
@@ -361,6 +382,14 @@ class TradingBot:
             float(config.trading.order_poll_interval_seconds),
             float(config.trading.max_entry_price_drift_abs),
             float(config.trading.max_entry_price_drift_ratio) * 100.0,
+        )
+        logger.info(
+            "Adaptive sizing: base=%.2f%% min=%.2f%% max=%.2f%% edge_boost=%.3f conf_boost=%.3f",
+            float(config.trading.live_adaptive_base_frac) * 100.0,
+            float(config.trading.live_adaptive_min_frac) * 100.0,
+            float(config.trading.live_adaptive_max_frac) * 100.0,
+            float(config.trading.live_adaptive_edge_boost),
+            float(config.trading.live_adaptive_conf_boost),
         )
         logger.info(
             "Live guards: entry_start=%.0fs support>=%.0f%% unanim=%s move>=%.4f%%(lookback=%.0fs) "

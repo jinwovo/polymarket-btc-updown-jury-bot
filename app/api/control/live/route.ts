@@ -31,7 +31,12 @@ export async function POST(request: NextRequest) {
   }
 
   const action = String(body.action ?? "start").toLowerCase();
-  const endpoint = action === "stop" ? "/api/control/live/stop" : "/api/control/live/start";
+  const endpoint =
+    action === "stop"
+      ? "/api/control/live/stop"
+      : action === "auth_config"
+        ? "/api/control/live/auth-config"
+        : "/api/control/live/start";
 
   try {
     const response = await fetch(`${PY_API_BASE}${endpoint}`, {
@@ -54,4 +59,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

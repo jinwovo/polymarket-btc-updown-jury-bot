@@ -80,6 +80,10 @@ This starts:
 
 - `Paper Sim Control`
   - start/stop paper simulation from UI
+- `Live Trading Control`
+  - `Private Key Edit` popup to save `POLYMARKET_PRIVATE_KEY` (+ optional `FUNDER`/signature type) without restarting dashboard server
+  - runtime derives API creds and writes `.env.polymarket.generated`
+  - popup shows generated `apiKey/secret/passphrase`; re-edit requires overwrite confirmation
 - `Trade History` popup
   - entry price
   - 5m BTC start/end
@@ -146,14 +150,25 @@ Reference papers:
 Create `.env` from `.env.example`, then edit values.
 Local `.env` files are ignored by git (`.env`, `.env.*`), so secrets do not get committed.
 
+Polymarket live auth (recommended):
+- set `POLYMARKET_PRIVATE_KEY`
+- set `POLYMARKET_FUNDER` (your Polymarket proxy/funder address; if omitted, runtime tries EOA-from-key fallback)
+- optional: set `POLYMARKET_SIGNATURE_TYPE` (`-1` auto, `0` EOA, `1` POLY_PROXY, `2` POLY_GNOSIS_SAFE)
+- runtime auto-derives `POLYMARKET_API_KEY/SECRET/PASSPHRASE` and writes `.env.polymarket.generated` (also git-ignored)
+
 Key parameters:
 
+- `POLYMARKET_PRIVATE_KEY` (recommended for auto-derive auth)
+- `POLYMARKET_FUNDER` (proxy/funder address)
+- `POLYMARKET_SIGNATURE_TYPE` (default: `-1` auto-detect)
 - `MIN_EDGE` (default: `0.08`)
 - `JURY_THRESHOLD` (default: `3`)
 - `TRADE_FEE_RATE` (default: `0.010`)
 - `MIN_EXPECTED_ROI` (default: `0.003`)
 - `MAX_BET_SIZE` (default: `5.0`)
 - `LIVE_SIZING_MODE` (`ADAPTIVE` | `FIXED`)
+- `LIVE_ADAPTIVE_BASE_FRAC` / `LIVE_ADAPTIVE_MIN_FRAC` / `LIVE_ADAPTIVE_MAX_FRAC`
+- `LIVE_ADAPTIVE_EDGE_BOOST` / `LIVE_ADAPTIVE_CONF_BOOST`
 - `POSITION_MODE` (`BOTH` | `UP_ONLY` | `DOWN_ONLY`)
 - `ENTRY_ORDER_MODE` (`LIMIT_GTC` | `LIMIT_FAK` | `MARKET`)
 - `LIMIT_ORDER_TIMEOUT_SECONDS` (default: `2.5`)
@@ -189,7 +204,7 @@ Paper-sim guard parameters (optional):
 - Before order submission, bot compares live ask vs decision-time ask and blocks entries when drift exceeds thresholds.
 - Live filters enforce close-direction consistency (support ratio, short-horizon momentum, implied-probability alignment, and stricter DOWN gating when BTC is above start).
 - Live sizing mode:
-  - `ADAPTIVE`: dynamic Kelly-style sizing (confidence/edge based)
+  - `ADAPTIVE`: balance-proportional sizing from confidence/edge (targets similar ratio across account sizes)
   - `FIXED`: use `MAX_BET_SIZE` as constant per-trade invest amount
 - Fast-lane (if enabled) runs before jury and can place immediate entry without votes when lag conditions pass; jury path remains unchanged as fallback.
 - `LIMIT_GTC`: place a taker-limit near current ask, wait up to timeout, then cancel remaining size.

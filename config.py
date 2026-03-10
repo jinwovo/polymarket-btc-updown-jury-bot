@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 try:
     from dotenv import load_dotenv
     load_dotenv()
+    # Optional generated creds file (created from POLYMARKET_PRIVATE_KEY).
+    load_dotenv(".env.polymarket.generated", override=False)
 except ImportError:
     pass
 
@@ -25,6 +27,10 @@ class BinanceConfig:
 class PolymarketConfig:
     clob_url: str = "https://clob.polymarket.com"
     gamma_url: str = "https://gamma-api.polymarket.com"
+    private_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_PRIVATE_KEY", ""))
+    # Optional signature type override:
+    # 0=EOA, 1=POLY_PROXY, 2=POLY_GNOSIS_SAFE, -1=auto-detect.
+    signature_type: int = field(default_factory=lambda: int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "-1")))
     api_key: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_KEY", ""))
     api_secret: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_SECRET", ""))
     api_passphrase: str = field(default_factory=lambda: os.getenv("POLYMARKET_API_PASSPHRASE", ""))
@@ -43,6 +49,22 @@ class TradingConfig:
     # - FIXED: always use MAX_BET_SIZE as per-trade amount
     live_sizing_mode: str = field(
         default_factory=lambda: os.getenv("LIVE_SIZING_MODE", "ADAPTIVE").strip().upper()
+    )
+    # Adaptive live sizing (fraction of MAX_BET_SIZE cap, typically account balance in live-control adaptive mode)
+    live_adaptive_base_frac: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_BASE_FRAC", "0.075"))
+    )
+    live_adaptive_min_frac: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_MIN_FRAC", "0.040"))
+    )
+    live_adaptive_max_frac: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_MAX_FRAC", "0.150"))
+    )
+    live_adaptive_edge_boost: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_EDGE_BOOST", "0.25"))
+    )
+    live_adaptive_conf_boost: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_CONF_BOOST", "0.12"))
     )
     # Position mode for live execution:
     # - BOTH: allow UP and DOWN

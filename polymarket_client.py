@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from clob_auth import create_authenticated_clob_client
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -237,25 +238,20 @@ class PolymarketClient:
         self._odds_polling = False
 
     async def _init_clob(self):
-        """Initialize the CLOB client for trading (requires API keys)."""
+        """Initialize authenticated CLOB client for trading."""
         if config.trading.dry_run:
             logger.info("Dry-run mode: CLOB client not initialized")
             return
         try:
-            from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiCreds
-            creds = ApiCreds(
-                api_key=config.polymarket.api_key,
-                api_secret=config.polymarket.api_secret,
-                api_passphrase=config.polymarket.api_passphrase,
+            client, meta = create_authenticated_clob_client()
+            self._clob_client = client
+            logger.info(
+                "CLOB client initialized (creds=%s, funder_source=%s, sig_type=%s/%s)",
+                meta.get("creds_source"),
+                meta.get("funder_source"),
+                meta.get("signature_type"),
+                meta.get("signature_type_source"),
             )
-            self._clob_client = ClobClient(
-                config.polymarket.clob_url,
-                chain_id=137,
-                creds=creds,
-                funder=config.polymarket.funder,
-            )
-            logger.info("CLOB client initialized")
         except Exception as e:
             logger.error(f"Failed to init CLOB client: {e}")
             self._clob_client = None
