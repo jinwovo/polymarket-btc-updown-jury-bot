@@ -53,6 +53,13 @@ def _normalize_sizing_mode(raw: str) -> str:
     return "ADAPTIVE"
 
 
+def _normalize_profit_mode(raw: str) -> str:
+    mode = str(raw or "BALANCED").strip().upper()
+    if mode in ("AGGRESSIVE", "BALANCED"):
+        return mode
+    return "BALANCED"
+
+
 def _safe_prob(value: float | None) -> float | None:
     try:
         if value is None:
@@ -159,6 +166,7 @@ class TradingBot:
         self.risk_mgr = RiskManager()
         self.position_mode = _normalize_position_mode(config.trading.position_mode)
         self.live_sizing_mode = _normalize_sizing_mode(config.trading.live_sizing_mode)
+        self.live_profit_mode = _normalize_profit_mode(config.trading.live_profit_mode)
 
         self.current_market: Optional[MarketInfo] = None
         self.current_trade: Optional[TradeRecord] = None
@@ -170,7 +178,15 @@ class TradingBot:
         self._odds_task: Optional[asyncio.Task] = None
         self._last_odds_fetch: float = 0.0
 
-    def _compute_entry_bet_size(self, confidence: float, edge: float) -> float:
+    def _compute_entry_bet_size(
+        self,
+        confidence: float,
+        edge: float,
+        *,
+        expected_roi: float | None = None,
+        model_prob: float | None = None,
+        entry_price: float | None = None,
+    ) -> float:
         if self.live_sizing_mode == "FIXED":
             fixed = float(config.trading.max_bet_size)
             if fixed <= 0.0:
@@ -194,10 +210,38 @@ class TradingBot:
 
         frac = base_frac + (edge_v * edge_boost) + (max(0.0, conf - 0.50) * conf_boost)
         frac = _clamp(frac, min_frac, max_frac)
-        bet = cap * frac
+        bet_frac = frac
+
+        if self.live_profit_mode == "AGGRESSIVE":
+            fee_rate = max(0.0, float(config.trading.fee_rate))
+            p = _clamp(float(model_prob or 0.0), 0.0, 1.0)
+            px = float(entry_price or 0.0)
+            gain = ((1.0 / px) - 1.0 - fee_rate) if 0.0 < px < 1.0 else 0.0
+            loss = 1.0 + fee_rate
+            kelly = 0.0
+            if gain > 1e-9:
+                kelly = ((p * gain) - ((1.0 - p) * loss)) / (gain * loss)
+                kelly = _clamp(kelly, 0.0, 1.0)
+
+            kelly_frac = _clamp(float(config.trading.live_aggressive_kelly_frac), 0.0, 1.0)
+            growth_frac = kelly_frac * kelly * (1.0 + 0.45 * _clamp((conf - 0.50) / 0.50, 0.0, 1.0))
+            growth_cap = _clamp(float(config.trading.live_aggressive_max_frac), max_frac, 0.40)
+            growth_frac = min(growth_cap, growth_frac)
+
+            if expected_roi is not None and expected_roi > 0.0:
+                roi_frac = min(growth_cap, base_frac * _clamp(float(expected_roi) / 0.08, 0.6, 2.2))
+                growth_frac = max(growth_frac, roi_frac)
+
+            bet_frac = max(bet_frac, growth_frac)
+
+        bet = cap * bet_frac
 
         if self.risk_mgr.consecutive_losses > 0:
-            bet *= 0.8 ** min(self.risk_mgr.consecutive_losses, 3)
+            if self.live_profit_mode == "AGGRESSIVE":
+                deboost = _clamp(float(config.trading.live_aggressive_loss_deboost), 0.70, 0.95)
+            else:
+                deboost = 0.80
+            bet *= deboost ** min(self.risk_mgr.consecutive_losses, 3)
 
         bet = _clamp(bet, float(config.trading.min_bet_size), cap)
         return round(float(bet), 2)
@@ -392,6 +436,17 @@ class TradingBot:
             float(config.trading.live_adaptive_conf_boost),
         )
         logger.info(
+            "Live profit mode: %s | relax(entry=%.0f%% edge=%.0f%% support=%.0f%%) "
+            "kelly=%.2f max_frac=%.2f loss_deboost=%.2f",
+            self.live_profit_mode,
+            float(config.trading.live_aggressive_entry_relax) * 100.0,
+            float(config.trading.live_aggressive_min_edge_relax) * 100.0,
+            float(config.trading.live_aggressive_support_relax) * 100.0,
+            float(config.trading.live_aggressive_kelly_frac),
+            float(config.trading.live_aggressive_max_frac),
+            float(config.trading.live_aggressive_loss_deboost),
+        )
+        logger.info(
             "Live guards: entry_start=%.0fs support>=%.0f%% unanim=%s move>=%.4f%%(lookback=%.0fs) "
             "implied(side>=%.2f opp<=%.2f) down_block>=%.4f%%",
             float(config.trading.live_entry_start_seconds),
@@ -553,7 +608,13 @@ class TradingBot:
             fast_move = float(fast_signal["move_pct"])
             fast_recent = float(fast_signal["recent_move_pct"])
 
-            bet_size = self._compute_entry_bet_size(fast_conf, fast_edge)
+            bet_size = self._compute_entry_bet_size(
+                fast_conf,
+                fast_edge,
+                expected_roi=float(fast_ev),
+                model_prob=float(fast_p),
+                entry_price=float(fast_price),
+            )
             if bet_size >= config.trading.min_bet_size:
                 if fast_direction == "UP":
                     token_id = self.current_market.up_token_id
@@ -633,7 +694,15 @@ class TradingBot:
         if decision.direction == "NO_TRADE":
             return
 
-        if decision.avg_confidence < config.trading.min_edge:
+        required_min_edge = float(config.trading.min_edge)
+        required_support_ratio = float(config.trading.live_min_support_ratio)
+        if self.live_profit_mode == "AGGRESSIVE":
+            required_min_edge *= (1.0 - _clamp(float(config.trading.live_aggressive_min_edge_relax), 0.0, 0.60))
+            required_support_ratio -= _clamp(float(config.trading.live_aggressive_support_relax), 0.0, 0.25)
+        required_min_edge = _clamp(required_min_edge, 0.02, 0.95)
+        required_support_ratio = _clamp(required_support_ratio, 0.50, 1.0)
+
+        if decision.avg_confidence < required_min_edge:
             return
 
         if self.position_mode == "UP_ONLY" and decision.direction != "UP":
@@ -643,16 +712,9 @@ class TradingBot:
 
         support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
         support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
-        if support_ratio < float(config.trading.live_min_support_ratio):
+        if support_ratio < required_support_ratio:
             return
         if config.trading.live_require_unanimous and not decision.unanimous:
-            return
-
-        # ---- Size and execute (FAST) ----
-        bet_size = self._compute_entry_bet_size(
-            decision.avg_confidence, decision.max_edge
-        )
-        if bet_size < config.trading.min_bet_size:
             return
 
         if decision.direction == "UP":
@@ -745,6 +807,9 @@ class TradingBot:
                 return
             ratio = btc_move_from_start_pct / max(block_thr, 1e-9)
             dynamic_min_roi += float(config.trading.live_down_above_start_ev_penalty) * _clamp(ratio, 0.0, 1.0)
+        if self.live_profit_mode == "AGGRESSIVE":
+            relax = _clamp(float(config.trading.live_aggressive_entry_relax), 0.0, 0.60)
+            dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
         gate = evaluate_entry_gate(
             direction=decision.direction,
@@ -770,6 +835,16 @@ class TradingBot:
                 gate.expected_roi * 100.0,
                 dynamic_min_roi * 100.0,
             )
+            return
+
+        bet_size = self._compute_entry_bet_size(
+            decision.avg_confidence,
+            decision.max_edge,
+            expected_roi=float(gate.expected_roi),
+            model_prob=float(gate.model_prob),
+            entry_price=float(price),
+        )
+        if bet_size < config.trading.min_bet_size:
             return
 
         logger.info(

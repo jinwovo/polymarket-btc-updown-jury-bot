@@ -50,6 +50,30 @@ class TradingConfig:
     live_sizing_mode: str = field(
         default_factory=lambda: os.getenv("LIVE_SIZING_MODE", "ADAPTIVE").strip().upper()
     )
+    # Live profit mode:
+    # - AGGRESSIVE: maximize growth with larger Kelly-driven sizing + relaxed entry guards
+    # - BALANCED: keep conservative baseline guards
+    live_profit_mode: str = field(
+        default_factory=lambda: os.getenv("LIVE_PROFIT_MODE", "AGGRESSIVE").strip().upper()
+    )
+    live_aggressive_entry_relax: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_ENTRY_RELAX", "0.20"))
+    )
+    live_aggressive_min_edge_relax: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_MIN_EDGE_RELAX", "0.20"))
+    )
+    live_aggressive_support_relax: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_SUPPORT_RELAX", "0.10"))
+    )
+    live_aggressive_max_frac: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_MAX_FRAC", "0.18"))
+    )
+    live_aggressive_kelly_frac: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_KELLY_FRAC", "0.65"))
+    )
+    live_aggressive_loss_deboost: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_AGGRESSIVE_LOSS_DEBOOST", "0.82"))
+    )
     # Adaptive live sizing (fraction of MAX_BET_SIZE cap, typically account balance in live-control adaptive mode)
     live_adaptive_base_frac: float = field(
         default_factory=lambda: float(os.getenv("LIVE_ADAPTIVE_BASE_FRAC", "0.075"))

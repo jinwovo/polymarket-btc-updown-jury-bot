@@ -20,6 +20,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
+from config import config
 from dashboard_server import build_snapshot
 from db_config import (
     connect_db,
@@ -71,6 +72,12 @@ PAPER_REQUIRE_UNANIMOUS = os.getenv("PAPER_REQUIRE_UNANIMOUS", "false").lower() 
 PAPER_HIGH_QUALITY_EV = float(os.getenv("PAPER_HIGH_QUALITY_EV", "0.12"))
 PAPER_HIGH_QUALITY_CONF = float(os.getenv("PAPER_HIGH_QUALITY_CONF", "0.50"))
 PAPER_SIZING_MODE = str(os.getenv("PAPER_SIZING_MODE", "adaptive")).strip().lower()
+PAPER_PROFIT_MODE = str(os.getenv("PAPER_PROFIT_MODE", "aggressive")).strip().lower()
+PAPER_AGGRESSIVE_ENTRY_RELAX = float(os.getenv("PAPER_AGGRESSIVE_ENTRY_RELAX", "0.20"))
+PAPER_AGGRESSIVE_GAP_MULT = float(os.getenv("PAPER_AGGRESSIVE_GAP_MULT", "0.65"))
+PAPER_AGGRESSIVE_MAX_BET_FRAC = float(os.getenv("PAPER_AGGRESSIVE_MAX_BET_FRAC", "0.18"))
+PAPER_AGGRESSIVE_KELLY_FRAC = float(os.getenv("PAPER_AGGRESSIVE_KELLY_FRAC", "0.65"))
+PAPER_AGGRESSIVE_LOSS_DEBOOST = float(os.getenv("PAPER_AGGRESSIVE_LOSS_DEBOOST", "0.82"))
 # Anti-freeze controls: gradually relax strictness when no entry happens for long.
 PAPER_STALE_RELAX_START_SEC = float(os.getenv("PAPER_STALE_RELAX_START_SEC", "3600"))
 PAPER_STALE_RELAX_FULL_SEC = float(os.getenv("PAPER_STALE_RELAX_FULL_SEC", "14400"))
@@ -109,6 +116,12 @@ PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF = float(
 )
 PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT = float(
     os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT", "15")
+)
+PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE = (
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE", "true").lower() == "true"
+)
+PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT", "0.090")
 )
 PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "220"))
 PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
@@ -211,14 +224,44 @@ def _compute_bet_size(
     initial_capital: float,
     expected_roi: float,
     risk_fraction: float,
+    entry_price: float | None = None,
+    model_prob: float | None = None,
+    confidence: float | None = None,
 ) -> float:
     if available_equity <= 0:
         return 0.0
     rf = _clamp(risk_fraction, 0.01, 1.0)
     edge_scale = _clamp(expected_roi / 0.10, 0.4, 1.4)
     target_frac = min(PAPER_MAX_BET_FRAC, rf * edge_scale)
+    hard_cap_frac = PAPER_MAX_BET_FRAC
+
+    if PAPER_PROFIT_MODE == "aggressive":
+        fee_rate = max(0.0, float(config.trading.fee_rate))
+        p = _clamp(float(model_prob or 0.0), 0.0, 1.0)
+        px = float(entry_price or 0.0)
+        gain = ((1.0 / px) - 1.0 - fee_rate) if 0.0 < px < 1.0 else 0.0
+        loss = 1.0 + fee_rate
+        kelly_frac = 0.0
+        if gain > 1e-9:
+            # Generalized Kelly for +gain / -loss payoff.
+            kelly_frac = ((p * gain) - ((1.0 - p) * loss)) / (gain * loss)
+            kelly_frac = _clamp(kelly_frac, 0.0, 1.0)
+
+        conf = _clamp(float(confidence or 0.0), 0.0, 1.0)
+        conf_boost = 1.0 + 0.50 * _clamp((conf - 0.50) / 0.50, 0.0, 1.0)
+        growth_frac = _clamp(PAPER_AGGRESSIVE_KELLY_FRAC, 0.0, 1.0) * kelly_frac * conf_boost
+        growth_cap = _clamp(PAPER_AGGRESSIVE_MAX_BET_FRAC, PAPER_MAX_BET_FRAC, 0.40)
+        growth_frac = min(growth_cap, growth_frac)
+
+        if expected_roi > 0.0:
+            roi_frac = min(growth_cap, rf * _clamp(expected_roi / 0.08, 0.5, 2.0))
+            growth_frac = max(growth_frac, roi_frac)
+
+        target_frac = max(target_frac, growth_frac)
+        hard_cap_frac = max(PAPER_MAX_BET_FRAC, growth_cap)
+
     raw_size = available_equity * target_frac
-    hard_cap = max(PAPER_MIN_BET, initial_capital * PAPER_MAX_BET_FRAC)
+    hard_cap = max(PAPER_MIN_BET, initial_capital * hard_cap_frac)
     sized = min(raw_size, available_equity, hard_cap)
     return round(max(0.0, sized), 2)
 
@@ -785,6 +828,12 @@ def open_trade_if_signal(
     adaptive_min_conf = _clamp(PAPER_MIN_CONFIDENCE + 0.18 * strictness_eff, PAPER_MIN_CONFIDENCE, 0.80)
     ask_floor = _clamp(PAPER_ADAPTIVE_MAX_ASK_FLOOR, 0.40, PAPER_MAX_ENTRY_PRICE)
     adaptive_max_ask = _clamp(PAPER_MAX_ENTRY_PRICE - 0.08 * strictness_eff, ask_floor, PAPER_MAX_ENTRY_PRICE)
+    if PAPER_PROFIT_MODE == "aggressive":
+        relax = _clamp(PAPER_AGGRESSIVE_ENTRY_RELAX, 0.0, 0.60)
+        adaptive_min_ev = max(0.0, adaptive_min_ev * (1.0 - relax))
+        adaptive_min_support = _clamp(adaptive_min_support - (0.10 * relax), 0.55, 1.0)
+        adaptive_min_conf = _clamp(adaptive_min_conf - (0.08 * relax), 0.28, 0.80)
+        adaptive_max_ask = _clamp(adaptive_max_ask + (0.06 * relax), ask_floor, 0.62)
 
     if direction == "DOWN" and btc_move_from_start_pct > 0.0:
         if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
@@ -802,6 +851,8 @@ def open_trade_if_signal(
     dynamic_gap = PAPER_BASE_TRADE_GAP_SEC + strictness_eff * (
         max(PAPER_BASE_TRADE_GAP_SEC, PAPER_TARGET_TRADE_GAP_SEC) - PAPER_BASE_TRADE_GAP_SEC
     )
+    if PAPER_PROFIT_MODE == "aggressive":
+        dynamic_gap *= _clamp(PAPER_AGGRESSIVE_GAP_MULT, 0.35, 1.0)
     dynamic_gap = max(0.0, dynamic_gap)
     since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
     high_quality_override = (
@@ -901,10 +952,16 @@ def open_trade_if_signal(
             initial_capital=initial_capital,
             expected_roi=gate.expected_roi,
             risk_fraction=risk_fraction,
+            entry_price=entry_price,
+            model_prob=gate.model_prob,
+            confidence=confidence,
         )
         if loss_streak > 0:
             # Adaptive de-risking after losses.
-            stake = round(stake * (0.65 ** min(loss_streak, 3)), 2)
+            loss_deboost = 0.65
+            if PAPER_PROFIT_MODE == "aggressive":
+                loss_deboost = _clamp(PAPER_AGGRESSIVE_LOSS_DEBOOST, 0.70, 0.95)
+            stake = round(stake * (loss_deboost ** min(loss_streak, 3)), 2)
     if stake < PAPER_MIN_BET:
         logger.warning("Computed bet too small ws=%s: $%.2f", window_start, stake)
         return False
@@ -1100,17 +1157,39 @@ def resolve_open_trades(conn) -> int:
         elif signal_confidence <= PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF:
             dynamic_stop_loss_roi -= abs(PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT)
 
+        btc_move_from_entry_pct = None
+        btc_adverse_ok = True
+        if PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE:
+            btc_entry_px = _price_at_or_near(conn, opened_at, prefer_before=True) if opened_at > 0 else None
+            btc_now_px = _price_at_or_near(conn, now_ts, prefer_before=True)
+            if btc_entry_px is not None and btc_entry_px > 0 and btc_now_px is not None and btc_now_px > 0:
+                btc_move_from_entry_pct = ((float(btc_now_px) - float(btc_entry_px)) / float(btc_entry_px)) * 100.0
+                adverse_thr = abs(float(PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT))
+                if direction == "UP":
+                    btc_adverse_ok = btc_move_from_entry_pct <= -adverse_thr
+                else:
+                    btc_adverse_ok = btc_move_from_entry_pct >= adverse_thr
+            else:
+                btc_adverse_ok = False
+
         if (
             early_reason is None
             and hold_sec >= dynamic_stop_loss_min_hold
             and mtm_roi_pct <= dynamic_stop_loss_roi
+            and btc_adverse_ok
         ):
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
+            btc_move_note = (
+                f", btc_entry_move={btc_move_from_entry_pct:+.4f}%"
+                if btc_move_from_entry_pct is not None
+                else ""
+            )
             early_reason = (
                 f"stop_loss(roi={mtm_roi_pct:+.2f}%"
                 f" <= {dynamic_stop_loss_roi:+.2f}%"
                 f", hold={hold_sec:.1f}s >= {dynamic_stop_loss_min_hold:.1f}s"
-                f", conf={signal_confidence:.3f})"
+                f", conf={signal_confidence:.3f}"
+                f"{btc_move_note})"
             )
         elif (
             early_reason is None
@@ -1233,8 +1312,9 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s(at>=%.2f) "
         "stale_relax(start=%.0fs full=%.0fs max=%.0f%% ask_floor=%.2f) perf_pause=%.0fs "
         "align(side>=%.2f,opp<=%.2f) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
+        "profit_mode=%s(relax=%.0f%% gapx=%.2f maxBetFrac=%.2f kelly=%.2f deboost=%.2f) "
         "early_exit=%s(opp>=%.2f,sl<=%.1f%%@hold>=%.0fs highConf>=%.2f->%.0fs lowConf<=%.2f relax=%.1f%%,"
-        " maxHold=%.0fs ts<=%.1f%%)",
+        " btcAdv=%s@%.3f%% maxHold=%.0fs ts<=%.1f%%)",
         initial_capital,
         mode,
         risk_fraction,
@@ -1260,6 +1340,12 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_DOWN_ABOVE_START_BLOCK_PCT,
         PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA,
         PAPER_DOWN_ABOVE_START_EV_PENALTY * 100.0,
+        PAPER_PROFIT_MODE,
+        PAPER_AGGRESSIVE_ENTRY_RELAX * 100.0,
+        PAPER_AGGRESSIVE_GAP_MULT,
+        PAPER_AGGRESSIVE_MAX_BET_FRAC,
+        PAPER_AGGRESSIVE_KELLY_FRAC,
+        PAPER_AGGRESSIVE_LOSS_DEBOOST,
         PAPER_ENABLE_EARLY_EXIT,
         PAPER_EARLY_EXIT_OPPOSITE_ASK,
         PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT,
@@ -1268,6 +1354,8 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC,
         PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF,
         PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT,
+        PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE,
+        PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT,
         PAPER_EARLY_EXIT_MAX_HOLD_SEC,
         PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT,
     )
