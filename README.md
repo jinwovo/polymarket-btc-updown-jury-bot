@@ -30,7 +30,7 @@ This project is built to test **real collected orderbook data** and block low-qu
   - only within strict timing/move/probability/EV bounds
 - Paper simulation from dashboard (start/stop + history popup)
 - Live trading control from dashboard (API balance check + per-trade cap + position mode)
-- Backtest + auto sweep for `JURY_THRESHOLD` and `MIN_EDGE`
+- Backtest + auto sweep for `JURY_THRESHOLD`, `MIN_EDGE`, `LIVE_MIN_LAG_PROB_EDGE`, `MIN_EXPECTED_ROI`, `MIN_WIN_PROBABILITY`
 - Signal history (accepted/rejected) with DB persistence and paging
 
 ## Tech stack
@@ -204,6 +204,7 @@ Key parameters:
 - `LIVE_REQUIRE_UNANIMOUS` (default: `false`)
 - `LIVE_RECENT_MOVE_LOOKBACK_SEC` / `LIVE_MIN_RECENT_MOVE_PCT`
 - `LIVE_MAX_OPPOSITE_IMPLIED` / `LIVE_MIN_ENTRY_SIDE_IMPLIED`
+- `LIVE_MIN_LAG_PROB_EDGE` (default: `0.020`)
 - `LIVE_DOWN_ABOVE_START_BLOCK_PCT` / `LIVE_DOWN_ABOVE_START_MOMENTUM_EXTRA` / `LIVE_DOWN_ABOVE_START_EV_PENALTY`
 - `FEATURE_LOOKBACK_SECONDS` (default: `600`)
 - `FEATURE_RESAMPLE_SECONDS` (default: `1.0`) - set to `15` for 15-second bars
@@ -214,7 +215,7 @@ Key parameters:
 - `FAST_LANE_RECENT_LOOKBACK_SEC` / `FAST_LANE_MIN_RECENT_MOVE_PCT`
 - `FAST_LANE_VOL_LOOKBACK_SEC` / `FAST_LANE_DRIFT_WEIGHT`
 - `FAST_LANE_MAX_ENTRY_PRICE`
-- `FAST_LANE_MIN_DIRECTION_PROB` / `FAST_LANE_MIN_PROB_EDGE` / `FAST_LANE_MIN_EXPECTED_ROI`
+- `FAST_LANE_MIN_DIRECTION_PROB` / `FAST_LANE_MIN_LAG_PROB_EDGE` / `FAST_LANE_MIN_PROB_EDGE` / `FAST_LANE_MIN_EXPECTED_ROI`
 - `DAILY_LOSS_LIMIT` (default: `50.0`)
 
 Paper-sim guard parameters (optional):
@@ -238,6 +239,7 @@ Paper-sim guard parameters (optional):
   - `ADAPTIVE`: balance-proportional sizing from confidence/edge (targets similar ratio across account sizes)
   - `FIXED`: use `MAX_BET_SIZE` as constant per-trade invest amount
 - Fast-lane (if enabled) runs before jury and can place immediate entry without votes when lag conditions pass; jury path remains unchanged as fallback.
+- Jury/live path also enforces lag-edge consistency (`model close prob - market implied prob`) so entries are filtered when Polymarket is already fully repriced.
 - `LIMIT_GTC`: place a taker-limit near current ask, wait up to timeout, then cancel remaining size.
 - `LIMIT_FAK`: immediate fill-and-kill limit execution.
 - `MARKET`: FOK-style market order path (still drift-protected before submit).
@@ -273,7 +275,12 @@ python paper_trade_sim.py --status
 python backtest.py --last-hours 24
 
 # Auto sweep
-python backtest.py --auto-sweep --edge-grid "0.04,0.06,0.08,0.10" --jury-grid "2,3,4,5"
+python backtest.py --auto-sweep \
+  --edge-grid "0.06,0.08,0.10" \
+  --jury-grid "2,3,4" \
+  --lag-grid "0.015,0.020,0.025" \
+  --roi-grid "0.002,0.003,0.004" \
+  --win-prob-grid "0.52,0.53,0.54"
 ```
 
 ## Database reset (fresh start)

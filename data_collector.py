@@ -82,6 +82,8 @@ class DataCollector:
         self.current_window_start: int = 0
         self.btc_price: Optional[float] = None
         self.window_start_price: Optional[float] = None
+        self._window_start_official: bool = False
+        self._last_ptb_sync_ts: float = 0.0
         self._running = False
 
         # Batch insert buffer
@@ -198,17 +200,31 @@ class DataCollector:
                     # Start tracking new window
                     self.current_window_start = window_start
                     self.window_start_price = self.btc_price
+                    self._window_start_official = False
+                    self._last_ptb_sync_ts = 0.0
 
                     # Find the Polymarket market
                     self.current_market = await self.poly_client.find_market(window_start)
 
                     if self.current_market:
+                        if (
+                            self.current_market.price_to_beat is not None
+                            and float(self.current_market.price_to_beat) > 0.0
+                        ):
+                            # Use Polymarket official reference level when available.
+                            self.window_start_price = float(self.current_market.price_to_beat)
+                            self._window_start_official = True
                         self._record_window_start(
                             window_start,
                             window_start + config.polymarket.interval_seconds,
                             self.current_market,
                         )
                         btc_str = f"${self.btc_price:,.2f}" if self.btc_price is not None else "N/A"
+                        start_str = (
+                            f"${self.window_start_price:,.2f}"
+                            if self.window_start_price is not None
+                            else "N/A"
+                        )
                         up_str = (
                             f"{self.current_market.up_price:.3f}"
                             if self.current_market.up_price is not None
@@ -221,11 +237,13 @@ class DataCollector:
                         )
                         logger.info(
                             f"Window: {self.current_market.slug} | "
-                            f"BTC={btc_str} | "
+                            f"BTC={btc_str} | Start={start_str} | "
                             f"UP={up_str} DOWN={down_str}"
                         )
                     else:
                         logger.warning(f"Market not found for ts={window_start}")
+
+                await self._maybe_sync_window_start_from_price_to_beat(now)
 
                 # 1-second feature snapshots for model training.
                 self._collect_feature_1s(now)
@@ -234,6 +252,59 @@ class DataCollector:
                 logger.error(f"Window tracker error: {e}")
 
             await asyncio.sleep(1.0)
+
+    async def _maybe_sync_window_start_from_price_to_beat(self, now_ts: float):
+        """Backfill/correct window start with official Price to Beat when it arrives late."""
+        if self.current_window_start <= 0 or self.current_market is None:
+            return
+        if self._window_start_official and self.window_start_price is not None:
+            return
+
+        # Gamma can lag a few seconds after window rollover.
+        if now_ts - float(self.current_window_start) > 120.0:
+            return
+        if (now_ts - self._last_ptb_sync_ts) < 3.0:
+            return
+        self._last_ptb_sync_ts = now_ts
+
+        ptb = self.current_market.price_to_beat
+        if ptb is None or float(ptb) <= 0.0:
+            ptb = await self.poly_client.fetch_price_to_beat(self.current_market.slug)
+            if ptb is None or float(ptb) <= 0.0:
+                return
+            self.current_market.price_to_beat = float(ptb)
+
+        new_start = float(ptb)
+        prev_start = self.window_start_price
+        self.window_start_price = new_start
+        self._window_start_official = True
+
+        try:
+            execute_write(
+                self.db,
+                """UPDATE market_windows
+                   SET btc_start_price = ?
+                   WHERE window_start = ?""",
+                (new_start, self.current_window_start),
+            )
+            self.db.commit()
+        except Exception as e:
+            logger.debug(f"Price-to-beat sync DB update failed: {e}")
+            return
+
+        if prev_start is None:
+            logger.info(
+                "Window start set from Price to Beat: %s | $%.2f",
+                self.current_market.slug,
+                new_start,
+            )
+        elif abs(float(prev_start) - new_start) >= 0.01:
+            logger.warning(
+                "Window start corrected to Price to Beat: %s | %.2f -> %.2f",
+                self.current_market.slug,
+                float(prev_start),
+                new_start,
+            )
 
     def _collect_feature_1s(self, now_ts: float):
         if self.current_window_start <= 0:

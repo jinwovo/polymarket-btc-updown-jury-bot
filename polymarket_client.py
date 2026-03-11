@@ -69,6 +69,8 @@ def _to_optional_float(value: Any) -> Optional[float]:
     try:
         if value is None:
             return None
+        if isinstance(value, bool):
+            return None
         if isinstance(value, (int, float)):
             return float(value)
         if isinstance(value, str):
@@ -192,6 +194,38 @@ def _extract_balance_value(payload: Any) -> float:
     return max(0.0, float(num))
 
 
+def _normalize_conditional_amount(raw_value: Any, payload: Any) -> Optional[float]:
+    """
+    Normalize conditional token balances into share units.
+    CLOB may return base-unit integers (commonly 1e6 scale).
+    """
+    num = _to_optional_float(raw_value)
+    if num is None:
+        return None
+    value = max(0.0, float(num))
+
+    dec_raw = _find_nested_value(
+        payload,
+        {"decimals", "token_decimals", "asset_decimals", "conditional_decimals"},
+    )
+    dec_val = _to_optional_float(dec_raw)
+    if dec_val is not None:
+        try:
+            dec = int(dec_val)
+        except Exception:
+            dec = -1
+        if 0 <= dec <= 18:
+            scale = float(10 ** dec)
+            if scale > 1.0 and abs(value - round(value)) < 1e-9 and value >= scale:
+                return float(value / scale)
+
+    # Fallback: conditional balances are often emitted in 6-decimal base units.
+    if abs(value - round(value)) < 1e-9 and value >= 1_000_000:
+        return float(value / 1_000_000.0)
+
+    return value
+
+
 def _normalize_collateral_amount(raw_value: Any, payload: Any) -> Optional[float]:
     num = _to_optional_float(raw_value)
     if num is None:
@@ -236,6 +270,30 @@ def _is_terminal_status(status: Optional[str]) -> bool:
     }
 
 
+def _classify_order_exception(exc: Exception) -> tuple[str, bool]:
+    """
+    Classify exchange exceptions into deterministic rejections vs uncertain fills.
+    Returns: (status, uncertain_fill)
+    """
+    msg = str(exc or "")
+    lower = msg.lower()
+
+    # Deterministic reject: exchange explicitly rejected the order.
+    if (
+        ("not enough balance" in lower)
+        or ("insufficient balance" in lower)
+        or ("insufficient funds" in lower)
+        or ("allowance" in lower)
+    ):
+        return "rejected_balance_allowance", False
+
+    if ("invalid price" in lower) or ("invalid size" in lower) or ("tick size" in lower):
+        return "rejected_invalid_order", False
+
+    # Unknown exceptions are treated as uncertain to preserve safety.
+    return "unknown_error", True
+
+
 @dataclass
 class MarketInfo:
     """Info about a single 5-minute Up/Down market."""
@@ -255,6 +313,8 @@ class MarketInfo:
     down_best_bid: float = 0.0
     down_best_ask: float = 1.0
     last_odds_update: float = 0.0  # when odds were last refreshed
+    # Official Polymarket reference level ("Price to Beat"), when available.
+    price_to_beat: Optional[float] = None
 
 
 def compute_market_timestamps(now: Optional[float] = None) -> dict:
@@ -295,6 +355,37 @@ class PolymarketClient:
         self._clob_client = None
         self._odds_polling = False
         self._claim_unsupported_logged = False
+
+    async def _fetch_price_to_beat(self, slug: str) -> Optional[float]:
+        """Fetch official Price to Beat from Gamma eventMetadata."""
+        if not slug:
+            return None
+        try:
+            resp = await self._http.get(
+                f"{config.polymarket.gamma_url}/events",
+                params={"slug": slug},
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+            if not isinstance(payload, list) or not payload:
+                return None
+            event = payload[0] if isinstance(payload[0], dict) else None
+            if not event:
+                return None
+            meta = event.get("eventMetadata")
+            if not isinstance(meta, dict):
+                return None
+            ptb = _to_optional_float(meta.get("priceToBeat"))
+            if ptb is None or ptb <= 0.0:
+                return None
+            return float(ptb)
+        except Exception:
+            return None
+
+    async def fetch_price_to_beat(self, slug: str) -> Optional[float]:
+        """Public wrapper for runtime loops to refresh official start reference."""
+        return await self._fetch_price_to_beat(slug)
 
     async def _init_clob(self, *, force: bool = False):
         """Initialize authenticated CLOB client for trading."""
@@ -374,6 +465,12 @@ class PolymarketClient:
                 up_price = _to_float(outcomePrices[0], default=up_price)
                 down_price = _to_float(outcomePrices[1], default=down_price)
 
+            price_to_beat = _to_optional_float(
+                _find_nested_value(market, {"pricetobeat", "price_to_beat"})
+            )
+            if price_to_beat is None or price_to_beat <= 0.0:
+                price_to_beat = await self._fetch_price_to_beat(slug)
+
             return MarketInfo(
                 condition_id=market.get("condition_id", market.get("conditionId", "")),
                 question=market.get("question", ""),
@@ -386,6 +483,11 @@ class PolymarketClient:
                 down_price=down_price,
                 active=market.get("active", True),
                 last_odds_update=time.time(),
+                price_to_beat=(
+                    float(price_to_beat)
+                    if price_to_beat is not None and float(price_to_beat) > 0.0
+                    else None
+                ),
             )
 
         except Exception as e:
@@ -603,7 +705,14 @@ class PolymarketClient:
                 token_id=str(token_id),
             )
             payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
-            return _extract_balance_value(payload)
+            bal_raw = _find_nested_value(
+                payload,
+                {"balance", "available_balance", "asset_balance"},
+            )
+            normalized = _normalize_conditional_amount(bal_raw, payload)
+            if normalized is None:
+                normalized = _normalize_conditional_amount(_extract_balance_value(payload), payload)
+            return float(normalized or 0.0)
         except Exception as e:
             logger.warning("conditional balance fetch failed (token=%s): %s", token_id, e)
             return 0.0
@@ -784,13 +893,19 @@ class PolymarketClient:
             return result
         except Exception as e:
             logger.error(f"Order placement failed: {e}")
+            status, uncertain = _classify_order_exception(e)
+            reason = (
+                f"market order exception: {e}"
+                if uncertain
+                else f"market order rejected: {e}"
+            )
             return {
                 "ok": False,
                 "mode": "MARKET",
                 "side": str(side),
                 "token_id": str(token_id),
                 "order_id": None,
-                "status": "unknown_error",
+                "status": status,
                 "requested_amount": float(amount),
                 "requested_size": None,
                 "requested_price": _to_optional_float(reference_price),
@@ -802,8 +917,8 @@ class PolymarketClient:
                 "timed_out": False,
                 "cancel_attempted": False,
                 "cancelled": False,
-                "uncertain_fill": True,
-                "reason": f"market order exception: {e}",
+                "uncertain_fill": bool(uncertain),
+                "reason": reason,
             }
 
     async def place_limit_order(
@@ -958,13 +1073,19 @@ class PolymarketClient:
             return result
         except Exception as e:
             logger.error(f"Limit order failed: {e}")
+            status, uncertain = _classify_order_exception(e)
+            reason = (
+                f"limit order exception: {e}"
+                if uncertain
+                else f"limit order rejected: {e}"
+            )
             return {
                 "ok": False,
                 "mode": mode,
                 "side": str(side),
                 "token_id": str(token_id),
                 "order_id": None,
-                "status": "unknown_error",
+                "status": status,
                 "requested_amount": requested_amount,
                 "requested_size": size,
                 "requested_price": price,
@@ -976,8 +1097,8 @@ class PolymarketClient:
                 "timed_out": False,
                 "cancel_attempted": False,
                 "cancelled": False,
-                "uncertain_fill": True,
-                "reason": f"limit order exception: {e}",
+                "uncertain_fill": bool(uncertain),
+                "reason": reason,
             }
 
     async def place_entry_order(

@@ -6,7 +6,6 @@ Usage:
     python dashboard_server.py --host 0.0.0.0 --port 8080
 """
 import argparse
-import asyncio
 import os
 import json
 import logging
@@ -209,6 +208,8 @@ def _to_float(value: Any) -> Optional[float]:
     try:
         if value is None:
             return None
+        if isinstance(value, bool):
+            return None
         return float(value)
     except (TypeError, ValueError):
         return None
@@ -318,7 +319,7 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
 
         balance = _find_numeric_field(
             payload,
-            {"balance", "available_balance", "asset_balance", "available"},
+            {"balance", "available_balance", "asset_balance"},
         )
         allowance = _find_numeric_field(
             payload,
@@ -1848,45 +1849,6 @@ def control_live_stop() -> dict:
     return status
 
 
-def control_live_claim_now() -> dict:
-    status = build_live_control_status()
-    try:
-        from polymarket_client import PolymarketClient
-
-        async def _run_claim() -> dict[str, Any]:
-            client = PolymarketClient()
-            try:
-                return await client.auto_claim_winnings(ignore_dry_run=True)
-            finally:
-                await client.close()
-
-        result = asyncio.run(_run_claim())
-        status["claim"] = result
-        status["ok"] = bool(result.get("ok"))
-        if status["ok"]:
-            claimed = float(result.get("claimed") or 0.0)
-            if claimed > 0.0:
-                status["message"] = (
-                    f"Claim success via {result.get('method') or 'unknown'}: +${claimed:.2f}"
-                )
-            else:
-                status["message"] = (
-                    f"Claim check completed: {result.get('status') or 'no-op'}"
-                )
-        else:
-            status["message"] = (
-                result.get("error")
-                or result.get("status")
-                or "Claim failed"
-            )
-        return status
-    except Exception as e:
-        status["ok"] = False
-        status["message"] = f"claim execution failed: {e}"
-        status["claim"] = {"ok": False, "error": str(e)}
-        return status
-
-
 def control_live_auth_configure(
     private_key: str,
     funder: str = "",
@@ -2248,14 +2210,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_live_stop(), code=200)
             except Exception as e:
                 logger.exception("live stop error")
-                self._send_json({"ok": False, "error": str(e)}, code=500)
-            return
-
-        if path == "/api/control/live/claim":
-            try:
-                self._send_json(control_live_claim_now(), code=200)
-            except Exception as e:
-                logger.exception("live claim error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

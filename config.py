@@ -335,6 +335,11 @@ class TradingConfig:
     live_contra_override_min_conf: float = field(
         default_factory=lambda: float(os.getenv("LIVE_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
     )
+    # Require model close-probability to exceed Polymarket implied probability
+    # by this margin (probability points) before entry.
+    live_min_lag_prob_edge: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_MIN_LAG_PROB_EDGE", "0.020"))
+    )
     live_down_above_start_block_pct: float = field(
         default_factory=lambda: float(os.getenv("LIVE_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))
     )
@@ -384,6 +389,9 @@ class TradingConfig:
     )
     fast_lane_min_prob_edge: float = field(
         default_factory=lambda: float(os.getenv("FAST_LANE_MIN_PROB_EDGE", "0.050"))
+    )
+    fast_lane_min_lag_prob_edge: float = field(
+        default_factory=lambda: float(os.getenv("FAST_LANE_MIN_LAG_PROB_EDGE", "0.025"))
     )
     fast_lane_min_expected_roi: float = field(
         default_factory=lambda: float(os.getenv("FAST_LANE_MIN_EXPECTED_ROI", "0.080"))

@@ -369,6 +369,8 @@ export function LiveDashboard() {
   const snapshotInFlightRef = useRef(false);
   const historyInFlightRef = useRef(false);
   const paperSummaryInFlightRef = useRef(false);
+  const liveStatusInFlightRef = useRef(false);
+  const lastSnapshotWindowSlugRef = useRef<string | null>(null);
 
   const [paperStatus, setPaperStatus] = useState<ProcessStatus | null>(null);
   const [backtestStatus, setBacktestStatus] = useState<ProcessStatus | null>(null);
@@ -473,6 +475,18 @@ export function LiveDashboard() {
   async function loadLiveStatus() {
     const res = await fetch("/api/control/live", { cache: "no-store" });
     return (await res.json()) as LiveControlStatus;
+  }
+
+  async function refreshLiveStatus() {
+    if (liveStatusInFlightRef.current) return null;
+    liveStatusInFlightRef.current = true;
+    try {
+      const live = await loadLiveStatus();
+      setLiveStatus(live);
+      return live;
+    } finally {
+      liveStatusInFlightRef.current = false;
+    }
   }
 
   async function loadFailedSignalHistory(
@@ -607,16 +621,6 @@ export function LiveDashboard() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "stop" }),
-    });
-    const json = (await res.json()) as LiveControlStatus;
-    setLiveStatus(json);
-  }
-
-  async function claimLiveNow() {
-    const res = await fetch("/api/control/live", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "claim_now" }),
     });
     const json = (await res.json()) as LiveControlStatus;
     setLiveStatus(json);
@@ -780,6 +784,21 @@ export function LiveDashboard() {
             setSnapshot(data);
             setError(null);
           }
+          const nextSlug = data.window?.slug ?? null;
+          const prevSlug = lastSnapshotWindowSlugRef.current;
+          if (
+            mounted &&
+            prevSlug !== null &&
+            nextSlug !== null &&
+            nextSlug !== prevSlug
+          ) {
+            try {
+              await refreshLiveStatus();
+            } catch (_) {
+              // Ignore transient live status refresh errors on window rollover.
+            }
+          }
+          lastSnapshotWindowSlugRef.current = nextSlug;
         } catch (e) {
           if (mounted) setError(e instanceof Error ? e.message : "Snapshot fetch error");
         } finally {
@@ -846,15 +865,18 @@ export function LiveDashboard() {
 
     const pollLiveStatus = async () => {
       if (!mounted) return;
+      let nextDelayMs = 30000;
       try {
-        const live = await loadLiveStatus();
-        if (mounted) setLiveStatus(live);
+        const live = await refreshLiveStatus();
+        if (live?.running) nextDelayMs = 10000;
       } catch (_) {
         // Ignore transient live status errors.
       }
       if (mounted) {
-        // Balance/account snapshot refresh cadence: 30s.
-        liveStatusTimer = window.setTimeout(() => void pollLiveStatus(), 30000);
+        // Balance/account snapshot refresh cadence:
+        // - running: 10s (faster reflection after trade close)
+        // - stopped: 30s
+        liveStatusTimer = window.setTimeout(() => void pollLiveStatus(), nextDelayMs);
       }
     };
 
@@ -1554,16 +1576,10 @@ export function LiveDashboard() {
                   Stop
                 </button>
                 <button
-                  onClick={async () => setLiveStatus(await loadLiveStatus())}
+                  onClick={() => void refreshLiveStatus()}
                   className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm"
                 >
                   Refresh
-                </button>
-                <button
-                  onClick={() => void claimLiveNow()}
-                  className="rounded-md border border-amber-400/50 bg-amber-500/20 px-3 py-1.5 text-sm"
-                >
-                  Claim Now
                 </button>
                 <button
                   onClick={() => {
@@ -1827,7 +1843,7 @@ export function LiveDashboard() {
                     Enable Edit
                   </button>
                   <button
-                    onClick={async () => setLiveStatus(await loadLiveStatus())}
+                    onClick={() => void refreshLiveStatus()}
                     disabled={authSaving}
                     className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm disabled:opacity-40"
                   >

@@ -16,7 +16,14 @@ import math
 from typing import Any, Optional
 
 from config import config
-from db_config import connect_db, execute_write, fetch_one_dict, init_market_schema, is_sqlite_backend
+from db_config import (
+    connect_db,
+    execute_write,
+    fetch_all_dicts,
+    fetch_one_dict,
+    init_market_schema,
+    is_sqlite_backend,
+)
 from binance_ws import BinancePriceFeed
 from polymarket_client import PolymarketClient, MarketInfo, compute_market_timestamps
 from judges import Jury, MarketContext, Vote
@@ -75,6 +82,21 @@ def _safe_prob(value: float | None) -> float | None:
     except Exception:
         return None
     return None
+
+
+def _normalized_market_probs(
+    up_ask: float | None,
+    down_ask: float | None,
+) -> tuple[float | None, float | None]:
+    up = _safe_prob(up_ask)
+    down = _safe_prob(down_ask)
+    if up is None or down is None:
+        return (None, None)
+    total = float(up + down)
+    if total <= 1e-9:
+        return (None, None)
+    up_prob = float(_clamp(up / total, 0.001, 0.999))
+    return (up_prob, float(1.0 - up_prob))
 
 
 def _recent_move_pct(
@@ -181,6 +203,8 @@ class TradingBot:
         self.current_trade_entry_source: Optional[str] = None
         self._trade_locked_window_start: Optional[int] = None
         self.market_start_price: Optional[float] = None
+        self._market_start_official: bool = False
+        self._last_ptb_sync_ts: float = 0.0
         self.recent_results: list[str] = []
         self._kill_switch_reason: Optional[str] = None
 
@@ -441,6 +465,9 @@ class TradingBot:
         if side_ask > float(config.trading.fast_lane_max_entry_price):
             return None
         opposite_ask = down_ask if direction == "UP" else up_ask
+        market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
+        if market_up_prob is None or market_down_prob is None:
+            return None
 
         p_up = self._estimate_fast_lane_prob_up(ctx)
         if p_up is None:
@@ -449,6 +476,10 @@ class TradingBot:
             p_up = _clamp(_normal_cdf(z), 0.001, 0.999)
         p_dir = p_up if direction == "UP" else (1.0 - p_up)
         p_dir = _clamp(float(p_dir), 0.001, 0.999)
+        market_dir_prob = float(market_up_prob) if direction == "UP" else float(market_down_prob)
+        lag_prob_edge = float(p_dir - market_dir_prob)
+        if lag_prob_edge < float(config.trading.fast_lane_min_lag_prob_edge):
+            return None
         if p_dir < float(config.trading.fast_lane_min_direction_prob):
             return None
 
@@ -476,7 +507,8 @@ class TradingBot:
                     return None
         reason = (
             f"fast_lane: move={move_pct:+.4f}% recent={recent_move:+.4f}% "
-            f"p={p_dir:.3f} ask={side_ask:.3f} net_ev={expected_roi:+.3%}"
+            f"p={p_dir:.3f} mkt_p={market_dir_prob:.3f} lag={lag_prob_edge:+.3f} "
+            f"ask={side_ask:.3f} net_ev={expected_roi:+.3%}"
         )
 
         return {
@@ -486,6 +518,8 @@ class TradingBot:
             "entry_price": float(side_ask),
             "expected_roi": float(expected_roi),
             "direction_prob": float(p_dir),
+            "market_prob_dir": float(market_dir_prob),
+            "lag_prob_edge": float(lag_prob_edge),
             "move_pct": float(move_pct),
             "recent_move_pct": float(recent_move),
             "reason": reason,
@@ -894,6 +928,109 @@ class TradingBot:
         except Exception as e:
             logger.warning("live trade CLOSED upsert failed: %s", e)
 
+    def _reconcile_stale_open_live_trades(self):
+        """
+        Backfill OPEN live trades that already have resolved market outcomes.
+        This handles cases where runtime stopped before normal rollover settlement.
+        """
+        try:
+            conn = self._ensure_state_conn()
+            rows = fetch_all_dicts(
+                conn,
+                """
+                SELECT
+                    lt.id, lt.window_start, lt.window_end, lt.direction,
+                    lt.stake, lt.entry_price, lt.opened_at,
+                    mw.actual_outcome
+                FROM live_trades lt
+                JOIN market_windows mw ON mw.window_start = lt.window_start
+                WHERE lt.status='OPEN'
+                  AND mw.actual_outcome IN ('UP','DOWN')
+                ORDER BY lt.window_start ASC
+                """,
+            )
+            if not rows:
+                return
+
+            now_ts = float(time.time())
+            fixed = 0
+            for row in rows:
+                trade_id = int(row.get("id") or 0)
+                stake = float(row.get("stake") or 0.0)
+                entry_price = float(row.get("entry_price") or 0.0)
+                direction = str(row.get("direction") or "").upper()
+                actual = str(row.get("actual_outcome") or "").upper()
+                if trade_id <= 0 or stake <= 0.0 or not (0.0 < entry_price < 1.0):
+                    continue
+                if direction not in {"UP", "DOWN"} or actual not in {"UP", "DOWN"}:
+                    continue
+
+                won = 1 if direction == actual else 0
+                if won:
+                    shares = float(stake / entry_price)
+                    pnl = float(shares - stake)
+                else:
+                    pnl = float(-stake)
+                roi_pct = float((pnl / stake) * 100.0) if stake > 0.0 else 0.0
+
+                execute_write(
+                    conn,
+                    """
+                    UPDATE live_trades
+                    SET status='CLOSED',
+                        closed_at=?,
+                        actual_outcome=?,
+                        won=?,
+                        pnl=?,
+                        roi_pct=?,
+                        close_reason=COALESCE(close_reason, 'recovered_expiry_settlement')
+                    WHERE id=?
+                    """,
+                    (
+                        float(now_ts),
+                        str(actual),
+                        int(won),
+                        float(pnl),
+                        float(roi_pct),
+                        int(trade_id),
+                    ),
+                )
+                fixed += 1
+
+            if fixed > 0:
+                conn.commit()
+                logger.warning(
+                    "Recovered %s stale OPEN live trade(s) from resolved market outcomes.",
+                    fixed,
+                )
+
+            if self.current_trade is not None and self.current_trade.result == "PENDING":
+                ws = int(self.current_trade_window_start or 0)
+                if ws > 0:
+                    resolved = fetch_one_dict(
+                        conn,
+                        "SELECT actual_outcome FROM market_windows "
+                        "WHERE window_start=? AND actual_outcome IN ('UP','DOWN') "
+                        "LIMIT 1",
+                        (int(ws),),
+                    )
+                    if resolved:
+                        logger.warning(
+                            "Clearing stale pending runtime trade for resolved window ws=%s outcome=%s",
+                            ws,
+                            str(resolved.get("actual_outcome") or ""),
+                        )
+                        self.current_trade = None
+                        self.current_trade_window_start = None
+                        self.current_trade_signal_confidence = None
+                        self.current_trade_signal_reason = None
+                        self.current_trade_entry_source = None
+                        self._trade_locked_window_start = None
+                        self._early_exit_opposite_hits.clear()
+                        self._persist_runtime_state()
+        except Exception as e:
+            logger.warning("stale OPEN live trade reconcile failed: %s", e)
+
     async def _reconcile_exchange_for_current_market(self, phase: str) -> bool:
         if config.trading.dry_run:
             return True
@@ -1046,6 +1183,12 @@ class TradingBot:
 
         executed_notional = float(result.get("executed_notional") or 0.0)
         executed_price = float(result.get("executed_price") or 0.0)
+        executed_size = float(result.get("executed_size") or 0.0)
+
+        # Prefer exchange-reported fill size*price to keep later exit sizing aligned.
+        if executed_size > 0.0 and 0.0 < executed_price < 1.0:
+            executed_notional = float(executed_size * executed_price)
+
         if executed_notional <= 0.0:
             executed_notional = float(fallback_amount)
         if not (0.0 < executed_price < 1.0):
@@ -1076,6 +1219,50 @@ class TradingBot:
         )
         self._persist_runtime_state()
         return True
+
+    async def _cap_exit_shares_by_balance(
+        self,
+        *,
+        market: Optional[MarketInfo],
+        direction: str,
+        requested_shares: float,
+        phase: str,
+    ) -> float:
+        shares = max(0.0, float(requested_shares or 0.0))
+        if shares <= 0.0 or market is None or config.trading.dry_run:
+            return shares
+
+        exposure = await self.poly_client.inspect_market_exposure(market)
+        if not bool(exposure.get("ok")):
+            logger.warning(
+                "%s: exposure check failed, using requested shares %.6f (%s)",
+                phase,
+                shares,
+                exposure.get("error"),
+            )
+            return shares
+
+        side = str(direction or "").upper()
+        available = 0.0
+        if side == "UP":
+            available = float(exposure.get("up_balance") or 0.0)
+        elif side == "DOWN":
+            available = float(exposure.get("down_balance") or 0.0)
+
+        if available <= 0.0:
+            logger.warning("%s: no on-exchange %s balance available (requested=%.6f)", phase, side, shares)
+            return 0.0
+
+        capped = min(shares, max(0.0, available * 0.995))
+        if capped + 1e-9 < shares:
+            logger.warning(
+                "%s: capping exit shares by exchange balance (requested=%.6f, available=%.6f, used=%.6f)",
+                phase,
+                shares,
+                available,
+                capped,
+            )
+        return max(0.0, capped)
 
     def _resolve_trade_quotes(self, direction: str) -> tuple[Optional[str], Optional[float], Optional[float], Optional[float]]:
         if self.current_market is None:
@@ -1251,7 +1438,13 @@ class TradingBot:
             side_bid = None
 
         token_id = str(pending.get("token_id") or "")
-        shares = float(pending.get("shares") or 0.0)
+        requested_shares = float(pending.get("shares") or 0.0)
+        shares = await self._cap_exit_shares_by_balance(
+            market=market,
+            direction=direction,
+            requested_shares=float(requested_shares),
+            phase="post-settlement-exit",
+        )
         stake = float(pending.get("stake") or 0.0)
         if not token_id or shares <= 0.0 or stake <= 0.0 or side_bid is None:
             logger.warning(
@@ -1486,7 +1679,19 @@ class TradingBot:
         if not early_reason:
             return False
 
-        shares = float(trade.amount / max(float(trade.price), 1e-9))
+        requested_shares = float(trade.amount / max(float(trade.price), 1e-9))
+        shares = await self._cap_exit_shares_by_balance(
+            market=self.current_market,
+            direction=str(trade.direction),
+            requested_shares=float(requested_shares),
+            phase="early-exit",
+        )
+        if shares <= 0.0:
+            logger.warning(
+                "Early-exit skipped: no exitable balance (requested=%.6f shares)",
+                requested_shares,
+            )
+            return False
         exit_result = await self.poly_client.place_exit_order(
             token_id=str(token_id),
             side="SELL",
@@ -1600,7 +1805,7 @@ class TradingBot:
         logger.info(
             "Live guards: entry_start=%.0fs support>=%.0f%% unanim=%s move>=%.4f%%(lookback=%.0fs) "
             "trend(lookback=%.0fs opp<=%.4f%%) implied(side>=%.2f opp<=%.2f) "
-            "contra_gap<=%.3f(ovr p>=%.2f conf>=%.2f) down_block>=%.4f%%",
+            "contra_gap<=%.3f(ovr p>=%.2f conf>=%.2f) lag_edge>=%.3f down_block>=%.4f%%",
             float(config.trading.live_entry_start_seconds),
             float(config.trading.live_min_support_ratio) * 100.0,
             config.trading.live_require_unanimous,
@@ -1613,11 +1818,12 @@ class TradingBot:
             float(config.trading.live_max_contra_gap),
             float(config.trading.live_contra_override_min_model_prob),
             float(config.trading.live_contra_override_min_conf),
+            float(config.trading.live_min_lag_prob_edge),
             float(config.trading.live_down_above_start_block_pct),
         )
         logger.info(
             "Fast-lane: enabled=%s elapsed=[%.0f, %.0f]s remain>=%.0fs move=[%.4f%%, %.4f%%] "
-            "recent>=%.4f%% ask<=%.3f p>=%.3f edge>=%.3f ev>=%.3f%%",
+            "recent>=%.4f%% ask<=%.3f p>=%.3f lag>=%.3f edge>=%.3f ev>=%.3f%%",
             bool(config.trading.fast_lane_enabled),
             float(config.trading.fast_lane_min_seconds_elapsed),
             float(config.trading.fast_lane_max_seconds_elapsed),
@@ -1627,6 +1833,7 @@ class TradingBot:
             float(config.trading.fast_lane_min_recent_move_pct),
             float(config.trading.fast_lane_max_entry_price),
             float(config.trading.fast_lane_min_direction_prob),
+            float(config.trading.fast_lane_min_lag_prob_edge),
             float(config.trading.fast_lane_min_prob_edge),
             float(config.trading.fast_lane_min_expected_roi) * 100.0,
         )
@@ -1670,6 +1877,24 @@ class TradingBot:
         logger.info("=" * 60)
 
         self._load_runtime_state()
+        self._reconcile_stale_open_live_trades()
+        if self._kill_switch_reason:
+            kill_reason_lower = str(self._kill_switch_reason or "").lower()
+            deterministic_balance_reject = (
+                ("early-exit uncertain fill" in kill_reason_lower)
+                and (
+                    ("not enough balance" in kill_reason_lower)
+                    or ("allowance" in kill_reason_lower)
+                    or ("insufficient balance" in kill_reason_lower)
+                )
+            )
+            if deterministic_balance_reject:
+                logger.warning(
+                    "Clearing non-fatal latched kill-switch from deterministic balance/allowance reject: %s",
+                    self._kill_switch_reason,
+                )
+                self._clear_kill_switch()
+
         if self._kill_switch_reason:
             allow_reset = os.getenv("LIVE_KILL_SWITCH_RESET_ON_START", "false").lower() == "true"
             if allow_reset:
@@ -1827,6 +2052,11 @@ class TradingBot:
                 if market:
                     self.current_market = market
 
+        await self._maybe_sync_market_start_price(
+            now_ts=float(now),
+            seconds_elapsed=float(seconds_elapsed),
+        )
+
         # ---- Build context ----
         ctx = self._build_context(seconds_elapsed, seconds_remaining)
         if ctx is None:
@@ -1857,6 +2087,8 @@ class TradingBot:
             fast_edge = float(fast_signal["prob_edge"])
             fast_price = float(fast_signal["entry_price"])
             fast_p = float(fast_signal["direction_prob"])
+            fast_market_p = float(fast_signal.get("market_prob_dir", 0.0))
+            fast_lag = float(fast_signal.get("lag_prob_edge", 0.0))
             fast_ev = float(fast_signal["expected_roi"])
             fast_move = float(fast_signal["move_pct"])
             fast_recent = float(fast_signal["recent_move_pct"])
@@ -1887,12 +2119,14 @@ class TradingBot:
 
                 if price is not None and 0.01 < price < 0.99 and token_id:
                     logger.info(
-                        ">>> FAST-LANE TRADE: %s | $%.2f @ %.4f | p=%.3f edge=%.3f ev=%+.3f%% | "
+                        ">>> FAST-LANE TRADE: %s | $%.2f @ %.4f | p=%.3f mkt=%.3f lag=%+.3f edge=%.3f ev=%+.3f%% | "
                         "move=%+.4f%% recent=%+.4f%%",
                         fast_direction,
                         bet_size,
                         float(price),
                         fast_p,
+                        fast_market_p,
+                        fast_lag,
                         fast_edge,
                         fast_ev * 100.0,
                         fast_move,
@@ -2088,6 +2322,26 @@ class TradingBot:
         if not gate.allow:
             logger.info("Skip trade by entry gate: %s", gate.reason)
             return
+        market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
+        market_dir_prob = None
+        lag_prob_edge = None
+        if market_up_prob is not None and market_down_prob is not None:
+            market_dir_prob = (
+                float(market_up_prob)
+                if decision.direction == "UP"
+                else float(market_down_prob)
+            )
+            lag_prob_edge = float(gate.model_prob) - float(market_dir_prob)
+            if lag_prob_edge < float(config.trading.live_min_lag_prob_edge):
+                logger.info(
+                    "Skip live lag-edge guard: dir=%s model_p=%.3f mkt_p=%.3f lag=%+.3f < %.3f",
+                    decision.direction,
+                    float(gate.model_prob),
+                    float(market_dir_prob),
+                    float(lag_prob_edge),
+                    float(config.trading.live_min_lag_prob_edge),
+                )
+                return
         if side_ask is not None and opposite_ask is not None:
             contra_gap = float(opposite_ask) - float(side_ask)
             if contra_gap > float(config.trading.live_max_contra_gap):
@@ -2124,16 +2378,24 @@ class TradingBot:
         if bet_size < config.trading.min_bet_size:
             return
 
+        lag_display = f"{float(lag_prob_edge):+.3f}" if lag_prob_edge is not None else "n/a"
         logger.info(
             f">>> TRADE: {decision.direction} | ${bet_size:.2f} @ {price:.4f} | "
             f"conf={decision.avg_confidence:.3f} | unan={decision.unanimous} | "
             f"net_ev={gate.expected_roi:+.3%} | "
+            f"lag={lag_display} | "
             f"BTC_chg={ctx.current_binance_price - ctx.market_start_price:+.2f} | "
             f"poly_up={ctx.poly_up_price:.3f} poly_down={ctx.poly_down_price:.3f}"
         )
+        lag_reason = (
+            f", lag={float(lag_prob_edge):+.3f}, mkt_p={float(market_dir_prob):.3f}"
+            if lag_prob_edge is not None and market_dir_prob is not None
+            else ""
+        )
         jury_reason = (
             f"{support_votes}/{len(decision.verdicts)} {decision.direction} votes | "
-            f"net_ev={gate.expected_roi:+.3%} >= target={dynamic_min_roi:.3%} ({gate.reason})"
+            f"net_ev={gate.expected_roi:+.3%} >= target={dynamic_min_roi:.3%} "
+            f"({gate.reason}{lag_reason})"
         )
 
         result = await self.poly_client.place_entry_order(
@@ -2169,13 +2431,23 @@ class TradingBot:
             self._odds_task.cancel()
             self._odds_task = None
 
+        # Local Binance anchor (fallback).
         self.market_start_price = self.price_feed.get_price_at(float(start_timestamp))
         if self.market_start_price is None:
             self.market_start_price = self.price_feed.current_price
+        self._market_start_official = False
+        self._last_ptb_sync_ts = 0.0
 
         self.current_market = await self.poly_client.find_market(start_timestamp)
 
         if self.current_market:
+            if (
+                self.current_market.price_to_beat is not None
+                and float(self.current_market.price_to_beat) > 0.0
+            ):
+                # Align to Polymarket official Price to Beat (Chainlink reference).
+                self.market_start_price = float(self.current_market.price_to_beat)
+                self._market_start_official = True
             logger.info(
                 f"New market: {self.current_market.slug} | "
                 f"UP={self.current_market.up_price:.3f} DOWN={self.current_market.down_price:.3f} | "
@@ -2208,6 +2480,45 @@ class TradingBot:
         self._trade_locked_window_start = None
         self._early_exit_opposite_hits.clear()
         self._persist_runtime_state()
+
+    async def _maybe_sync_market_start_price(self, *, now_ts: float, seconds_elapsed: float):
+        """Correct start reference to official Price to Beat when Gamma metadata arrives late."""
+        if self.current_market is None:
+            return
+        if self._market_start_official and self.market_start_price is not None:
+            return
+        if seconds_elapsed > 120.0:
+            return
+        if (now_ts - self._last_ptb_sync_ts) < 3.0:
+            return
+        self._last_ptb_sync_ts = now_ts
+
+        ptb = self.current_market.price_to_beat
+        if ptb is None or float(ptb) <= 0.0:
+            ptb = await self.poly_client.fetch_price_to_beat(self.current_market.slug)
+            if ptb is None or float(ptb) <= 0.0:
+                return
+            self.current_market.price_to_beat = float(ptb)
+
+        new_start = float(ptb)
+        prev_start = self.market_start_price
+        self.market_start_price = new_start
+        self._market_start_official = True
+
+        if prev_start is None:
+            logger.info(
+                "Market start set from Price to Beat: %s | $%.2f",
+                self.current_market.slug,
+                new_start,
+            )
+            return
+        if abs(float(prev_start) - new_start) >= 0.01:
+            logger.warning(
+                "Market start corrected to Price to Beat: %s | %.2f -> %.2f",
+                self.current_market.slug,
+                float(prev_start),
+                new_start,
+            )
 
     async def _resolve_previous_trade(self):
         if not self.current_trade or self.current_trade.result != "PENDING":

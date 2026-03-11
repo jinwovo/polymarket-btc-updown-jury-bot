@@ -55,6 +55,64 @@ DB_PATH = sqlite_db_path()
 # Data loading from SQLite
 # ---------------------------------------------------------------------------
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, x)))
+
+
+def _safe_prob(value: float | None) -> float | None:
+    try:
+        if value is None:
+            return None
+        v = float(value)
+        if 0.0 < v < 1.0:
+            return v
+    except Exception:
+        return None
+    return None
+
+
+def _normalized_market_probs(
+    up_ask: float | None,
+    down_ask: float | None,
+) -> tuple[float | None, float | None]:
+    up = _safe_prob(up_ask)
+    down = _safe_prob(down_ask)
+    if up is None or down is None:
+        return (None, None)
+    total = float(up + down)
+    if total <= 1e-9:
+        return (None, None)
+    up_prob = float(_clamp(up / total, 0.001, 0.999))
+    return (up_prob, float(1.0 - up_prob))
+
+
+def _recent_move_pct(
+    prices: list[float],
+    timestamps: list[float],
+    now_ts: float,
+    lookback_sec: float,
+) -> float | None:
+    n = min(len(prices), len(timestamps))
+    if n <= 1:
+        return None
+    lo_ts = float(now_ts) - max(1.0, float(lookback_sec))
+    p0 = None
+    p1 = None
+    for i in range(n):
+        try:
+            ts = float(timestamps[i])
+            px = float(prices[i])
+        except Exception:
+            continue
+        if ts < lo_ts or px <= 0.0:
+            continue
+        if p0 is None:
+            p0 = px
+        p1 = px
+    if p0 is None or p1 is None or p0 <= 0.0:
+        return None
+    return float(((p1 - p0) / p0) * 100.0)
+
 def load_data(
     db_path: Path = DB_PATH,
     start_ts: Optional[float] = None,
@@ -190,6 +248,10 @@ class Backtester:
         self.recent_results: list[str] = []
         self.windows_with_odds = 0
         self.windows_without_odds = 0
+        raw_pos = str(config.trading.position_mode or "BOTH").strip().upper()
+        self.position_mode = raw_pos if raw_pos in {"BOTH", "UP_ONLY", "DOWN_ONLY"} else "BOTH"
+        raw_profit = str(getattr(config.trading, "live_profit_mode", "BALANCED")).strip().upper()
+        self.live_profit_mode = raw_profit if raw_profit in {"AGGRESSIVE", "BALANCED"} else "BALANCED"
 
     def _get_btc_price(self, ts: float) -> Optional[float]:
         if self.ticks.empty:
@@ -346,29 +408,111 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
-            if decision.avg_confidence < config.trading.min_edge:
-                check_time += self.check_interval
-                continue
-
-            bet_size = self.risk_mgr.compute_bet_size(
-                decision.avg_confidence, decision.max_edge
-            )
-            if bet_size < config.trading.min_bet_size:
-                check_time += self.check_interval
-                continue
-
-            # Entry price = REAL ask from orderbook
-            if decision.direction == "UP":
-                entry_price = odds["up_ask"]
-            else:
-                entry_price = odds["down_ask"]
-
-            if entry_price <= 0.01 or entry_price >= 0.99:
-                check_time += self.check_interval
-                continue
-
             support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
             support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
+            required_min_edge = float(config.trading.min_edge)
+            required_support_ratio = float(config.trading.live_min_support_ratio)
+            if self.live_profit_mode == "AGGRESSIVE":
+                required_min_edge *= (
+                    1.0
+                    - _clamp(float(config.trading.live_aggressive_min_edge_relax), 0.0, 0.60)
+                )
+                required_support_ratio -= _clamp(
+                    float(config.trading.live_aggressive_support_relax),
+                    0.0,
+                    0.25,
+                )
+            required_min_edge = _clamp(required_min_edge, 0.02, 0.95)
+            required_support_ratio = _clamp(required_support_ratio, 0.50, 1.0)
+
+            if decision.avg_confidence < required_min_edge:
+                check_time += self.check_interval
+                continue
+            if self.position_mode == "UP_ONLY" and decision.direction != "UP":
+                check_time += self.check_interval
+                continue
+            if self.position_mode == "DOWN_ONLY" and decision.direction != "DOWN":
+                check_time += self.check_interval
+                continue
+            if support_ratio < required_support_ratio:
+                check_time += self.check_interval
+                continue
+            if bool(config.trading.live_require_unanimous) and not decision.unanimous:
+                check_time += self.check_interval
+                continue
+
+            up_ask = _safe_prob(float(odds["up_ask"]))
+            down_ask = _safe_prob(float(odds["down_ask"]))
+            entry_price = up_ask if decision.direction == "UP" else down_ask
+            opposite_ask = down_ask if decision.direction == "UP" else up_ask
+            if entry_price is None or entry_price <= 0.01 or entry_price >= 0.99:
+                check_time += self.check_interval
+                continue
+            if entry_price < float(config.trading.live_min_entry_side_implied):
+                check_time += self.check_interval
+                continue
+            if (
+                opposite_ask is not None
+                and opposite_ask > float(config.trading.live_max_opposite_implied)
+            ):
+                check_time += self.check_interval
+                continue
+
+            recent_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=float(config.trading.live_recent_move_lookback_sec),
+            )
+            if recent_move is None:
+                check_time += self.check_interval
+                continue
+            base_move_thr = float(config.trading.live_min_recent_move_pct)
+            if decision.direction == "UP" and recent_move < base_move_thr:
+                check_time += self.check_interval
+                continue
+
+            btc_move_from_start_pct = (
+                ((float(btc_current) - float(btc_start)) / float(btc_start)) * 100.0
+                if float(btc_start) > 0.0
+                else 0.0
+            )
+            down_move_thr = base_move_thr
+            if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
+                down_move_thr += float(config.trading.live_down_above_start_momentum_extra)
+            if decision.direction == "DOWN" and recent_move > -down_move_thr:
+                check_time += self.check_interval
+                continue
+
+            trend_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=float(config.trading.live_trend_align_lookback_sec),
+            )
+            if trend_move is None:
+                check_time += self.check_interval
+                continue
+            trend_opp_thr = abs(float(config.trading.live_trend_align_max_opposing_move_pct))
+            if decision.direction == "UP" and trend_move < -trend_opp_thr:
+                check_time += self.check_interval
+                continue
+            if decision.direction == "DOWN" and trend_move > trend_opp_thr:
+                check_time += self.check_interval
+                continue
+
+            dynamic_min_roi = float(config.trading.min_expected_roi)
+            if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
+                block_thr = float(config.trading.live_down_above_start_block_pct)
+                if btc_move_from_start_pct >= block_thr:
+                    check_time += self.check_interval
+                    continue
+                ratio = btc_move_from_start_pct / max(block_thr, 1e-9)
+                dynamic_min_roi += float(config.trading.live_down_above_start_ev_penalty) * _clamp(ratio, 0.0, 1.0)
+            if self.live_profit_mode == "AGGRESSIVE":
+                relax = _clamp(float(config.trading.live_aggressive_entry_relax), 0.0, 0.60)
+                dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
+
             gate = evaluate_entry_gate(
                 direction=decision.direction,
                 entry_price=float(entry_price),
@@ -385,6 +529,42 @@ class Backtester:
                 recent_results=list(self.recent_results[-20:]),
             )
             if not gate.allow:
+                check_time += self.check_interval
+                continue
+
+            market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
+            if market_up_prob is not None and market_down_prob is not None:
+                market_dir_prob = (
+                    float(market_up_prob)
+                    if decision.direction == "UP"
+                    else float(market_down_prob)
+                )
+                lag_prob_edge = float(gate.model_prob) - float(market_dir_prob)
+                if lag_prob_edge < float(config.trading.live_min_lag_prob_edge):
+                    check_time += self.check_interval
+                    continue
+
+            if up_ask is not None and down_ask is not None:
+                side_ask = up_ask if decision.direction == "UP" else down_ask
+                opp_ask = down_ask if decision.direction == "UP" else up_ask
+                contra_gap = float(opp_ask) - float(side_ask)
+                if contra_gap > float(config.trading.live_max_contra_gap):
+                    if not (
+                        float(gate.model_prob) >= float(config.trading.live_contra_override_min_model_prob)
+                        and float(decision.avg_confidence) >= float(config.trading.live_contra_override_min_conf)
+                    ):
+                        check_time += self.check_interval
+                        continue
+
+            if gate.expected_roi < dynamic_min_roi:
+                check_time += self.check_interval
+                continue
+
+            bet_size = self.risk_mgr.compute_bet_size(
+                decision.avg_confidence,
+                decision.max_edge,
+            )
+            if bet_size < config.trading.min_bet_size:
                 check_time += self.check_interval
                 continue
 
@@ -682,11 +862,17 @@ def run_auto_sweep(
     windows: pd.DataFrame,
     edge_grid: list[float],
     jury_grid: list[int],
+    lag_grid: list[float],
+    min_roi_grid: list[float],
+    win_prob_grid: list[float],
     min_trades: int,
     top_n: int,
 ) -> list[dict]:
     original_edge = config.trading.min_edge
     original_jury = config.trading.jury_threshold
+    original_lag = config.trading.live_min_lag_prob_edge
+    original_min_roi = config.trading.min_expected_roi
+    original_min_win = config.trading.min_win_probability
     original_bt_level = logging.getLogger("backtest").level
     original_rm_level = logging.getLogger("risk_manager").level
 
@@ -697,31 +883,43 @@ def run_auto_sweep(
     try:
         for jury_threshold in jury_grid:
             for edge in edge_grid:
-                config.trading.jury_threshold = int(jury_threshold)
-                config.trading.min_edge = float(edge)
+                for lag_edge in lag_grid:
+                    for min_roi in min_roi_grid:
+                        for min_win in win_prob_grid:
+                            config.trading.jury_threshold = int(jury_threshold)
+                            config.trading.min_edge = float(edge)
+                            config.trading.live_min_lag_prob_edge = float(lag_edge)
+                            config.trading.min_expected_roi = float(min_roi)
+                            config.trading.min_win_probability = float(min_win)
 
-                bt = Backtester(ticks, odds, windows)
-                trades = bt.run()
-                metrics = _compute_trade_metrics(trades)
-                score = _stability_score(metrics)
-                eligible = (
-                    metrics["trades"] >= min_trades
-                    and metrics["win_rate"] >= 0.50
-                    and metrics["profit_factor"] >= 1.00
-                )
+                            bt = Backtester(ticks, odds, windows)
+                            trades = bt.run()
+                            metrics = _compute_trade_metrics(trades)
+                            score = _stability_score(metrics)
+                            eligible = (
+                                metrics["trades"] >= min_trades
+                                and metrics["win_rate"] >= 0.50
+                                and metrics["profit_factor"] >= 1.00
+                            )
 
-                results.append(
-                    {
-                        "jury_threshold": int(jury_threshold),
-                        "min_edge": float(edge),
-                        "stability_score": score,
-                        "eligible": eligible,
-                        **metrics,
-                    }
-                )
+                            results.append(
+                                {
+                                    "jury_threshold": int(jury_threshold),
+                                    "min_edge": float(edge),
+                                    "min_lag_prob_edge": float(lag_edge),
+                                    "min_expected_roi": float(min_roi),
+                                    "min_win_probability": float(min_win),
+                                    "stability_score": score,
+                                    "eligible": eligible,
+                                    **metrics,
+                                }
+                            )
     finally:
         config.trading.min_edge = original_edge
         config.trading.jury_threshold = original_jury
+        config.trading.live_min_lag_prob_edge = original_lag
+        config.trading.min_expected_roi = original_min_roi
+        config.trading.min_win_probability = original_min_win
         logging.getLogger("backtest").setLevel(original_bt_level)
         logging.getLogger("risk_manager").setLevel(original_rm_level)
 
@@ -736,19 +934,22 @@ def run_auto_sweep(
         reverse=True,
     )
 
-    print(f"\n{'='*88}")
-    print(" AUTO SWEEP: JURY_THRESHOLD x MIN_EDGE")
-    print(f"{'='*88}")
+    print(f"\n{'='*140}")
+    print(" AUTO SWEEP: JURY x EDGE x LAG_EDGE x MIN_ROI x MIN_WIN_PROB")
+    print(f"{'='*140}")
     print(
-        " rank | eligible | jury | edge  | trades | winrate | pnl       | pf    | maxDD    | score "
+        " rank | eligible | jury | edge  | lag   | minROI | minWin | trades | winrate | pnl       | pf    | maxDD    | score "
     )
-    print("-" * 88)
+    print("-" * 140)
     for idx, row in enumerate(results[:max(1, top_n)], start=1):
         print(
             f" {idx:>4d} | "
             f"{'Y' if row['eligible'] else 'N':>8s} | "
             f"{row['jury_threshold']:>4d} | "
             f"{row['min_edge']:.3f} | "
+            f"{row['min_lag_prob_edge']:.3f} | "
+            f"{row['min_expected_roi']:.3f} | "
+            f"{row['min_win_probability']:.3f} | "
             f"{row['trades']:>6d} | "
             f"{row['win_rate']:>7.1%} | "
             f"${row['total_pnl']:>+8.2f} | "
@@ -756,7 +957,7 @@ def run_auto_sweep(
             f"${row['max_drawdown']:>+7.2f} | "
             f"{row['stability_score']:.3f}"
         )
-    print(f"{'='*88}\n")
+    print(f"{'='*140}\n")
 
     return results
 
@@ -772,6 +973,9 @@ def main():
     parser.add_argument("--auto-sweep", action="store_true", help="Auto sweep JURY_THRESHOLD x MIN_EDGE")
     parser.add_argument("--edge-grid", type=str, default="0.04,0.06,0.08,0.10,0.12,0.15", help="Comma-separated min-edge values")
     parser.add_argument("--jury-grid", type=str, default="2,3,4,5", help="Comma-separated jury-threshold values")
+    parser.add_argument("--lag-grid", type=str, default="0.015,0.020,0.025,0.030", help="Comma-separated LIVE_MIN_LAG_PROB_EDGE values")
+    parser.add_argument("--roi-grid", type=str, default="0.002,0.003,0.004,0.006", help="Comma-separated MIN_EXPECTED_ROI values")
+    parser.add_argument("--win-prob-grid", type=str, default="0.52,0.53,0.54,0.55", help="Comma-separated MIN_WIN_PROBABILITY values")
     parser.add_argument("--min-trades", type=int, default=10, help="Minimum trades for eligible combos")
     parser.add_argument("--top", type=int, default=10, help="Top rows to print for auto sweep")
     parser.add_argument("--json-out", type=str, default="sweep_best.json", help="Auto-sweep output json file")
@@ -808,8 +1012,13 @@ def main():
     if args.auto_sweep:
         edge_grid = _parse_float_grid(args.edge_grid)
         jury_grid = _parse_int_grid(args.jury_grid)
-        if not edge_grid or not jury_grid:
-            logger.error("Invalid sweep grid. Check --edge-grid and --jury-grid.")
+        lag_grid = _parse_float_grid(args.lag_grid)
+        roi_grid = _parse_float_grid(args.roi_grid)
+        win_prob_grid = _parse_float_grid(args.win_prob_grid)
+        if not edge_grid or not jury_grid or not lag_grid or not roi_grid or not win_prob_grid:
+            logger.error(
+                "Invalid sweep grid. Check --edge-grid, --jury-grid, --lag-grid, --roi-grid, --win-prob-grid."
+            )
             return
 
         results = run_auto_sweep(
@@ -818,6 +1027,9 @@ def main():
             windows=windows,
             edge_grid=edge_grid,
             jury_grid=jury_grid,
+            lag_grid=lag_grid,
+            min_roi_grid=roi_grid,
+            win_prob_grid=win_prob_grid,
             min_trades=max(1, int(args.min_trades)),
             top_n=max(1, int(args.top)),
         )
@@ -828,7 +1040,10 @@ def main():
         best = next((r for r in results if r["eligible"]), results[0])
         print(
             "BEST COMBO => "
-            f"jury={best['jury_threshold']} edge={best['min_edge']:.3f} | "
+            f"jury={best['jury_threshold']} edge={best['min_edge']:.3f} "
+            f"lag={best['min_lag_prob_edge']:.3f} "
+            f"min_roi={best['min_expected_roi']:.3f} "
+            f"min_win={best['min_win_probability']:.3f} | "
             f"trades={best['trades']} wr={best['win_rate']:.1%} "
             f"pnl=${best['total_pnl']:+.2f} pf={best['profit_factor']:.2f} "
             f"maxDD=${best['max_drawdown']:.2f} score={best['stability_score']:.3f}"
@@ -838,7 +1053,13 @@ def main():
             "hours": hours,
             "best": best,
             "top": results[: max(1, int(args.top))],
-            "grid": {"edge": edge_grid, "jury": jury_grid},
+            "grid": {
+                "edge": edge_grid,
+                "jury": jury_grid,
+                "lag": lag_grid,
+                "min_expected_roi": roi_grid,
+                "min_win_probability": win_prob_grid,
+            },
             "min_trades": int(args.min_trades),
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         }
