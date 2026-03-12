@@ -162,6 +162,19 @@ interface LiveControlStatus extends ProcessStatus {
     persisted_env?: string;
     generated_env?: string;
   };
+  telegram?: {
+    enabled?: boolean;
+    configured?: boolean;
+    has_token?: boolean;
+    has_chat_id?: boolean;
+    token_masked?: string | null;
+    chat_id?: string | null;
+  };
+  telegram_test?: {
+    ok?: boolean;
+    chat_id?: string | null;
+    error?: string | null;
+  };
 }
 
 interface FailedSignalHistoryItem {
@@ -390,6 +403,13 @@ export function LiveDashboard() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authEditEnabled, setAuthEditEnabled] = useState(false);
   const [authShowSecrets, setAuthShowSecrets] = useState(false);
+  const [telegramModalOpen, setTelegramModalOpen] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramBotToken, setTelegramBotToken] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramSaving, setTelegramSaving] = useState(false);
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+  const [telegramTestMessage, setTelegramTestMessage] = useState("");
 
   const [lastHours, setLastHours] = useState("24");
   const [runMode, setRunMode] = useState<"single" | "auto_sweep">("auto_sweep");
@@ -687,6 +707,117 @@ export function LiveDashboard() {
     setAuthError(null);
   }
 
+  function openTelegramModal() {
+    setTelegramError(null);
+    setTelegramEnabled(liveTelegram?.enabled ?? true);
+    setTelegramBotToken("");
+    setTelegramChatId(liveTelegram?.chat_id ?? "");
+    setTelegramTestMessage("");
+    setTelegramModalOpen(true);
+  }
+
+  async function saveTelegramConfig(sendTest = false) {
+    setTelegramSaving(true);
+    setTelegramError(null);
+    try {
+      const tokenInput = telegramBotToken.trim();
+      const hasExistingToken = Boolean(liveTelegram?.has_token);
+      if (!tokenInput && !hasExistingToken) {
+        setTelegramError("Bot token is required for first-time setup.");
+        return;
+      }
+      const payload = {
+        action: "telegram_config",
+        enabled: telegramEnabled,
+        bot_token: tokenInput,
+        chat_id: telegramChatId.trim(),
+        send_test: sendTest,
+        test_message: telegramTestMessage.trim(),
+      };
+      const res = await fetch("/api/control/live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = (await res.json()) as LiveControlStatus;
+      setLiveStatus(json);
+      const test = json.telegram_test;
+      if (!json.ok) {
+        const rawErr =
+          json.message ||
+          json.error ||
+          test?.error ||
+          "Failed to save Telegram settings";
+        const lowered = String(rawErr).toLowerCase();
+        if (
+          sendTest &&
+          (lowered.includes("no updates found") ||
+            lowered.includes("send /start") ||
+            lowered.includes("chat id auto-resolve failed"))
+        ) {
+          setTelegramError(
+            "봇 채팅에서 /start 를 먼저 보내고, 'Verify /start + Send Test'를 다시 눌러주세요.",
+          );
+          return;
+        }
+        setTelegramError(
+          rawErr,
+        );
+        return;
+      }
+      if (sendTest && test && !test.ok) {
+        setTelegramError(test.error || "Telegram test failed");
+        return;
+      }
+      if (sendTest) {
+        const resolvedChat = json.telegram?.chat_id ?? test?.chat_id ?? "";
+        if (resolvedChat) setTelegramChatId(String(resolvedChat));
+        setTelegramModalOpen(false);
+      }
+    } catch (e) {
+      setTelegramError(
+        e instanceof Error ? e.message : "Failed to save Telegram settings",
+      );
+    } finally {
+      setTelegramSaving(false);
+    }
+  }
+
+  async function sendTelegramTestOnly() {
+    setTelegramSaving(true);
+    setTelegramError(null);
+    try {
+      const payload = {
+        action: "telegram_test",
+        bot_token: telegramBotToken.trim(),
+        chat_id: telegramChatId.trim(),
+        message: telegramTestMessage.trim(),
+      };
+      const res = await fetch("/api/control/live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = (await res.json()) as LiveControlStatus;
+      setLiveStatus(json);
+      if (!json.ok) {
+        setTelegramError(
+          json.telegram_test?.error ||
+            json.message ||
+            json.error ||
+            "Telegram test failed",
+        );
+        return;
+      }
+      const resolvedChat = json.telegram_test?.chat_id ?? "";
+      if (resolvedChat) setTelegramChatId(String(resolvedChat));
+    } catch (e) {
+      setTelegramError(e instanceof Error ? e.message : "Telegram test failed");
+    } finally {
+      setTelegramSaving(false);
+    }
+  }
+
   async function resetPaperHistory() {
     const ok = window.confirm(
       "Reset all paper trade history? This will delete all paper trades and cannot be undone.",
@@ -937,6 +1068,7 @@ export function LiveDashboard() {
   const liveBalance = liveStatus?.account?.collateral_balance ?? null;
   const liveAllowance = liveStatus?.account?.collateral_allowance ?? null;
   const liveApiCreds = liveStatus?.account?.api_credentials;
+  const liveTelegram = liveStatus?.telegram;
   const hasLiveApiCreds = Boolean(liveApiCreds?.exists);
   const liveStakeNum = Number(liveStake || "0");
   const liveStakeValid = liveSizingMode === "adaptive" || (Number.isFinite(liveStakeNum) && liveStakeNum > 0);
@@ -1560,6 +1692,11 @@ export function LiveDashboard() {
                   {(liveStatus?.account?.warnings ?? []).join(" | ")}
                 </p>
               ) : null}
+              <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                Telegram: {liveTelegram?.enabled ? "enabled" : "disabled"} | token{" "}
+                {liveTelegram?.has_token ? "set" : "missing"} | chat{" "}
+                {liveTelegram?.has_chat_id ? "set" : "missing"}
+              </p>
 
               <div className="flex flex-wrap gap-2">
                 <button
@@ -1596,6 +1733,12 @@ export function LiveDashboard() {
                   className="rounded-md border border-cyan-400/50 bg-cyan-500/20 px-3 py-1.5 text-sm"
                 >
                   Private Key Edit
+                </button>
+                <button
+                  onClick={openTelegramModal}
+                  className="rounded-md border border-sky-400/50 bg-sky-500/20 px-3 py-1.5 text-sm"
+                >
+                  Telegram Bot
                 </button>
                 <Badge variant={liveStatus?.running ? "success" : "neutral"}>
                   {liveStatus?.running ? "RUNNING" : "STOPPED"}
@@ -1848,6 +1991,120 @@ export function LiveDashboard() {
                     className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm disabled:opacity-40"
                   >
                     Refresh Status
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {telegramModalOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Telegram Bot Setup</p>
+                  <p className="text-xs text-muted-foreground">
+                    Live OPEN/CLOSED fill alerts. Save to local <span className="font-mono">.env</span>.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!telegramSaving) setTelegramModalOpen(false);
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-1.5 text-xs text-sky-100">
+                  <p>1) Bot token 입력 후 저장</p>
+                  <p>2) Telegram에서 봇 채팅 열고 <span className="font-mono">/start</span> 전송</p>
+                  <p>3) <span className="font-medium">Verify /start + Send Test</span> 클릭</p>
+                  <p>성공하면 이 창은 자동으로 닫힙니다.</p>
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={telegramEnabled}
+                    onChange={(e) => setTelegramEnabled(e.target.checked)}
+                    className="h-4 w-4 rounded border-border/70 bg-background/40"
+                  />
+                  Enable Telegram notifications
+                </label>
+
+                <label className="block text-xs text-muted-foreground">
+                  Bot Token
+                  <input
+                    type="password"
+                    value={telegramBotToken}
+                    onChange={(e) => setTelegramBotToken(e.target.value)}
+                    placeholder="Leave blank to keep existing token"
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 font-mono text-sm"
+                  />
+                </label>
+
+                <label className="block text-xs text-muted-foreground">
+                  Chat ID
+                  <input
+                    value={telegramChatId}
+                    onChange={(e) => setTelegramChatId(e.target.value)}
+                    placeholder="e.g. 123456789 (blank -> try auto-detect via getUpdates)"
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 font-mono text-sm"
+                  />
+                </label>
+
+                <label className="block text-xs text-muted-foreground">
+                  Test Message (optional)
+                  <input
+                    value={telegramTestMessage}
+                    onChange={(e) => setTelegramTestMessage(e.target.value)}
+                    placeholder="Default test message will be used if empty"
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  />
+                </label>
+
+                <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                  Current: token {liveTelegram?.token_masked ?? "--"} | chat{" "}
+                  {liveTelegram?.chat_id ?? "--"} | configured{" "}
+                  {liveTelegram?.configured ? "yes" : "no"}
+                </p>
+
+                {telegramError ? (
+                  <p className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">
+                    {telegramError}
+                  </p>
+                ) : null}
+                {liveStatus?.message ? (
+                  <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                    {liveStatus.message}
+                  </p>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void saveTelegramConfig(false)}
+                    disabled={telegramSaving}
+                    className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    {telegramSaving ? "Saving..." : "Save Telegram"}
+                  </button>
+                  <button
+                    onClick={() => void saveTelegramConfig(true)}
+                    disabled={telegramSaving}
+                    className="rounded-md border border-sky-400/50 bg-sky-500/20 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    Verify /start + Send Test
+                  </button>
+                  <button
+                    onClick={() => void sendTelegramTestOnly()}
+                    disabled={telegramSaving}
+                    className="rounded-md border border-border/70 bg-background/40 px-3 py-1.5 text-sm disabled:opacity-40"
+                  >
+                    Send Test Only
                   </button>
                 </div>
               </div>

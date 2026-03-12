@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import math
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from config import config
@@ -20,6 +21,7 @@ from db_config import (
     connect_db,
     execute_write,
     fetch_all_dicts,
+    fetch_one,
     fetch_one_dict,
     init_market_schema,
     is_sqlite_backend,
@@ -29,6 +31,7 @@ from polymarket_client import PolymarketClient, MarketInfo, compute_market_times
 from judges import Jury, MarketContext, Vote
 from risk_manager import RiskManager, TradeRecord
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
+from telegram_notifier import send_telegram_message
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -129,6 +132,240 @@ def _recent_move_pct(
     return ((p1 - p0) / p0) * 100.0
 
 
+# Live/Paper parity gate defaults (mirrors paper_trade_sim.py).
+LIVE_MIRROR_PAPER_GATES = os.getenv("LIVE_MIRROR_PAPER_GATES", "true").lower() == "true"
+MIRROR_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.040"))
+MIRROR_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
+MIRROR_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
+MIRROR_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.50"))
+MIRROR_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "60"))
+MIRROR_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "255"))
+MIRROR_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
+MIRROR_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "150"))
+MIRROR_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "24"))
+MIRROR_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
+MIRROR_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.0045"))
+MIRROR_TREND_ALIGN_LOOKBACK_SEC = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
+MIRROR_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
+MIRROR_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
+MIRROR_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+MIRROR_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
+MIRROR_CONTRA_OVERRIDE_MIN_MODEL_PROB = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
+MIRROR_CONTRA_OVERRIDE_MIN_CONF = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
+MIRROR_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))
+MIRROR_DOWN_ABOVE_START_MOMENTUM_EXTRA = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
+MIRROR_DOWN_ABOVE_START_EV_PENALTY = float(os.getenv("PAPER_DOWN_ABOVE_START_EV_PENALTY", "0.020"))
+MIRROR_BASE_TRADE_GAP_SEC = float(os.getenv("PAPER_BASE_TRADE_GAP_SEC", "300"))
+MIRROR_TARGET_TRADE_GAP_SEC = float(os.getenv("PAPER_TARGET_TRADE_GAP_SEC", "1200"))
+MIRROR_STALE_RELAX_START_SEC = float(os.getenv("PAPER_STALE_RELAX_START_SEC", "3600"))
+MIRROR_STALE_RELAX_FULL_SEC = float(os.getenv("PAPER_STALE_RELAX_FULL_SEC", "14400"))
+MIRROR_STALE_RELAX_MAX = float(os.getenv("PAPER_STALE_RELAX_MAX", "0.60"))
+MIRROR_STRICTNESS_UNANIMOUS_AT = float(os.getenv("PAPER_STRICTNESS_UNANIMOUS_AT", "0.90"))
+MIRROR_ADAPTIVE_MAX_ASK_FLOOR = float(os.getenv("PAPER_ADAPTIVE_MAX_ASK_FLOOR", "0.47"))
+MIRROR_PERF_PAUSE_SEC = float(os.getenv("PAPER_PERF_PAUSE_SEC", "1800"))
+MIRROR_HIGH_QUALITY_EV = float(os.getenv("PAPER_HIGH_QUALITY_EV", "0.12"))
+MIRROR_HIGH_QUALITY_CONF = float(os.getenv("PAPER_HIGH_QUALITY_CONF", "0.50"))
+MIRROR_RECENT_PERF_WINDOW = int(os.getenv("PAPER_RECENT_PERF_WINDOW", "8"))
+MIRROR_MIN_RECENT_WIN_RATE = float(os.getenv("PAPER_MIN_RECENT_WIN_RATE", "0.55"))
+MIRROR_MAX_DRAWDOWN_STOP_PCT = float(os.getenv("PAPER_MAX_DRAWDOWN_STOP_PCT", "0.20"))
+MIRROR_REQUIRE_UNANIMOUS = os.getenv("PAPER_REQUIRE_UNANIMOUS", "false").lower() == "true"
+MIRROR_PROFIT_MODE = str(os.getenv("PAPER_PROFIT_MODE", "aggressive")).strip().lower()
+MIRROR_AGGRESSIVE_ENTRY_RELAX = float(os.getenv("PAPER_AGGRESSIVE_ENTRY_RELAX", "0.20"))
+MIRROR_AGGRESSIVE_GAP_MULT = float(os.getenv("PAPER_AGGRESSIVE_GAP_MULT", "0.65"))
+MIRROR_EQUITY_SEED_CAPITAL = float(os.getenv("LIVE_EQUITY_SEED_CAPITAL", "1000"))
+MIRROR_ENABLE_EARLY_EXIT = os.getenv("PAPER_ENABLE_EARLY_EXIT", "true").lower() == "true"
+MIRROR_EARLY_EXIT_MIN_ELAPSED_SEC = float(os.getenv("PAPER_EARLY_EXIT_MIN_ELAPSED_SEC", "25"))
+MIRROR_EARLY_EXIT_OPPOSITE_ASK = float(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_ASK", "0.78"))
+MIRROR_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT", "-20.0")
+)
+MIRROR_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS = int(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
+MIRROR_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+MIRROR_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC", "35"))
+MIRROR_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF", "0.75")
+)
+MIRROR_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC", "20")
+)
+MIRROR_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF", "0.60")
+)
+MIRROR_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT", "15")
+)
+MIRROR_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE = (
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE", "true").lower() == "true"
+)
+MIRROR_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT", "0.090")
+)
+MIRROR_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "220"))
+MIRROR_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
+MIRROR_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
+
+
+def _live_equity_snapshot(conn, initial_capital: float) -> tuple[float, float]:
+    closed_pnl_row = fetch_one(
+        conn,
+        "SELECT COALESCE(SUM(pnl), 0) FROM live_trades WHERE status='CLOSED'",
+    )
+    open_notional_row = fetch_one(
+        conn,
+        "SELECT COALESCE(SUM(stake), 0) FROM live_trades WHERE status='OPEN'",
+    )
+    closed_pnl = float(closed_pnl_row[0] or 0.0) if closed_pnl_row else 0.0
+    open_notional = float(open_notional_row[0] or 0.0) if open_notional_row else 0.0
+    realized_equity = float(initial_capital) + closed_pnl
+    available_equity = max(0.0, realized_equity - open_notional)
+    return realized_equity, available_equity
+
+
+def _live_recent_risk_state(conn) -> tuple[int, float]:
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT pnl
+           FROM live_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END DESC,
+             id DESC
+           LIMIT 6""",
+    )
+    if not rows:
+        return 0, 0.0
+
+    loss_streak = 0
+    for row in rows:
+        pnl = float(row.get("pnl") or 0.0)
+        if pnl < 0.0:
+            loss_streak += 1
+        else:
+            break
+    losses = sum(1 for row in rows if float(row.get("pnl") or 0.0) < 0.0)
+    loss_rate = losses / float(len(rows))
+    return loss_streak, loss_rate
+
+
+def _live_recent_performance(conn, limit: int) -> tuple[int, float, float]:
+    lim = max(1, int(limit))
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT won, pnl
+           FROM live_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END DESC,
+             id DESC
+           LIMIT ?""",
+        (lim,),
+    )
+    if not rows:
+        return 0, 0.0, 0.0
+    wins = sum(1 for row in rows if int(row.get("won") or 0) == 1)
+    win_rate = wins / float(len(rows))
+    pnl_sum = sum(float(row.get("pnl") or 0.0) for row in rows)
+    return len(rows), win_rate, pnl_sum
+
+
+def _live_last_opened_at(conn) -> float:
+    row = fetch_one(conn, "SELECT MAX(opened_at) FROM live_trades")
+    if not row or row[0] is None:
+        return 0.0
+    try:
+        return float(row[0])
+    except Exception:
+        return 0.0
+
+
+def _live_last_closed_at(conn) -> float:
+    row = fetch_one(
+        conn,
+        """SELECT MAX(
+               CASE
+                 WHEN closed_at IS NOT NULL THEN closed_at
+                 ELSE window_end
+               END
+             )
+           FROM live_trades
+           WHERE status='CLOSED'""",
+    )
+    if not row or row[0] is None:
+        return 0.0
+    try:
+        return float(row[0])
+    except Exception:
+        return 0.0
+
+
+def _live_stale_relax_factor(last_opened_at: float, now_ts: float) -> float:
+    if last_opened_at <= 0:
+        return 0.0
+    idle_sec = max(0.0, float(now_ts) - float(last_opened_at))
+    start_sec = max(0.0, MIRROR_STALE_RELAX_START_SEC)
+    full_sec = max(start_sec + 1.0, MIRROR_STALE_RELAX_FULL_SEC)
+    if idle_sec <= start_sec:
+        return 0.0
+    span = full_sec - start_sec
+    return _clamp((idle_sec - start_sec) / span, 0.0, 1.0)
+
+
+def _live_equity_drawdown_pct(conn, initial_capital: float) -> float:
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT pnl
+           FROM live_trades
+           WHERE status='CLOSED'
+           ORDER BY
+             CASE
+               WHEN closed_at IS NOT NULL THEN closed_at
+               ELSE window_end
+             END ASC,
+             id ASC""",
+    )
+    if not rows:
+        return 0.0
+
+    equity = float(initial_capital)
+    peak = float(initial_capital)
+    max_dd = 0.0
+    for row in rows:
+        equity += float(row.get("pnl") or 0.0)
+        if equity > peak:
+            peak = equity
+        if peak > 0:
+            dd = (peak - equity) / peak
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd
+
+
+def _live_window_sample_counts(conn, window_start: int, now_ts: float) -> tuple[int, int]:
+    tick_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?""",
+        (float(window_start), float(now_ts)),
+    )
+    odds_row = fetch_one(
+        conn,
+        """SELECT COUNT(*)
+           FROM poly_odds
+           WHERE window_start = ? AND ts <= ?""",
+        (int(window_start), float(now_ts)),
+    )
+    tick_cnt = int(tick_row[0] or 0) if tick_row else 0
+    odds_cnt = int(odds_row[0] or 0) if odds_row else 0
+    return tick_cnt, odds_cnt
+
+
 def _normal_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
 
@@ -219,9 +456,249 @@ class TradingBot:
             10.0,
             float(config.trading.live_balance_refresh_seconds),
         )
+        self._maintenance_guard_enabled = bool(
+            (not config.trading.dry_run)
+            and getattr(config.trading, "live_maintenance_guard_enabled", True)
+        )
+        self._maintenance_fail_streak: int = 0
+        self._maintenance_recover_streak: int = 0
+        self._maintenance_mode: bool = False
+        self._maintenance_next_probe_ts: float = 0.0
+        self._maintenance_last_reason: str = ""
+        self._maintenance_last_skip_log_ts: float = 0.0
         self._last_auto_claim_ts: float = 0.0
         self._early_exit_opposite_hits: dict[int, int] = {}
         self._pending_settlement_exit: Optional[dict[str, Any]] = None
+        self._bg_tasks: set[asyncio.Task] = set()
+        self._telegram_warned_not_ready: bool = False
+
+    def _record_market_data_failure(self, *, reason: str, now_ts: float):
+        if not self._maintenance_guard_enabled:
+            return
+        self._maintenance_fail_streak += 1
+        self._maintenance_recover_streak = 0
+        threshold = max(1, int(getattr(config.trading, "live_maintenance_fail_threshold", 6)))
+        probe_sec = max(
+            30.0,
+            float(getattr(config.trading, "live_maintenance_probe_interval_seconds", 300.0)),
+        )
+
+        if self._maintenance_mode:
+            self._maintenance_last_reason = str(reason or self._maintenance_last_reason)
+            self._maintenance_next_probe_ts = float(now_ts) + probe_sec
+            logger.warning(
+                "Live maintenance probe failed (%s). Next probe in %.0fs.",
+                self._maintenance_last_reason or "unknown reason",
+                probe_sec,
+            )
+            return
+
+        if self._maintenance_fail_streak >= threshold:
+            self._maintenance_mode = True
+            self._maintenance_last_reason = str(reason or "market data unavailable")
+            self._maintenance_next_probe_ts = float(now_ts) + probe_sec
+            logger.error(
+                "Live maintenance pause ON after %s consecutive data failures: %s | next probe in %.0fs",
+                int(self._maintenance_fail_streak),
+                self._maintenance_last_reason,
+                probe_sec,
+            )
+            return
+
+        # Avoid excessive log spam while still exposing instability.
+        if self._maintenance_fail_streak in (1, 3) or (self._maintenance_fail_streak % 5 == 0):
+            logger.warning(
+                "Live data refresh failure streak: %s/%s (%s)",
+                int(self._maintenance_fail_streak),
+                threshold,
+                str(reason or "unknown"),
+            )
+
+    def _record_market_data_success(self):
+        if not self._maintenance_guard_enabled:
+            return
+        if not self._maintenance_mode:
+            self._maintenance_fail_streak = 0
+            self._maintenance_recover_streak = 0
+            return
+
+        self._maintenance_recover_streak += 1
+        need = max(1, int(getattr(config.trading, "live_maintenance_recover_success_count", 1)))
+        if self._maintenance_recover_streak < need:
+            logger.warning(
+                "Live maintenance recovery progress: %s/%s successful probes",
+                int(self._maintenance_recover_streak),
+                need,
+            )
+            return
+
+        logger.warning(
+            "Live maintenance pause OFF: market data recovered (success probes=%s). Trading resumed.",
+            int(self._maintenance_recover_streak),
+        )
+        self._maintenance_mode = False
+        self._maintenance_fail_streak = 0
+        self._maintenance_recover_streak = 0
+        self._maintenance_next_probe_ts = 0.0
+        self._maintenance_last_reason = ""
+        self._maintenance_last_skip_log_ts = 0.0
+
+    async def _probe_live_market_data_health(self, current_start: int) -> bool:
+        """
+        Probe Polymarket health for live trading recovery.
+        Returns True only if we can resolve the current market and refresh orderbook odds.
+        """
+        market = self.current_market
+        if market is None or int(market.start_timestamp) != int(current_start):
+            market = await self.poly_client.find_market(int(current_start))
+            if market is not None:
+                self.current_market = market
+
+        if market is None:
+            return False
+
+        if not (market.up_token_id and market.down_token_id):
+            refreshed_market = await self.poly_client.find_market(int(current_start))
+            if refreshed_market is None:
+                return False
+            self.current_market = refreshed_market
+            market = refreshed_market
+            if not (market.up_token_id and market.down_token_id):
+                return False
+
+            # Restart odds polling with recovered token ids.
+            self.poly_client.stop_odds_polling()
+            if self._odds_task:
+                self._odds_task.cancel()
+                self._odds_task = None
+            self._odds_task = asyncio.create_task(
+                self.poly_client.start_odds_polling(market, interval=1.0)
+            )
+
+        ok = await self.poly_client.refresh_odds(market)
+        if not ok:
+            return False
+        if _safe_prob(market.up_best_ask) is None or _safe_prob(market.down_best_ask) is None:
+            return False
+        return True
+
+    def _spawn_background_task(self, coro: asyncio.Future):
+        try:
+            task = asyncio.create_task(coro)
+            self._bg_tasks.add(task)
+            task.add_done_callback(lambda t: self._bg_tasks.discard(t))
+        except Exception:
+            pass
+
+    def _telegram_ready(self) -> tuple[bool, str, str]:
+        enabled = bool(getattr(config.trading, "live_telegram_enabled", False))
+        token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+        chat_id = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+        ready = bool(enabled and token and chat_id)
+        if enabled and not ready and not self._telegram_warned_not_ready:
+            self._telegram_warned_not_ready = True
+            logger.warning(
+                "Live Telegram enabled, but config is incomplete (token/chat_id missing)."
+            )
+        if ready:
+            self._telegram_warned_not_ready = False
+        return ready, token, chat_id
+
+    async def _send_live_telegram(self, text: str, *, reason: str):
+        ready, token, chat_id = self._telegram_ready()
+        if not ready:
+            return
+        try:
+            result = await asyncio.to_thread(
+                send_telegram_message,
+                token=token,
+                chat_id=chat_id,
+                text=text,
+                timeout=8.0,
+                auto_resolve_chat=False,
+            )
+            if not bool(result.get("ok")):
+                logger.warning(
+                    "Live Telegram send failed (%s): %s",
+                    reason,
+                    result.get("error") or "unknown",
+                )
+        except Exception as e:
+            logger.warning("Live Telegram send exception (%s): %s", reason, e)
+
+    def _format_live_open_telegram(
+        self,
+        *,
+        trade: TradeRecord,
+        direction: str,
+        source: str,
+        signal_confidence: Optional[float],
+    ) -> str:
+        stake = float(trade.amount or 0.0)
+        entry_px = float(trade.price or 0.0)
+        to_win_total = (stake / entry_px) if (stake > 0.0 and 0.0 < entry_px < 1.0) else 0.0
+        expected_pnl = max(0.0, to_win_total - stake)
+        start_price = float(self.market_start_price or 0.0)
+        current_price = float(self.price_feed.current_price or 0.0)
+        up_ask = _safe_prob(self.current_market.up_best_ask if self.current_market else None)
+        down_ask = _safe_prob(self.current_market.down_best_ask if self.current_market else None)
+        slug = (self.current_market.slug if self.current_market else None) or "--"
+        ts_utc = datetime.now(timezone.utc).isoformat()
+        conf_txt = (
+            f"{float(signal_confidence):.3f}"
+            if signal_confidence is not None
+            else (
+                f"{float(self.current_trade_signal_confidence):.3f}"
+                if self.current_trade_signal_confidence is not None
+                else "--"
+            )
+        )
+        return (
+            "[LIVE OPEN]\n"
+            f"time(UTC): {ts_utc}\n"
+            f"side: {direction}\n"
+            f"slug: {slug}\n"
+            f"source: {source}\n"
+            f"5m start price: {start_price:,.2f}\n"
+            f"current price: {current_price:,.2f}\n"
+            f"stake: ${stake:,.2f}\n"
+            f"entry odds: {entry_px:.3f}\n"
+            f"Polymarket Buy Odds ask (UP/DOWN): "
+            f"{up_ask if up_ask is not None else '--'} / {down_ask if down_ask is not None else '--'}\n"
+            f"expected to-win total: ${to_win_total:,.2f}\n"
+            f"expected pnl: ${expected_pnl:,.2f}\n"
+            f"confidence: {conf_txt}"
+        )
+
+    def _format_live_closed_telegram(
+        self,
+        *,
+        trade: TradeRecord,
+        actual_outcome: str,
+        close_reason: str,
+        start_price: float,
+        end_price: float,
+    ) -> str:
+        stake = float(trade.amount or 0.0)
+        entry_px = float(trade.price or 0.0)
+        pnl = float(trade.pnl or 0.0)
+        roi_pct = ((pnl / stake) * 100.0) if stake > 0.0 else 0.0
+        result = str(trade.result or "UNKNOWN").upper()
+        slug = (self.current_market.slug if self.current_market else None) or "--"
+        ts_utc = datetime.now(timezone.utc).isoformat()
+        return (
+            f"[LIVE CLOSED] {result}\n"
+            f"time(UTC): {ts_utc}\n"
+            f"side: {str(trade.direction or '').upper()}\n"
+            f"slug: {slug}\n"
+            f"close reason: {close_reason}\n"
+            f"actual outcome: {str(actual_outcome or '--').upper()}\n"
+            f"stake: ${stake:,.2f}\n"
+            f"entry odds: {entry_px:.3f}\n"
+            f"5m start price: {float(start_price):,.2f}\n"
+            f"end price: {float(end_price):,.2f}\n"
+            f"realized pnl: ${pnl:,.2f} ({roi_pct:+.2f}%)"
+        )
 
     def _current_live_cap(self) -> float:
         if self.live_sizing_mode == "ADAPTIVE" and not config.trading.dry_run:
@@ -1218,6 +1695,16 @@ class TradingBot:
             entry_source=source,
         )
         self._persist_runtime_state()
+        if bool(getattr(config.trading, "live_telegram_notify_open", True)):
+            msg = self._format_live_open_telegram(
+                trade=self.current_trade,
+                direction=direction,
+                source=source,
+                signal_confidence=signal_confidence,
+            )
+            self._spawn_background_task(
+                self._send_live_telegram(msg, reason="trade_open")
+            )
         return True
 
     async def _cap_exit_shares_by_balance(
@@ -1320,6 +1807,19 @@ class TradingBot:
             actual_outcome=actual_outcome,
             close_reason=close_reason,
         )
+        if bool(getattr(config.trading, "live_telegram_notify_close", True)):
+            start_price = float(self.market_start_price or 0.0)
+            end_price = float(self.price_feed.current_price or 0.0)
+            msg = self._format_live_closed_telegram(
+                trade=trade,
+                actual_outcome=actual_outcome,
+                close_reason=close_reason,
+                start_price=start_price,
+                end_price=end_price,
+            )
+            self._spawn_background_task(
+                self._send_live_telegram(msg, reason="trade_close")
+            )
         self.current_trade = None
         self.current_trade_signal_confidence = None
         self.current_trade_signal_reason = None
@@ -1563,14 +2063,49 @@ class TradingBot:
             return False
         if self.current_market is None:
             return False
-        if not bool(config.trading.live_enable_early_exit):
+        early_exit_enabled = bool(config.trading.live_enable_early_exit)
+        min_elapsed_sec = float(config.trading.live_early_exit_min_elapsed_sec)
+        opposite_ask_thr = float(config.trading.live_early_exit_opposite_ask)
+        opposite_min_loss_roi_pct = float(config.trading.live_early_exit_opposite_min_loss_roi_pct)
+        opposite_confirm_polls = int(config.trading.live_early_exit_opposite_confirm_polls)
+        stop_loss_roi_pct = float(config.trading.live_early_exit_stop_loss_roi_pct)
+        stop_loss_min_hold_sec = float(config.trading.live_early_exit_stop_loss_min_hold_sec)
+        stop_loss_high_conf_cutoff = float(config.trading.live_early_exit_stop_loss_high_conf_cutoff)
+        stop_loss_high_conf_min_hold_sec = float(config.trading.live_early_exit_stop_loss_high_conf_min_hold_sec)
+        stop_loss_low_conf_cutoff = float(config.trading.live_early_exit_stop_loss_low_conf_cutoff)
+        stop_loss_low_conf_relax_pct = float(config.trading.live_early_exit_stop_loss_low_conf_relax_pct)
+        stop_loss_require_btc_adverse = bool(config.trading.live_early_exit_stop_loss_require_btc_adverse)
+        stop_loss_btc_adverse_pct = float(config.trading.live_early_exit_stop_loss_btc_adverse_pct)
+        max_hold_sec = float(config.trading.live_early_exit_max_hold_sec)
+        timestop_max_remain_sec = float(config.trading.live_early_exit_timestop_max_remain_sec)
+        timestop_max_roi_pct = float(config.trading.live_early_exit_timestop_max_roi_pct)
+
+        if LIVE_MIRROR_PAPER_GATES:
+            early_exit_enabled = bool(MIRROR_ENABLE_EARLY_EXIT)
+            min_elapsed_sec = float(MIRROR_EARLY_EXIT_MIN_ELAPSED_SEC)
+            opposite_ask_thr = float(MIRROR_EARLY_EXIT_OPPOSITE_ASK)
+            opposite_min_loss_roi_pct = float(MIRROR_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT)
+            opposite_confirm_polls = int(MIRROR_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS)
+            stop_loss_roi_pct = float(MIRROR_EARLY_EXIT_STOP_LOSS_ROI_PCT)
+            stop_loss_min_hold_sec = float(MIRROR_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC)
+            stop_loss_high_conf_cutoff = float(MIRROR_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF)
+            stop_loss_high_conf_min_hold_sec = float(MIRROR_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC)
+            stop_loss_low_conf_cutoff = float(MIRROR_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF)
+            stop_loss_low_conf_relax_pct = float(MIRROR_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT)
+            stop_loss_require_btc_adverse = bool(MIRROR_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE)
+            stop_loss_btc_adverse_pct = float(MIRROR_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT)
+            max_hold_sec = float(MIRROR_EARLY_EXIT_MAX_HOLD_SEC)
+            timestop_max_remain_sec = float(MIRROR_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC)
+            timestop_max_roi_pct = float(MIRROR_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT)
+
+        if not early_exit_enabled:
             return False
 
         if self.current_market.last_odds_update < now_ts - 1.0:
             await self.poly_client.refresh_odds(self.current_market)
 
         hold_sec = float(now_ts - float(trade.timestamp or now_ts))
-        if hold_sec < float(config.trading.live_early_exit_min_elapsed_sec):
+        if hold_sec < min_elapsed_sec:
             return False
 
         token_id, side_bid, _side_ask, opposite_ask = self._resolve_trade_quotes(trade.direction)
@@ -1585,46 +2120,46 @@ class TradingBot:
         early_reason: Optional[str] = None
         if (
             opposite_ask is not None
-            and float(opposite_ask) >= float(config.trading.live_early_exit_opposite_ask)
-            and float(mtm_roi_pct) <= float(config.trading.live_early_exit_opposite_min_loss_roi_pct)
+            and float(opposite_ask) >= opposite_ask_thr
+            and float(mtm_roi_pct) <= opposite_min_loss_roi_pct
         ):
             hits = int(self._early_exit_opposite_hits.get(window_key, 0)) + 1
             self._early_exit_opposite_hits[window_key] = hits
-            if hits >= max(1, int(config.trading.live_early_exit_opposite_confirm_polls)):
+            if hits >= max(1, opposite_confirm_polls):
                 early_reason = (
                     f"opposite_prob_surge(opposite_ask={float(opposite_ask):.3f}"
-                    f" >= {float(config.trading.live_early_exit_opposite_ask):.3f},"
-                    f" roi={float(mtm_roi_pct):+.2f}% <= {float(config.trading.live_early_exit_opposite_min_loss_roi_pct):+.2f}%,"
+                    f" >= {opposite_ask_thr:.3f},"
+                    f" roi={float(mtm_roi_pct):+.2f}% <= {opposite_min_loss_roi_pct:+.2f}%,"
                     f" hits={hits})"
                 )
         else:
             self._early_exit_opposite_hits.pop(window_key, None)
 
         signal_conf = float(self.current_trade_signal_confidence or 0.5)
-        dynamic_stop_loss_roi = float(config.trading.live_early_exit_stop_loss_roi_pct)
+        dynamic_stop_loss_roi = float(stop_loss_roi_pct)
         dynamic_stop_loss_min_hold = max(
-            float(config.trading.live_early_exit_min_elapsed_sec),
-            float(config.trading.live_early_exit_stop_loss_min_hold_sec),
+            float(min_elapsed_sec),
+            float(stop_loss_min_hold_sec),
         )
-        if signal_conf >= float(config.trading.live_early_exit_stop_loss_high_conf_cutoff):
+        if signal_conf >= float(stop_loss_high_conf_cutoff):
             dynamic_stop_loss_min_hold = min(
                 dynamic_stop_loss_min_hold,
                 max(
-                    float(config.trading.live_early_exit_min_elapsed_sec),
-                    float(config.trading.live_early_exit_stop_loss_high_conf_min_hold_sec),
+                    float(min_elapsed_sec),
+                    float(stop_loss_high_conf_min_hold_sec),
                 ),
             )
-        elif signal_conf <= float(config.trading.live_early_exit_stop_loss_low_conf_cutoff):
-            dynamic_stop_loss_roi -= abs(float(config.trading.live_early_exit_stop_loss_low_conf_relax_pct))
+        elif signal_conf <= float(stop_loss_low_conf_cutoff):
+            dynamic_stop_loss_roi -= abs(float(stop_loss_low_conf_relax_pct))
 
         btc_adverse_ok = True
         btc_move_from_entry_pct = None
-        if bool(config.trading.live_early_exit_stop_loss_require_btc_adverse):
+        if bool(stop_loss_require_btc_adverse):
             btc_entry_px = self.price_feed.get_price_at(float(trade.timestamp or now_ts))
             btc_now_px = float(self.price_feed.current_price or 0.0)
             if btc_entry_px is not None and btc_entry_px > 0.0 and btc_now_px > 0.0:
                 btc_move_from_entry_pct = ((btc_now_px - float(btc_entry_px)) / float(btc_entry_px)) * 100.0
-                adverse_thr = abs(float(config.trading.live_early_exit_stop_loss_btc_adverse_pct))
+                adverse_thr = abs(float(stop_loss_btc_adverse_pct))
                 if str(trade.direction).upper() == "UP":
                     btc_adverse_ok = float(btc_move_from_entry_pct) <= -adverse_thr
                 else:
@@ -1653,14 +2188,14 @@ class TradingBot:
             )
         elif (
             early_reason is None
-            and hold_sec >= float(config.trading.live_early_exit_max_hold_sec)
-            and float(mtm_roi_pct) <= float(config.trading.live_early_exit_timestop_max_roi_pct)
-            and float(seconds_remaining) <= float(config.trading.live_early_exit_timestop_max_remain_sec)
+            and hold_sec >= float(max_hold_sec)
+            and float(mtm_roi_pct) <= float(timestop_max_roi_pct)
+            and float(seconds_remaining) <= float(timestop_max_remain_sec)
         ):
             self._early_exit_opposite_hits.pop(window_key, None)
             early_reason = (
                 f"time_stop(hold={hold_sec:.1f}s, rem={float(seconds_remaining):.1f}s,"
-                f" roi={float(mtm_roi_pct):+.2f}% <= {float(config.trading.live_early_exit_timestop_max_roi_pct):+.2f}%)"
+                f" roi={float(mtm_roi_pct):+.2f}% <= {float(timestop_max_roi_pct):+.2f}%)"
             )
         elif (
             early_reason is None
@@ -1769,6 +2304,10 @@ class TradingBot:
             round(config.trading.min_expected_roi * 100.0, 3),
         )
         logger.info(
+            "Live/Paper gate parity: enabled=%s",
+            bool(LIVE_MIRROR_PAPER_GATES),
+        )
+        logger.info(
             "Jury: %s/%s | Check interval: %ss",
             config.trading.jury_threshold,
             self.jury.size,
@@ -1821,10 +2360,23 @@ class TradingBot:
             float(config.trading.live_min_lag_prob_edge),
             float(config.trading.live_down_above_start_block_pct),
         )
+        if LIVE_MIRROR_PAPER_GATES:
+            logger.info(
+                "Parity guards: entry=[%.0fs, %.0fs] remain>=%.0fs support>=%.0f%% conf>=%.0f%% "
+                "ev>=%.2f%% ask<=%.2f unanim@strict>=%.2f",
+                float(MIRROR_ENTRY_START_SEC),
+                float(MIRROR_ENTRY_END_SEC),
+                float(MIRROR_MIN_SECONDS_REMAINING),
+                float(MIRROR_MIN_SUPPORT_RATIO) * 100.0,
+                float(MIRROR_MIN_CONFIDENCE) * 100.0,
+                float(MIRROR_MIN_EXPECTED_ROI) * 100.0,
+                float(MIRROR_MAX_ENTRY_PRICE),
+                float(MIRROR_STRICTNESS_UNANIMOUS_AT),
+            )
         logger.info(
             "Fast-lane: enabled=%s elapsed=[%.0f, %.0f]s remain>=%.0fs move=[%.4f%%, %.4f%%] "
             "recent>=%.4f%% ask<=%.3f p>=%.3f lag>=%.3f edge>=%.3f ev>=%.3f%%",
-            bool(config.trading.fast_lane_enabled),
+            bool(config.trading.fast_lane_enabled and (not LIVE_MIRROR_PAPER_GATES)),
             float(config.trading.fast_lane_min_seconds_elapsed),
             float(config.trading.fast_lane_max_seconds_elapsed),
             float(config.trading.fast_lane_min_seconds_remaining),
@@ -1846,6 +2398,13 @@ class TradingBot:
         logger.info(
             "Adaptive balance refresh: every %.0fs + post-fill",
             self._balance_refresh_sec,
+        )
+        logger.info(
+            "Live maintenance guard: enabled=%s fail_threshold=%s probe_every=%.0fs recover_success=%s",
+            bool(self._maintenance_guard_enabled),
+            int(getattr(config.trading, "live_maintenance_fail_threshold", 6)),
+            float(getattr(config.trading, "live_maintenance_probe_interval_seconds", 300.0)),
+            int(getattr(config.trading, "live_maintenance_recover_success_count", 1)),
         )
         logger.info(
             "Live early-exit: enabled=%s min_elapsed=%.0fs opp_ask>=%.2f stop_loss<=%.1f%%",
@@ -1874,6 +2433,16 @@ class TradingBot:
             bool(config.trading.live_auto_claim_enabled),
             float(config.trading.live_auto_claim_interval_seconds),
         )
+        logger.info(
+            "Live Telegram: enabled=%s open_notify=%s close_notify=%s configured=%s",
+            bool(getattr(config.trading, "live_telegram_enabled", False)),
+            bool(getattr(config.trading, "live_telegram_notify_open", True)),
+            bool(getattr(config.trading, "live_telegram_notify_close", True)),
+            bool(
+                str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+                and str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+            ),
+        )
         logger.info("=" * 60)
 
         self._load_runtime_state()
@@ -1888,9 +2457,23 @@ class TradingBot:
                     or ("insufficient balance" in kill_reason_lower)
                 )
             )
-            if deterministic_balance_reject:
+            deterministic_fak_no_match = (
+                ("early-exit uncertain fill" in kill_reason_lower)
+                and (
+                    ("no orders found to match with fak order" in kill_reason_lower)
+                    or (
+                        ("fak order" in kill_reason_lower or "fak orders" in kill_reason_lower)
+                        and ("no match" in kill_reason_lower)
+                    )
+                    or (
+                        ("fak order" in kill_reason_lower or "fak orders" in kill_reason_lower)
+                        and ("partially filled or killed" in kill_reason_lower)
+                    )
+                )
+            )
+            if deterministic_balance_reject or deterministic_fak_no_match:
                 logger.warning(
-                    "Clearing non-fatal latched kill-switch from deterministic balance/allowance reject: %s",
+                    "Clearing non-fatal latched kill-switch from deterministic reject: %s",
                     self._kill_switch_reason,
                 )
                 self._clear_kill_switch()
@@ -2030,6 +2613,28 @@ class TradingBot:
         ):
             return
 
+        # ---- Maintenance/outage pause gate (live only) ----
+        if self._maintenance_guard_enabled and self._maintenance_mode:
+            if float(now) < float(self._maintenance_next_probe_ts):
+                if (float(now) - float(self._maintenance_last_skip_log_ts)) >= 30.0:
+                    wait_left = max(0.0, float(self._maintenance_next_probe_ts) - float(now))
+                    logger.warning(
+                        "Live maintenance pause active: %s | next probe in %.0fs",
+                        self._maintenance_last_reason or "market data unavailable",
+                        wait_left,
+                    )
+                    self._maintenance_last_skip_log_ts = float(now)
+                return
+
+            probe_ok = await self._probe_live_market_data_health(int(current_start))
+            if not probe_ok:
+                self._record_market_data_failure(
+                    reason="maintenance probe failed",
+                    now_ts=float(now),
+                )
+                return
+            self._record_market_data_success()
+
         # ---- Timing filters ----
         if seconds_remaining < config.trading.cutoff_before_close_seconds:
             return
@@ -2043,14 +2648,38 @@ class TradingBot:
 
         # ---- Refresh Polymarket odds (high-frequency) ----
         # Only fetch if stale (>1s old) to avoid hammering API
+        data_refresh_attempted = False
+        data_refresh_ok = True
         if self.current_market.last_odds_update < now - 1.0:
+            data_refresh_attempted = True
+            data_refresh_ok = False
             if self.current_market.up_token_id and self.current_market.down_token_id:
-                await self.poly_client.refresh_odds(self.current_market)
+                data_refresh_ok = bool(await self.poly_client.refresh_odds(self.current_market))
+                if not data_refresh_ok:
+                    market = await self.poly_client.find_market(current_start)
+                    if market:
+                        self.current_market = market
+                        if self.current_market.up_token_id and self.current_market.down_token_id:
+                            data_refresh_ok = bool(
+                                await self.poly_client.refresh_odds(self.current_market)
+                            )
             else:
                 # Try to find market again
                 market = await self.poly_client.find_market(current_start)
                 if market:
                     self.current_market = market
+                    if self.current_market.up_token_id and self.current_market.down_token_id:
+                        data_refresh_ok = bool(await self.poly_client.refresh_odds(self.current_market))
+
+        if self._maintenance_guard_enabled and data_refresh_attempted:
+            if data_refresh_ok:
+                self._record_market_data_success()
+            else:
+                self._record_market_data_failure(
+                    reason="odds/market refresh failed",
+                    now_ts=float(now),
+                )
+                return
 
         await self._maybe_sync_market_start_price(
             now_ts=float(now),
@@ -2073,7 +2702,9 @@ class TradingBot:
                 return
 
         # ---- Fast-lane: Binance lead / Polymarket lag (judge bypass) ----
-        fast_signal = self._evaluate_fast_lane_signal(ctx, now)
+        fast_signal = None
+        if not LIVE_MIRROR_PAPER_GATES:
+            fast_signal = self._evaluate_fast_lane_signal(ctx, now)
         if fast_signal is not None:
             fast_direction = str(fast_signal.get("direction", ""))
             if self.position_mode == "UP_ONLY" and fast_direction != "UP":
@@ -2152,25 +2783,23 @@ class TradingBot:
                     if handled or self._kill_switch_reason:
                         return
 
-        # Jury timing floor is separate from fast-lane timing.
-        if seconds_elapsed < float(config.trading.live_entry_start_seconds):
+        # Jury timing floor/range.
+        entry_start_sec = float(config.trading.live_entry_start_seconds)
+        entry_end_sec = float(config.polymarket.interval_seconds - config.trading.cutoff_before_close_seconds)
+        min_seconds_remaining = float(config.trading.cutoff_before_close_seconds)
+        if LIVE_MIRROR_PAPER_GATES:
+            entry_start_sec = float(MIRROR_ENTRY_START_SEC)
+            entry_end_sec = float(MIRROR_ENTRY_END_SEC)
+            min_seconds_remaining = float(MIRROR_MIN_SECONDS_REMAINING)
+        if seconds_elapsed < entry_start_sec or seconds_elapsed > entry_end_sec:
+            return
+        if seconds_remaining < min_seconds_remaining:
             return
 
         # ---- Jury deliberation ----
         decision = self.jury.deliberate(ctx)
 
         if decision.direction == "NO_TRADE":
-            return
-
-        required_min_edge = float(config.trading.min_edge)
-        required_support_ratio = float(config.trading.live_min_support_ratio)
-        if self.live_profit_mode == "AGGRESSIVE":
-            required_min_edge *= (1.0 - _clamp(float(config.trading.live_aggressive_min_edge_relax), 0.0, 0.60))
-            required_support_ratio -= _clamp(float(config.trading.live_aggressive_support_relax), 0.0, 0.25)
-        required_min_edge = _clamp(required_min_edge, 0.02, 0.95)
-        required_support_ratio = _clamp(required_support_ratio, 0.50, 1.0)
-
-        if decision.avg_confidence < required_min_edge:
             return
 
         if self.position_mode == "UP_ONLY" and decision.direction != "UP":
@@ -2180,10 +2809,23 @@ class TradingBot:
 
         support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
         support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
-        if support_ratio < required_support_ratio:
-            return
-        if config.trading.live_require_unanimous and not decision.unanimous:
-            return
+        if not LIVE_MIRROR_PAPER_GATES:
+            required_min_edge = float(config.trading.min_edge)
+            required_support_ratio = float(config.trading.live_min_support_ratio)
+            if self.live_profit_mode == "AGGRESSIVE":
+                required_min_edge *= (
+                    1.0 - _clamp(float(config.trading.live_aggressive_min_edge_relax), 0.0, 0.60)
+                )
+                required_support_ratio -= _clamp(float(config.trading.live_aggressive_support_relax), 0.0, 0.25)
+            required_min_edge = _clamp(required_min_edge, 0.02, 0.95)
+            required_support_ratio = _clamp(required_support_ratio, 0.50, 1.0)
+
+            if decision.avg_confidence < required_min_edge:
+                return
+            if support_ratio < required_support_ratio:
+                return
+            if config.trading.live_require_unanimous and not decision.unanimous:
+                return
 
         if decision.direction == "UP":
             token_id = self.current_market.up_token_id
@@ -2213,20 +2855,36 @@ class TradingBot:
         side_ask = up_ask if decision.direction == "UP" else down_ask
         opposite_ask = down_ask if decision.direction == "UP" else up_ask
 
-        if side_ask is not None and side_ask < float(config.trading.live_min_entry_side_implied):
+        if LIVE_MIRROR_PAPER_GATES:
+            conn = self._ensure_state_conn()
+            tick_samples, odds_samples = _live_window_sample_counts(conn, int(current_start), float(now))
+            if tick_samples < int(MIRROR_MIN_TICK_SAMPLES) or odds_samples < int(MIRROR_MIN_ODDS_SAMPLES):
+                return
+
+        min_entry_side_implied = (
+            float(MIRROR_MIN_ENTRY_SIDE_IMPLIED)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_min_entry_side_implied)
+        )
+        max_opposite_implied = (
+            float(MIRROR_MAX_OPPOSITE_IMPLIED)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_max_opposite_implied)
+        )
+        if side_ask is not None and side_ask < min_entry_side_implied:
             logger.info(
                 "Skip live implied-side guard: dir=%s side_ask=%.3f < %.3f",
                 decision.direction,
                 side_ask,
-                float(config.trading.live_min_entry_side_implied),
+                min_entry_side_implied,
             )
             return
-        if opposite_ask is not None and opposite_ask > float(config.trading.live_max_opposite_implied):
+        if opposite_ask is not None and opposite_ask > max_opposite_implied:
             logger.info(
                 "Skip live opposite-implied guard: dir=%s opp_ask=%.3f > %.3f",
                 decision.direction,
                 opposite_ask,
-                float(config.trading.live_max_opposite_implied),
+                max_opposite_implied,
             )
             return
 
@@ -2235,15 +2893,24 @@ class TradingBot:
             if ctx.market_start_price > 0
             else 0.0
         )
+        recent_move_lookback_sec = (
+            float(MIRROR_RECENT_MOVE_LOOKBACK_SEC)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_recent_move_lookback_sec)
+        )
         recent_move = _recent_move_pct(
             prices=list(ctx.recent_prices),
             timestamps=list(ctx.recent_timestamps),
             now_ts=now,
-            lookback_sec=float(config.trading.live_recent_move_lookback_sec),
+            lookback_sec=recent_move_lookback_sec,
         )
         if recent_move is None:
             return
-        base_move_thr = float(config.trading.live_min_recent_move_pct)
+        base_move_thr = (
+            float(MIRROR_MIN_RECENT_MOVE_PCT)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_min_recent_move_pct)
+        )
         if decision.direction == "UP" and recent_move < base_move_thr:
             logger.info(
                 "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%%",
@@ -2253,7 +2920,12 @@ class TradingBot:
             return
         down_move_thr = base_move_thr
         if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
-            down_move_thr += float(config.trading.live_down_above_start_momentum_extra)
+            down_move_extra = (
+                float(MIRROR_DOWN_ABOVE_START_MOMENTUM_EXTRA)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_down_above_start_momentum_extra)
+            )
+            down_move_thr += down_move_extra
         if decision.direction == "DOWN" and recent_move > -down_move_thr:
             logger.info(
                 "Skip live momentum guard: dir=DOWN move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
@@ -2262,21 +2934,30 @@ class TradingBot:
                 btc_move_from_start_pct,
             )
             return
+        trend_lookback_sec = (
+            float(MIRROR_TREND_ALIGN_LOOKBACK_SEC)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_trend_align_lookback_sec)
+        )
         trend_move = _recent_move_pct(
             prices=list(ctx.recent_prices),
             timestamps=list(ctx.recent_timestamps),
             now_ts=now,
-            lookback_sec=float(config.trading.live_trend_align_lookback_sec),
+            lookback_sec=trend_lookback_sec,
         )
         if trend_move is None:
             return
-        trend_opp_thr = abs(float(config.trading.live_trend_align_max_opposing_move_pct))
+        trend_opp_thr = abs(
+            float(MIRROR_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.live_trend_align_max_opposing_move_pct)
+        )
         if decision.direction == "UP" and trend_move < -trend_opp_thr:
             logger.info(
                 "Skip live trend-align guard: dir=UP trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
                 trend_move,
                 trend_opp_thr,
-                float(config.trading.live_trend_align_lookback_sec),
+                trend_lookback_sec,
             )
             return
         if decision.direction == "DOWN" and trend_move > trend_opp_thr:
@@ -2284,13 +2965,21 @@ class TradingBot:
                 "Skip live trend-align guard: dir=DOWN trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
                 trend_move,
                 trend_opp_thr,
-                float(config.trading.live_trend_align_lookback_sec),
+                trend_lookback_sec,
             )
             return
 
-        dynamic_min_roi = float(config.trading.min_expected_roi)
+        dynamic_min_roi = (
+            float(MIRROR_MIN_EXPECTED_ROI)
+            if LIVE_MIRROR_PAPER_GATES
+            else float(config.trading.min_expected_roi)
+        )
         if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
-            block_thr = float(config.trading.live_down_above_start_block_pct)
+            block_thr = (
+                float(MIRROR_DOWN_ABOVE_START_BLOCK_PCT)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_down_above_start_block_pct)
+            )
             if btc_move_from_start_pct >= block_thr:
                 logger.info(
                     "Skip live DOWN-above-start hard block: btc_vs_start=%+.4f%% >= %.4f%%",
@@ -2299,9 +2988,23 @@ class TradingBot:
                 )
                 return
             ratio = btc_move_from_start_pct / max(block_thr, 1e-9)
-            dynamic_min_roi += float(config.trading.live_down_above_start_ev_penalty) * _clamp(ratio, 0.0, 1.0)
-        if self.live_profit_mode == "AGGRESSIVE":
-            relax = _clamp(float(config.trading.live_aggressive_entry_relax), 0.0, 0.60)
+            ev_penalty = (
+                float(MIRROR_DOWN_ABOVE_START_EV_PENALTY)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_down_above_start_ev_penalty)
+            )
+            dynamic_min_roi += ev_penalty * _clamp(ratio, 0.0, 1.0)
+        use_aggressive_profit = (
+            MIRROR_PROFIT_MODE == "aggressive"
+            if LIVE_MIRROR_PAPER_GATES
+            else self.live_profit_mode == "AGGRESSIVE"
+        )
+        if use_aggressive_profit:
+            relax = (
+                _clamp(float(MIRROR_AGGRESSIVE_ENTRY_RELAX), 0.0, 0.60)
+                if LIVE_MIRROR_PAPER_GATES
+                else _clamp(float(config.trading.live_aggressive_entry_relax), 0.0, 0.60)
+            )
             dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
         gate = evaluate_entry_gate(
@@ -2332,32 +3035,48 @@ class TradingBot:
                 else float(market_down_prob)
             )
             lag_prob_edge = float(gate.model_prob) - float(market_dir_prob)
-            if lag_prob_edge < float(config.trading.live_min_lag_prob_edge):
+            min_lag_prob_edge = float(config.trading.live_min_lag_prob_edge)
+            if (not LIVE_MIRROR_PAPER_GATES) and lag_prob_edge < min_lag_prob_edge:
                 logger.info(
                     "Skip live lag-edge guard: dir=%s model_p=%.3f mkt_p=%.3f lag=%+.3f < %.3f",
                     decision.direction,
                     float(gate.model_prob),
                     float(market_dir_prob),
                     float(lag_prob_edge),
-                    float(config.trading.live_min_lag_prob_edge),
+                    min_lag_prob_edge,
                 )
                 return
         if side_ask is not None and opposite_ask is not None:
             contra_gap = float(opposite_ask) - float(side_ask)
-            if contra_gap > float(config.trading.live_max_contra_gap):
+            max_contra_gap = (
+                float(MIRROR_MAX_CONTRA_GAP)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_max_contra_gap)
+            )
+            override_min_prob = (
+                float(MIRROR_CONTRA_OVERRIDE_MIN_MODEL_PROB)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_contra_override_min_model_prob)
+            )
+            override_min_conf = (
+                float(MIRROR_CONTRA_OVERRIDE_MIN_CONF)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(config.trading.live_contra_override_min_conf)
+            )
+            if contra_gap > max_contra_gap:
                 if not (
-                    float(gate.model_prob) >= float(config.trading.live_contra_override_min_model_prob)
-                    and float(decision.avg_confidence) >= float(config.trading.live_contra_override_min_conf)
+                    float(gate.model_prob) >= override_min_prob
+                    and float(decision.avg_confidence) >= override_min_conf
                 ):
                     logger.info(
                         "Skip live contra-gap guard: dir=%s gap=+%.3f > %.3f (p=%.3f conf=%.3f, need p>=%.3f conf>=%.3f)",
                         decision.direction,
                         contra_gap,
-                        float(config.trading.live_max_contra_gap),
+                        max_contra_gap,
                         float(gate.model_prob),
                         float(decision.avg_confidence),
-                        float(config.trading.live_contra_override_min_model_prob),
-                        float(config.trading.live_contra_override_min_conf),
+                        override_min_prob,
+                        override_min_conf,
                     )
                     return
         if gate.expected_roi < dynamic_min_roi:
@@ -2367,6 +3086,140 @@ class TradingBot:
                 dynamic_min_roi * 100.0,
             )
             return
+        if LIVE_MIRROR_PAPER_GATES:
+            try:
+                conn = self._ensure_state_conn()
+                loss_streak, recent_loss_rate = _live_recent_risk_state(conn)
+                perf_count, perf_wr, perf_pnl = _live_recent_performance(conn, MIRROR_RECENT_PERF_WINDOW)
+                seed_capital = max(1.0, float(MIRROR_EQUITY_SEED_CAPITAL))
+                realized_equity, _available_equity = _live_equity_snapshot(conn, seed_capital)
+                drawdown_pct = _live_equity_drawdown_pct(conn, seed_capital)
+
+                strictness = 0.0
+                strictness += min(0.45, float(loss_streak) * 0.15)
+                strictness += max(0.0, float(recent_loss_rate) - 0.50) * 0.70
+                strictness += min(0.40, float(drawdown_pct) * 0.80)
+                if perf_count >= 4 and perf_pnl < 0.0:
+                    strictness += 0.10
+                strictness = _clamp(strictness, 0.0, 1.0)
+
+                last_opened_at = _live_last_opened_at(conn)
+                stale_relax = _live_stale_relax_factor(last_opened_at=last_opened_at, now_ts=float(now))
+                stale_relax_gain = _clamp(MIRROR_STALE_RELAX_MAX, 0.0, 1.0) * stale_relax
+                strictness_eff = _clamp(strictness * (1.0 - stale_relax_gain), 0.0, 1.0)
+
+                adaptive_min_ev = (
+                    float(MIRROR_MIN_EXPECTED_ROI) * (1.0 + 0.9 * strictness_eff)
+                    + min(int(loss_streak), 3) * 0.005
+                )
+                adaptive_min_support = _clamp(
+                    float(MIRROR_MIN_SUPPORT_RATIO) + 0.20 * strictness_eff,
+                    float(MIRROR_MIN_SUPPORT_RATIO),
+                    1.0,
+                )
+                adaptive_min_conf = _clamp(
+                    float(MIRROR_MIN_CONFIDENCE) + 0.18 * strictness_eff,
+                    float(MIRROR_MIN_CONFIDENCE),
+                    0.80,
+                )
+                ask_floor = _clamp(float(MIRROR_ADAPTIVE_MAX_ASK_FLOOR), 0.40, float(MIRROR_MAX_ENTRY_PRICE))
+                adaptive_max_ask = _clamp(
+                    float(MIRROR_MAX_ENTRY_PRICE) - 0.08 * strictness_eff,
+                    ask_floor,
+                    float(MIRROR_MAX_ENTRY_PRICE),
+                )
+                if MIRROR_PROFIT_MODE == "aggressive":
+                    relax = _clamp(float(MIRROR_AGGRESSIVE_ENTRY_RELAX), 0.0, 0.60)
+                    adaptive_min_ev = max(0.0, adaptive_min_ev * (1.0 - relax))
+                    adaptive_min_support = _clamp(adaptive_min_support - (0.10 * relax), 0.55, 1.0)
+                    adaptive_min_conf = _clamp(adaptive_min_conf - (0.08 * relax), 0.28, 0.80)
+                    adaptive_max_ask = _clamp(adaptive_max_ask + (0.06 * relax), ask_floor, 0.62)
+
+                dynamic_gap = float(MIRROR_BASE_TRADE_GAP_SEC) + strictness_eff * (
+                    max(float(MIRROR_BASE_TRADE_GAP_SEC), float(MIRROR_TARGET_TRADE_GAP_SEC))
+                    - float(MIRROR_BASE_TRADE_GAP_SEC)
+                )
+                if MIRROR_PROFIT_MODE == "aggressive":
+                    dynamic_gap *= _clamp(float(MIRROR_AGGRESSIVE_GAP_MULT), 0.35, 1.0)
+                dynamic_gap = max(0.0, dynamic_gap)
+
+                since_last = (float(now) - float(last_opened_at)) if last_opened_at > 0 else 999999.0
+                high_quality_override = (
+                    float(gate.expected_roi) >= float(MIRROR_HIGH_QUALITY_EV)
+                    and float(decision.avg_confidence) >= float(MIRROR_HIGH_QUALITY_CONF)
+                    and float(support_ratio) >= max(float(adaptive_min_support), 0.80)
+                )
+                if since_last < dynamic_gap and not high_quality_override:
+                    return
+                if gate.expected_roi < adaptive_min_ev:
+                    logger.info(
+                        "Skip live weak EV(parity): net_ev=%+.3f%% < %.3f%% (loss_streak=%s recent_loss_rate=%.0f%%)",
+                        gate.expected_roi * 100.0,
+                        adaptive_min_ev * 100.0,
+                        int(loss_streak),
+                        float(recent_loss_rate) * 100.0,
+                    )
+                    return
+                if support_ratio < adaptive_min_support:
+                    logger.info(
+                        "Skip live weak jury(parity): support=%.1f%% < %.1f%%",
+                        support_ratio * 100.0,
+                        adaptive_min_support * 100.0,
+                    )
+                    return
+                require_unanimous = bool(MIRROR_REQUIRE_UNANIMOUS) or strictness_eff >= float(
+                    MIRROR_STRICTNESS_UNANIMOUS_AT
+                )
+                if require_unanimous and support_ratio < 1.0:
+                    logger.info(
+                        "Skip live non-unanimous(parity): strictness=%.2f->%.2f support=%.1f%%",
+                        strictness,
+                        strictness_eff,
+                        support_ratio * 100.0,
+                    )
+                    return
+                if float(decision.avg_confidence) < adaptive_min_conf:
+                    logger.info(
+                        "Skip live low confidence(parity): conf=%.3f < %.3f",
+                        float(decision.avg_confidence),
+                        adaptive_min_conf,
+                    )
+                    return
+                if float(price) > adaptive_max_ask:
+                    logger.info(
+                        "Skip live expensive entry(parity): ask=%.3f > %.3f",
+                        float(price),
+                        adaptive_max_ask,
+                    )
+                    return
+                stop_level = seed_capital * (1.0 - float(MIRROR_MAX_DRAWDOWN_STOP_PCT))
+                if realized_equity <= stop_level:
+                    logger.info(
+                        "Skip live drawdown stop(parity): equity=$%.2f <= $%.2f",
+                        float(realized_equity),
+                        float(stop_level),
+                    )
+                    return
+                if (
+                    perf_count >= max(4, int(MIRROR_RECENT_PERF_WINDOW))
+                    and perf_wr < float(MIRROR_MIN_RECENT_WIN_RATE)
+                    and perf_pnl < 0.0
+                ):
+                    last_closed_at = _live_last_closed_at(conn)
+                    since_closed = (float(now) - float(last_closed_at)) if last_closed_at > 0 else 999999.0
+                    if since_closed < float(MIRROR_PERF_PAUSE_SEC):
+                        logger.info(
+                            "Skip live perf pause(parity): trades=%s wr=%.1f%% pnl=$%+.2f cooldown_left=%.0fs",
+                            int(perf_count),
+                            float(perf_wr) * 100.0,
+                            float(perf_pnl),
+                            float(MIRROR_PERF_PAUSE_SEC) - since_closed,
+                        )
+                        return
+                dynamic_min_roi = max(float(dynamic_min_roi), float(adaptive_min_ev))
+            except Exception as e:
+                logger.warning("Live parity gate metrics unavailable; skip entry for safety: %s", e)
+                return
 
         bet_size = self._compute_entry_bet_size(
             decision.avg_confidence,
@@ -2551,6 +3404,19 @@ class TradingBot:
                 actual_outcome=actual_direction,
                 close_reason="expiry_settlement",
             )
+            if bool(getattr(config.trading, "live_telegram_notify_close", True)):
+                start_price = float(self.market_start_price or 0.0)
+                end_price = float(self.price_feed.current_price or 0.0)
+                msg = self._format_live_closed_telegram(
+                    trade=resolved_trade,
+                    actual_outcome=actual_direction,
+                    close_reason="expiry_settlement",
+                    start_price=start_price,
+                    end_price=end_price,
+                )
+                self._spawn_background_task(
+                    self._send_live_telegram(msg, reason="trade_close_expiry")
+                )
             self.current_trade = None
             self.current_trade_window_start = None
             self.current_trade_signal_confidence = None

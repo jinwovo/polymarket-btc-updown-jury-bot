@@ -290,6 +290,20 @@ def _classify_order_exception(exc: Exception) -> tuple[str, bool]:
     if ("invalid price" in lower) or ("invalid size" in lower) or ("tick size" in lower):
         return "rejected_invalid_order", False
 
+    # Deterministic reject: FAK had no immediate match (normal liquidity miss).
+    if (
+        ("no orders found to match with fak order" in lower)
+        or (
+            ("fak order" in lower or "fak orders" in lower)
+            and ("no match" in lower)
+        )
+        or (
+            ("fak order" in lower or "fak orders" in lower)
+            and ("partially filled or killed" in lower)
+        )
+    ):
+        return "rejected_no_match_fak", False
+
     # Unknown exceptions are treated as uncertain to preserve safety.
     return "unknown_error", True
 

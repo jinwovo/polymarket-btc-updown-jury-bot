@@ -34,6 +34,10 @@ export async function POST(request: NextRequest) {
   const endpoint =
     action === "stop"
       ? "/api/control/live/stop"
+      : action === "telegram_config"
+        ? "/api/control/live/telegram-config"
+        : action === "telegram_test"
+          ? "/api/control/live/telegram-test"
       : action === "auth_config"
         ? "/api/control/live/auth-config"
         : "/api/control/live/start";

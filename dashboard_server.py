@@ -9,6 +9,7 @@ import argparse
 import os
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -41,6 +42,7 @@ from db_config import (
 )
 from judges import Jury, MarketContext
 from trade_gate import evaluate_entry_gate
+from telegram_notifier import mask_bot_token, resolve_chat_id, send_telegram_message
 
 
 BASE_DIR = Path(__file__).parent
@@ -59,6 +61,9 @@ CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
 }
+
+_ENV_PATH = Path(".env")
+_ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 logging.basicConfig(
@@ -287,6 +292,211 @@ def _normalize_collateral_amount(raw_value: Optional[float], payload: Any) -> Op
     return value
 
 
+def _clean_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _set_runtime_var(key: str, value: str | None):
+    if value is None or value == "":
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = str(value)
+
+
+def _update_env_file(path: Path, updates: dict[str, str | None]):
+    lines: list[str] = []
+    if path.exists():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            lines = []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        m = _ENV_KEY_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        key = m.group(1)
+        if key not in updates:
+            out.append(line)
+            continue
+        seen.add(key)
+        val = updates[key]
+        if val is None or val == "":
+            continue
+        out.append(f"{key}={val}")
+
+    for key, val in updates.items():
+        if key in seen:
+            continue
+        if val is None or val == "":
+            continue
+        out.append(f"{key}={val}")
+
+    content = "\n".join(out).rstrip()
+    if content:
+        content += "\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _telegram_snapshot() -> dict[str, Any]:
+    enabled = bool(getattr(config.trading, "live_telegram_enabled", False))
+    token = _clean_str(getattr(config.trading, "live_telegram_bot_token", ""))
+    chat_id = _clean_str(getattr(config.trading, "live_telegram_chat_id", ""))
+    configured = bool(enabled and token and chat_id)
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "has_token": bool(token),
+        "has_chat_id": bool(chat_id),
+        "token_masked": mask_bot_token(token),
+        "chat_id": chat_id or None,
+    }
+
+
+def _apply_runtime_telegram(*, enabled: bool, bot_token: str, chat_id: str):
+    token = _clean_str(bot_token)
+    cid = _clean_str(chat_id)
+    _set_runtime_var("LIVE_TELEGRAM_ENABLED", "true" if enabled else "false")
+    _set_runtime_var("LIVE_TELEGRAM_BOT_TOKEN", token if token else None)
+    _set_runtime_var("LIVE_TELEGRAM_CHAT_ID", cid if cid else None)
+    config.trading.live_telegram_enabled = bool(enabled)
+    config.trading.live_telegram_bot_token = token
+    config.trading.live_telegram_chat_id = cid
+
+
+def _default_telegram_test_message() -> str:
+    now_utc = datetime.now(timezone.utc).isoformat()
+    return (
+        "LIVE Telegram test from Future Pulse Trading Station\n"
+        f"time={now_utc}"
+    )
+
+
+def control_live_telegram_configure(
+    *,
+    bot_token: str = "",
+    chat_id: str = "",
+    enabled: Optional[bool] = None,
+    send_test: bool = False,
+    test_message: str = "",
+) -> dict[str, Any]:
+    current_token = _clean_str(getattr(config.trading, "live_telegram_bot_token", ""))
+    current_chat = _clean_str(getattr(config.trading, "live_telegram_chat_id", ""))
+    current_enabled = bool(getattr(config.trading, "live_telegram_enabled", False))
+
+    token = _clean_str(bot_token) or current_token
+    cid = _clean_str(chat_id) or current_chat
+    is_enabled = current_enabled if enabled is None else bool(enabled)
+
+    if send_test and token and not cid:
+        resolved, err = resolve_chat_id(token, timeout=8.0)
+        if resolved:
+            cid = resolved
+        elif not err:
+            err = "chat id auto-resolve failed"
+        if err:
+            status = build_live_control_status()
+            status["ok"] = False
+            status["message"] = f"Telegram test failed: {err}"
+            status["telegram"] = _telegram_snapshot()
+            return status
+
+    _apply_runtime_telegram(enabled=is_enabled, bot_token=token, chat_id=cid)
+    _update_env_file(
+        _ENV_PATH,
+        {
+            "LIVE_TELEGRAM_ENABLED": "true" if is_enabled else "false",
+            "LIVE_TELEGRAM_BOT_TOKEN": token if token else None,
+            "LIVE_TELEGRAM_CHAT_ID": cid if cid else None,
+        },
+    )
+
+    status = build_live_control_status()
+    status["ok"] = True
+    status["message"] = (
+        "Telegram settings saved. If live process is already running, restart it to apply."
+    )
+
+    if send_test:
+        text = _clean_str(test_message) or _default_telegram_test_message()
+        test_result = send_telegram_message(
+            token=token,
+            chat_id=cid,
+            text=text,
+            timeout=8.0,
+            auto_resolve_chat=True,
+        )
+        status["telegram_test"] = {
+            "ok": bool(test_result.get("ok")),
+            "chat_id": test_result.get("chat_id"),
+            "error": test_result.get("error"),
+        }
+        if bool(test_result.get("ok")):
+            resolved_cid = _clean_str(test_result.get("chat_id"))
+            if resolved_cid and resolved_cid != _clean_str(getattr(config.trading, "live_telegram_chat_id", "")):
+                _apply_runtime_telegram(enabled=is_enabled, bot_token=token, chat_id=resolved_cid)
+                _update_env_file(
+                    _ENV_PATH,
+                    {
+                        "LIVE_TELEGRAM_ENABLED": "true" if is_enabled else "false",
+                        "LIVE_TELEGRAM_BOT_TOKEN": token if token else None,
+                        "LIVE_TELEGRAM_CHAT_ID": resolved_cid,
+                    },
+                )
+            status["message"] = "Telegram settings saved and test message sent."
+        else:
+            status["ok"] = False
+            status["message"] = (
+                "Telegram settings saved, but test message failed: "
+                f"{test_result.get('error') or 'unknown error'}"
+            )
+
+    status["telegram"] = _telegram_snapshot()
+    return status
+
+
+def control_live_telegram_test(
+    *,
+    bot_token: str = "",
+    chat_id: str = "",
+    message: str = "",
+) -> dict[str, Any]:
+    token = _clean_str(bot_token) or _clean_str(getattr(config.trading, "live_telegram_bot_token", ""))
+    cid = _clean_str(chat_id) or _clean_str(getattr(config.trading, "live_telegram_chat_id", ""))
+    text = _clean_str(message) or _default_telegram_test_message()
+
+    status = build_live_control_status()
+    if not token:
+        status["ok"] = False
+        status["message"] = "Telegram bot token is missing"
+        status["telegram"] = _telegram_snapshot()
+        return status
+
+    result = send_telegram_message(
+        token=token,
+        chat_id=cid,
+        text=text,
+        timeout=8.0,
+        auto_resolve_chat=True,
+    )
+    status["telegram_test"] = {
+        "ok": bool(result.get("ok")),
+        "chat_id": result.get("chat_id"),
+        "error": result.get("error"),
+    }
+    if bool(result.get("ok")):
+        status["ok"] = True
+        status["message"] = "Telegram test message sent."
+    else:
+        status["ok"] = False
+        status["message"] = f"Telegram test failed: {result.get('error') or 'unknown'}"
+    status["telegram"] = _telegram_snapshot()
+    return status
+
+
 def _fetch_live_account_snapshot() -> dict[str, Any]:
     auth_status = auth_config_status()
     creds_snapshot = api_credentials_snapshot()
@@ -365,6 +575,7 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
 def build_live_control_status() -> dict[str, Any]:
     status = LIVE_TRADING_PROC.status()
     status["account"] = _fetch_live_account_snapshot()
+    status["telegram"] = _telegram_snapshot()
     return status
 
 
@@ -2202,6 +2413,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 logger.exception("live auth-config error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/telegram-config":
+            bot_token = str(payload.get("bot_token", ""))
+            chat_id = str(payload.get("chat_id", ""))
+            enabled_raw = payload.get("enabled")
+            send_test = bool(payload.get("send_test", False))
+            test_message = str(payload.get("test_message", ""))
+            enabled: Optional[bool]
+            if enabled_raw is None:
+                enabled = None
+            else:
+                enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                self._send_json(
+                    control_live_telegram_configure(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        enabled=enabled,
+                        send_test=send_test,
+                        test_message=test_message,
+                    ),
+                    code=200,
+                )
+            except Exception as e:
+                logger.exception("live telegram-config error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/telegram-test":
+            bot_token = str(payload.get("bot_token", ""))
+            chat_id = str(payload.get("chat_id", ""))
+            message = str(payload.get("message", ""))
+            try:
+                self._send_json(
+                    control_live_telegram_test(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        message=message,
+                    ),
+                    code=200,
+                )
+            except Exception as e:
+                logger.exception("live telegram-test error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

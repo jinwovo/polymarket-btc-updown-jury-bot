@@ -220,9 +220,39 @@ class TradingConfig:
     live_balance_refresh_seconds: float = field(
         default_factory=lambda: float(os.getenv("LIVE_BALANCE_REFRESH_SECONDS", "30"))
     )
+    # Live maintenance/outage guard:
+    # pause new entries when market data refresh fails repeatedly, then probe every interval.
+    live_maintenance_guard_enabled: bool = field(
+        default_factory=lambda: os.getenv("LIVE_MAINTENANCE_GUARD_ENABLED", "true").lower() == "true"
+    )
+    live_maintenance_fail_threshold: int = field(
+        default_factory=lambda: int(os.getenv("LIVE_MAINTENANCE_FAIL_THRESHOLD", "6"))
+    )
+    live_maintenance_probe_interval_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LIVE_MAINTENANCE_PROBE_INTERVAL_SECONDS", "300"))
+    )
+    live_maintenance_recover_success_count: int = field(
+        default_factory=lambda: int(os.getenv("LIVE_MAINTENANCE_RECOVER_SUCCESS_COUNT", "1"))
+    )
+    # Optional Telegram notifications for live execution lifecycle.
+    live_telegram_enabled: bool = field(
+        default_factory=lambda: os.getenv("LIVE_TELEGRAM_ENABLED", "false").lower() == "true"
+    )
+    live_telegram_bot_token: str = field(
+        default_factory=lambda: os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "")
+    )
+    live_telegram_chat_id: str = field(
+        default_factory=lambda: os.getenv("LIVE_TELEGRAM_CHAT_ID", "")
+    )
+    live_telegram_notify_open: bool = field(
+        default_factory=lambda: os.getenv("LIVE_TELEGRAM_NOTIFY_OPEN", "true").lower() == "true"
+    )
+    live_telegram_notify_close: bool = field(
+        default_factory=lambda: os.getenv("LIVE_TELEGRAM_NOTIFY_CLOSE", "true").lower() == "true"
+    )
     # Attempt auto-claim/redeem on a rolling interval (best-effort).
     live_auto_claim_enabled: bool = field(
-        default_factory=lambda: os.getenv("LIVE_AUTO_CLAIM_ENABLED", "true").lower() == "true"
+        default_factory=lambda: os.getenv("LIVE_AUTO_CLAIM_ENABLED", "false").lower() == "true"
     )
     live_auto_claim_interval_seconds: float = field(
         default_factory=lambda: float(os.getenv("LIVE_AUTO_CLAIM_INTERVAL_SECONDS", "90"))
