@@ -1,10 +1,10 @@
 node_modules
 .env
-.env.*
+.env.local
+.env.secrets
+.env.polymarket.generated
 .pip-cache/
-market_data.db
-market_data.db-shm
-market_data.db-wal
+.npm-cache/
 *.db
 
 # Build/cache
@@ -18,3 +18,7 @@ __pycache__/
 # Local runtime artifacts
 bot.log
 backtest_report.txt
+ml_artifacts/*.pkl
+feature_1s.csv
+catboost_info/
+.runtime/

@@ -329,6 +329,11 @@ class MarketInfo:
     last_odds_update: float = 0.0  # when odds were last refreshed
     # Official Polymarket reference level ("Price to Beat"), when available.
     price_to_beat: Optional[float] = None
+    # Full orderbook depth (list of {"price": str, "size": str} dicts)
+    up_ask_levels: list = None
+    up_bid_levels: list = None
+    down_ask_levels: list = None
+    down_bid_levels: list = None
 
 
 def compute_market_timestamps(now: Optional[float] = None) -> dict:
@@ -400,6 +405,190 @@ class PolymarketClient:
     async def fetch_price_to_beat(self, slug: str) -> Optional[float]:
         """Public wrapper for runtime loops to refresh official start reference."""
         return await self._fetch_price_to_beat(slug)
+
+    # -- Persistent headless browser for PTB scraping --
+    _pw = None           # Playwright instance
+    _pw_browser = None   # Chromium browser (kept alive)
+    _pw_page = None      # Reusable page
+    _pw_executor = None  # Dedicated single thread for Playwright (thread-bound)
+
+    @classmethod
+    def _ensure_browser(cls):
+        """Lazily start Playwright + Chromium once, reuse across calls."""
+        if cls._pw_browser is not None and cls._pw_page is not None:
+            # Verify browser is still alive
+            try:
+                cls._pw_page.evaluate("() => true")
+                return True
+            except Exception:
+                logger.warning("PTB scraper: browser died, resetting...")
+                cls._reset_browser()
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.debug("playwright not installed, PTB scrape unavailable")
+            return False
+        try:
+            if cls._pw is None:
+                cls._pw = sync_playwright().start()
+            cls._pw_browser = cls._pw.chromium.launch(headless=True)
+            cls._pw_page = cls._pw_browser.new_page()
+            logger.info("PTB scraper: Chromium browser started (persistent)")
+            return True
+        except Exception as e:
+            logger.warning("PTB scraper: browser launch failed: %s", e)
+            cls._pw_browser = None
+            cls._pw_page = None
+            return False
+
+    @classmethod
+    def _extract_prices_from_page(cls) -> tuple[Optional[float], Optional[float]]:
+        """Extract PTB and Current price from page using JavaScript.
+        Returns (ptb, current_price). Either may be None."""
+        import re
+        ptb = None
+        current = None
+        try:
+            text = cls._pw_page.evaluate("""() => {
+                const body = document.body.innerText;
+                const result = {};
+
+                // Extract "Price to beat" value — take text up to "Current price" or 100 chars
+                const ptbIdx = body.indexOf('Price to beat');
+                if (ptbIdx !== -1) {
+                    const after = body.substring(ptbIdx + 13);
+                    const cpBoundary = after.indexOf('Current price');
+                    const chunk = cpBoundary > 0 ? after.substring(0, cpBoundary) : after.substring(0, 100);
+                    result.ptb = chunk;
+                }
+
+                // Extract "Current price" value — take next 100 chars
+                const cpIdx = body.indexOf('Current price');
+                if (cpIdx !== -1) {
+                    result.cp = body.substring(cpIdx + 13, cpIdx + 113);
+                }
+
+                return JSON.stringify(result);
+            }""")
+            if text:
+                data = json.loads(text)
+                # Parse PTB
+                ptb_text = data.get("ptb", "")
+                logger.info("PTB raw text: %r", ptb_text[:80] if ptb_text else "")
+                if ptb_text:
+                    m = re.search(r'\$?([\d,]+\.\d{2})', ptb_text)
+                    if m:
+                        val = float(m.group(1).replace(",", ""))
+                        if val > 1000:
+                            ptb = val
+                # Parse Current price
+                cp_text = data.get("cp", "")
+                logger.info("CP raw text: %r", cp_text[:80] if cp_text else "")
+                if cp_text:
+                    m = re.search(r'\$?([\d,]+\.\d{2})', cp_text)
+                    if m:
+                        val = float(m.group(1).replace(",", ""))
+                        if val > 1000:
+                            current = val
+        except Exception:
+            pass
+        return ptb, current
+
+    @classmethod
+    def _scrape_ptb_sync(cls, slug: str) -> tuple[Optional[float], Optional[float]]:
+        """Scrape PTB and Current price from rendered Polymarket page.
+        Returns (ptb, current_price). Retries with reload if PTB not found."""
+        if not cls._ensure_browser():
+            return None, None
+        url = f"https://polymarket.com/event/{slug}"
+        try:
+            cls._pw_page.goto(url, wait_until="domcontentloaded", timeout=12000)
+
+            # Try up to 3 attempts: load, then reload if PTB not found
+            for attempt in range(3):
+                import time
+                time.sleep(1.5 if attempt == 0 else 2.0)
+
+                ptb, current = cls._extract_prices_from_page()
+                if ptb is not None:
+                    return ptb, current
+
+                # PTB not found — reload and try again
+                if attempt < 2:
+                    logger.info("PTB not found for %s (attempt %d), reloading...",
+                                slug, attempt + 1)
+                    cls._pw_page.reload(wait_until="domcontentloaded", timeout=12000)
+
+        except Exception as e:
+            logger.warning("PTB scrape failed for %s: %s", slug, e)
+            # Full reset — browser may have crashed (EPIPE)
+            cls._reset_browser()
+        return None, None
+
+    @classmethod
+    def _reset_browser(cls):
+        """Fully tear down Playwright state after crash."""
+        for obj, attr in [
+            (cls, "_pw_page"),
+            (cls, "_pw_browser"),
+            (cls, "_pw"),
+        ]:
+            ref = getattr(obj, attr, None)
+            if ref is not None:
+                try:
+                    if attr == "_pw_page":
+                        ref.close()
+                    elif attr == "_pw_browser":
+                        ref.close()
+                    elif attr == "_pw":
+                        ref.stop()
+                except Exception:
+                    pass
+                setattr(cls, attr, None)
+
+    @classmethod
+    def close_scraper(cls):
+        """Shut down persistent browser and executor (call on bot shutdown)."""
+        try:
+            if cls._pw_page:
+                cls._pw_page.close()
+            if cls._pw_browser:
+                cls._pw_browser.close()
+            if cls._pw:
+                cls._pw.stop()
+        except Exception:
+            pass
+        cls._pw_page = None
+        cls._pw_browser = None
+        cls._pw = None
+        if cls._pw_executor:
+            cls._pw_executor.shutdown(wait=False)
+            cls._pw_executor = None
+
+    @classmethod
+    def _get_executor(cls):
+        """Get or create the dedicated single-thread executor for Playwright."""
+        if cls._pw_executor is None:
+            from concurrent.futures import ThreadPoolExecutor
+            cls._pw_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pw-scraper")
+        return cls._pw_executor
+
+    async def scrape_price_to_beat(self, slug: str) -> Optional[float]:
+        """Async wrapper — returns only PTB (backward compatible)."""
+        ptb, _ = await self.scrape_prices(slug)
+        return ptb
+
+    async def scrape_prices(self, slug: str) -> tuple[Optional[float], Optional[float]]:
+        """Scrape PTB and Current price from Polymarket page.
+        Returns (ptb, current_price). Runs in dedicated single thread."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._get_executor(), self._scrape_ptb_sync, slug
+            )
+        except Exception as e:
+            logger.debug("PTB scrape thread error for %s: %s", slug, e)
+            return None, None
 
     async def _init_clob(self, *, force: bool = False):
         """Initialize authenticated CLOB client for trading."""
@@ -508,16 +697,76 @@ class PolymarketClient:
             logger.error(f"Error finding market {slug}: {e}")
             return None
 
+    async def fetch_settlement_outcome(self, start_timestamp: int) -> Optional[str]:
+        """Query Polymarket API for the actual settlement outcome of a closed market.
+
+        Returns 'UP', 'DOWN', or None if not yet settled / unavailable.
+        After settlement, outcomePrices will be [1,0] (UP won) or [0,1] (DOWN won).
+        """
+        slug = market_slug_for_timestamp(start_timestamp)
+        try:
+            # Query without closed=false to include resolved markets
+            resp = await self._http.get(
+                f"{config.polymarket.gamma_url}/markets",
+                params={"slug": slug},
+            )
+            if resp.status_code != 200:
+                return None
+
+            markets = resp.json()
+            if not markets:
+                resp2 = await self._http.get(
+                    f"{config.polymarket.gamma_url}/events",
+                    params={"slug": slug},
+                )
+                if resp2.status_code == 200:
+                    events = resp2.json()
+                    if events and len(events) > 0:
+                        event = events[0]
+                        if "markets" in event and len(event["markets"]) > 0:
+                            markets = event["markets"]
+            if not markets:
+                return None
+
+            market = markets[0] if isinstance(markets, list) else markets
+
+            # Check outcomePrices: [1,0] = UP won, [0,1] = DOWN won
+            outcome_prices = _as_list(market.get("outcomePrices", []))
+            if len(outcome_prices) >= 2:
+                up_px = _to_float(outcome_prices[0], default=0.5)
+                down_px = _to_float(outcome_prices[1], default=0.5)
+                # Settled market will have prices at 1.0/0.0
+                if up_px >= 0.95 and down_px <= 0.05:
+                    return "UP"
+                if down_px >= 0.95 and up_px <= 0.05:
+                    return "DOWN"
+
+            # Also check tokens for winner info
+            tokens = _as_list(market.get("tokens", []))
+            for t in tokens:
+                if not isinstance(t, dict):
+                    continue
+                winner = t.get("winner")
+                outcome = str(t.get("outcome", "")).upper()
+                if winner is True and outcome in ("UP", "DOWN"):
+                    return outcome
+
+            return None
+        except Exception as e:
+            logger.debug("Settlement outcome query failed for %s: %s", slug, e)
+            return None
+
     async def refresh_odds(self, market: MarketInfo) -> bool:
         """
         Refresh UP/DOWN prices from the CLOB orderbook.
         This is the critical real-time data source.
+        Also stores full orderbook depth for impact-aware sizing.
         Returns True if prices were updated.
         """
         async def _fetch_side(
             side: str,
             token_id: str,
-        ) -> Optional[tuple[str, float, float, float]]:
+        ) -> Optional[tuple[str, float, float, float, list, list]]:
             if not token_id:
                 return None
             resp = await self._http.get(
@@ -533,7 +782,7 @@ class PolymarketClient:
             best_bid = max((float(b.get("price", 0.0)) for b in bids), default=0.0)
             best_ask = min((float(a.get("price", 1.0)) for a in asks), default=1.0)
             mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask < 1 else 0.5
-            return side, best_bid, best_ask, mid_price
+            return side, best_bid, best_ask, mid_price, asks, bids
 
         tasks = []
         if market.up_token_id:
@@ -552,15 +801,19 @@ class PolymarketClient:
                 continue
             if result is None:
                 continue
-            side, best_bid, best_ask, mid_price = result
+            side, best_bid, best_ask, mid_price, raw_asks, raw_bids = result
             if side == "up":
                 market.up_price = mid_price
                 market.up_best_bid = best_bid
                 market.up_best_ask = best_ask
+                market.up_ask_levels = raw_asks
+                market.up_bid_levels = raw_bids
             else:
                 market.down_price = mid_price
                 market.down_best_bid = best_bid
                 market.down_best_ask = best_ask
+                market.down_ask_levels = raw_asks
+                market.down_bid_levels = raw_bids
             updated = True
 
         if updated:
@@ -711,25 +964,31 @@ class PolymarketClient:
             await self._init_clob()
         if not self._clob_client:
             return 0.0
-        try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.CONDITIONAL,
-                token_id=str(token_id),
-            )
-            payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
-            bal_raw = _find_nested_value(
-                payload,
-                {"balance", "available_balance", "asset_balance"},
-            )
-            normalized = _normalize_conditional_amount(bal_raw, payload)
-            if normalized is None:
-                normalized = _normalize_conditional_amount(_extract_balance_value(payload), payload)
-            return float(normalized or 0.0)
-        except Exception as e:
-            logger.warning("conditional balance fetch failed (token=%s): %s", token_id, e)
-            return 0.0
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=str(token_id),
+                )
+                payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
+                bal_raw = _find_nested_value(
+                    payload,
+                    {"balance", "available_balance", "asset_balance"},
+                )
+                normalized = _normalize_conditional_amount(bal_raw, payload)
+                if normalized is None:
+                    normalized = _normalize_conditional_amount(_extract_balance_value(payload), payload)
+                return float(normalized or 0.0)
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+        logger.warning("conditional balance fetch failed (token=%s): %s", token_id, last_error)
+        return 0.0
 
     async def get_collateral_balance(self) -> Optional[float]:
         """
@@ -769,23 +1028,29 @@ class PolymarketClient:
             await self._init_clob()
         if not self._clob_client:
             return []
-        try:
-            from py_clob_client.clob_types import OpenOrderParams
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                from py_clob_client.clob_types import OpenOrderParams
 
-            params = OpenOrderParams(asset_id=str(asset_id))
-            payload = await asyncio.to_thread(self._clob_client.get_orders, params)
-            if isinstance(payload, list):
-                return [x for x in payload if isinstance(x, dict)]
-            if isinstance(payload, dict):
-                # py-clob-client may wrap results as {data:[...]} / {orders:[...]}
-                for key in ("data", "orders", "items", "results"):
-                    items = payload.get(key)
-                    if isinstance(items, list):
-                        return [x for x in items if isinstance(x, dict)]
-            return []
-        except Exception as e:
-            logger.warning("open-order fetch failed (asset=%s): %s", asset_id, e)
-            return []
+                params = OpenOrderParams(asset_id=str(asset_id))
+                payload = await asyncio.to_thread(self._clob_client.get_orders, params)
+                if isinstance(payload, list):
+                    return [x for x in payload if isinstance(x, dict)]
+                if isinstance(payload, dict):
+                    # py-clob-client may wrap results as {data:[...]} / {orders:[...]}
+                    for key in ("data", "orders", "items", "results"):
+                        items = payload.get(key)
+                        if isinstance(items, list):
+                            return [x for x in items if isinstance(x, dict)]
+                return []
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+                    continue
+        logger.warning("open-order fetch failed (asset=%s): %s", asset_id, last_error)
+        return []
 
     async def inspect_market_exposure(self, market: MarketInfo) -> dict:
         up_token = str(market.up_token_id or "")
@@ -888,8 +1153,9 @@ class PolymarketClient:
             order_side = _normalize_order_side(side, default="BUY")
             side_const = BUY if order_side == "BUY" else SELL
             order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
-            signed = self._clob_client.create_market_order(order_args)
-            resp = self._clob_client.post_order(signed, orderType=OrderType.FOK)
+            client = self._clob_client
+            signed = await asyncio.to_thread(client.create_market_order, order_args)
+            resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
             result = self._normalize_execution_result(
                 mode="MARKET",
                 side=order_side,
@@ -992,8 +1258,9 @@ class PolymarketClient:
             order_side = _normalize_order_side(side, default="BUY")
             side_const = BUY if order_side == "BUY" else SELL
             order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
-            signed = self._clob_client.create_order(order_args)
-            resp = self._clob_client.post_order(signed, orderType=order_type_value)
+            client = self._clob_client
+            signed = await asyncio.to_thread(client.create_order, order_args)
+            resp = await asyncio.to_thread(client.post_order, signed, orderType=order_type_value)
 
             result = self._normalize_execution_result(
                 mode=mode,

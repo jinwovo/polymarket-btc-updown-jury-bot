@@ -125,6 +125,15 @@ interface ProcessStatus {
   output_tail?: string[];
   message?: string;
   error?: string;
+  telegram?: {
+    enabled?: boolean;
+    configured?: boolean;
+    has_token?: boolean;
+    has_chat_id?: boolean;
+    uses_live_telegram?: boolean;
+    token_masked?: string | null;
+    chat_id?: string | null;
+  };
 }
 
 interface LiveControlStatus extends ProcessStatus {
@@ -174,6 +183,13 @@ interface LiveControlStatus extends ProcessStatus {
     ok?: boolean;
     chat_id?: string | null;
     error?: string | null;
+  };
+  daily_risk?: {
+    seed_capital: number;
+    daily_pnl: number;
+    daily_trades: number;
+    daily_loss_limit: number;
+    daily_loss_remaining: number;
   };
 }
 
@@ -265,6 +281,23 @@ interface PaperTradeHistoryItem {
     down_bid: number | null;
     down_ask: number | null;
   };
+  odds_at_close?: {
+    ts: number | null;
+    up_mid: number | null;
+    down_mid: number | null;
+    up_bid: number | null;
+    up_ask: number | null;
+    down_bid: number | null;
+    down_ask: number | null;
+  };
+  exit?: {
+    kind: string;
+    market_px: number | null;
+    exit_px: number | null;
+    fill_px: number | null;
+    fill_notional: number | null;
+    settlement_px: number | null;
+  };
 }
 
 interface PaperTradeHistorySummary {
@@ -339,6 +372,40 @@ function formatUsd(value: number | null | undefined, digits = 2) {
   })}`;
 }
 
+/** Format a Date to "2026. 3. 13. 17:50:59" KST style. */
+function _fmtKST(d: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    year: "numeric", month: "numeric", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}. ${get("month")}. ${get("day")}. ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+/** Convert an ISO-8601 UTC string to KST display. */
+function toKST(utcStr: string | null | undefined): string {
+  if (!utcStr) return "--";
+  try {
+    const d = new Date(utcStr);
+    if (Number.isNaN(d.getTime())) return utcStr;
+    return _fmtKST(d);
+  } catch {
+    return utcStr;
+  }
+}
+
+/** Convert a unix timestamp (seconds) to KST display string. */
+function unixToKST(ts: number | null | undefined): string {
+  if (ts === null || ts === undefined || Number.isNaN(ts) || ts <= 0) return "--";
+  try {
+    return _fmtKST(new Date(ts * 1000));
+  } catch {
+    return "--";
+  }
+}
+
 function formatCountdown(seconds: number | null | undefined) {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "--:--";
   const s = Math.max(0, Math.floor(seconds));
@@ -392,6 +459,7 @@ export function LiveDashboard() {
   const [paperStake, setPaperStake] = useState("1000");
   const [paperInterval, setPaperInterval] = useState("2");
   const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
+  const [paperTelegramNotify, setPaperTelegramNotify] = useState(false);
   const [liveStake, setLiveStake] = useState("5");
   const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "fixed">("adaptive");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
@@ -410,6 +478,9 @@ export function LiveDashboard() {
   const [telegramSaving, setTelegramSaving] = useState(false);
   const [telegramError, setTelegramError] = useState<string | null>(null);
   const [telegramTestMessage, setTelegramTestMessage] = useState("");
+
+  const [seedCapitalInput, setSeedCapitalInput] = useState("");
+  const [seedCapitalSaving, setSeedCapitalSaving] = useState(false);
 
   const [lastHours, setLastHours] = useState("24");
   const [runMode, setRunMode] = useState<"single" | "auto_sweep">("auto_sweep");
@@ -617,6 +688,36 @@ export function LiveDashboard() {
     const bt = await loadBacktestStatus();
     setBacktestStatus(bt);
     await loadPaperTradeSummary();
+  }
+
+  async function savePaperTelegramNotify() {
+    const res = await fetch("/api/control/paper", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "telegram_config",
+        enabled: paperTelegramNotify,
+      }),
+    });
+    const json = (await res.json()) as ProcessStatus;
+    setPaperStatus(json);
+  }
+
+  async function saveSeedCapital() {
+    const val = Number(seedCapitalInput);
+    if (!Number.isFinite(val) || val <= 0) return;
+    setSeedCapitalSaving(true);
+    try {
+      await fetch("/api/control/live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "seed_capital", seed_capital: val }),
+      });
+      // Refresh live status so daily_risk updates immediately
+      await refreshLiveStatus();
+    } finally {
+      setSeedCapitalSaving(false);
+    }
   }
 
   async function startLive() {
@@ -904,6 +1005,7 @@ export function LiveDashboard() {
     let historyTimer: number | null = null;
     let paperSummaryTimer: number | null = null;
     let liveStatusTimer: number | null = null;
+    let controlStatusTimer: number | null = null;
 
     const pollSnapshot = async () => {
       if (!mounted) return;
@@ -1011,11 +1113,33 @@ export function LiveDashboard() {
       }
     };
 
+    const pollControlStatus = async () => {
+      if (!mounted) return;
+      let nextDelayMs = 10000;
+      try {
+        const [paper, backtest] = await Promise.all([loadPaperStatus(), loadBacktestStatus()]);
+        if (mounted) {
+          setPaperStatus(paper);
+          setBacktestStatus(backtest);
+        }
+        if (paper?.running || backtest?.running) {
+          // Keep log tail lively while a subprocess is active.
+          nextDelayMs = 2000;
+        }
+      } catch (_) {
+        // Ignore transient control status errors.
+      }
+      if (mounted) {
+        controlStatusTimer = window.setTimeout(() => void pollControlStatus(), nextDelayMs);
+      }
+    };
+
     void pollSnapshot();
     void pollHistory();
     void loadControlOnce();
     void pollPaperSummary();
     void pollLiveStatus();
+    void pollControlStatus();
 
     return () => {
       mounted = false;
@@ -1023,6 +1147,7 @@ export function LiveDashboard() {
       if (historyTimer !== null) window.clearTimeout(historyTimer);
       if (paperSummaryTimer !== null) window.clearTimeout(paperSummaryTimer);
       if (liveStatusTimer !== null) window.clearTimeout(liveStatusTimer);
+      if (controlStatusTimer !== null) window.clearTimeout(controlStatusTimer);
     };
   }, []);
 
@@ -1046,7 +1171,19 @@ export function LiveDashboard() {
     if (!running && Number.isFinite(rawStake) && rawStake > 0) {
       setLiveStake(String(rawStake));
     }
+    // Populate seed capital input from server if user hasn't typed anything
+    const serverSeed = liveStatus?.daily_risk?.seed_capital;
+    if (serverSeed && serverSeed > 0 && !seedCapitalInput) {
+      setSeedCapitalInput(String(serverSeed));
+    }
   }, [liveStatus]);
+
+  useEffect(() => {
+    const enabled = paperStatus?.telegram?.enabled;
+    if (typeof enabled === "boolean") {
+      setPaperTelegramNotify(enabled);
+    }
+  }, [paperStatus?.telegram?.enabled]);
 
   const signal = snapshot?.signal;
   const gate = signal?.gate;
@@ -1065,6 +1202,8 @@ export function LiveDashboard() {
   const accountRoiPct =
     paperHistorySummary?.equity_roi_pct ??
     (seedCapital > 0 ? (realizedPnl / seedCapital) * 100.0 : 0.0);
+  const paperRunning = Boolean(paperStatus?.running);
+  const paperTelegram = paperStatus?.telegram;
   const liveBalance = liveStatus?.account?.collateral_balance ?? null;
   const liveAllowance = liveStatus?.account?.collateral_allowance ?? null;
   const liveApiCreds = liveStatus?.account?.api_credentials;
@@ -1181,7 +1320,7 @@ export function LiveDashboard() {
               <p className="font-mono text-xs text-muted-foreground">
                 tick {ageText(collector?.last_tick_age_sec)} | odds {ageText(collector?.last_odds_age_sec)}
               </p>
-              <p className="font-mono text-xs text-muted-foreground">{snapshot?.server_time_utc ?? "no time"}</p>
+              <p className="font-mono text-xs text-muted-foreground">{toKST(snapshot?.server_time_utc) ?? "no time"}</p>
             </div>
           </div>
         </header>
@@ -1456,7 +1595,7 @@ export function LiveDashboard() {
                   snapshot?.recent_windows?.map((w) => (
                     <tr key={`${w.window_start}-${w.slug}`} className="border-b border-border/40">
                       <td className="py-2 pr-2">
-                        {w.window_start ? new Date(w.window_start * 1000).toISOString().replace("T", " ").slice(0, 19) : "--"}
+                        {unixToKST(w.window_start)}
                       </td>
                       <td className="py-2 pr-2">
                         {w.actual_outcome === "UP" ? (
@@ -1534,6 +1673,35 @@ export function LiveDashboard() {
                   </select>
                 </label>
               </div>
+              <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                <label className="flex items-center gap-2 text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={paperTelegramNotify}
+                    onChange={(e) => setPaperTelegramNotify(e.target.checked)}
+                    disabled={paperRunning}
+                    className="h-4 w-4 rounded border-border/70 bg-background/40 disabled:cursor-not-allowed"
+                  />
+                  Send Telegram on Paper OPEN fill
+                </label>
+                <p className="mt-1 text-muted-foreground">
+                  Uses Live Telegram token/chat settings. Change is allowed only when Paper is stopped.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={() => void savePaperTelegramNotify()}
+                    disabled={paperRunning}
+                    className="rounded-md border border-sky-400/50 bg-sky-500/20 px-2.5 py-1 text-xs disabled:opacity-40"
+                  >
+                    Save Alert Option
+                  </button>
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    configured {paperTelegram?.configured ? "yes" : "no"} | token{" "}
+                    {paperTelegram?.has_token ? "set" : "missing"} | chat{" "}
+                    {paperTelegram?.has_chat_id ? "set" : "missing"}
+                  </span>
+                </div>
+              </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => void startPaper()}
@@ -1547,13 +1715,18 @@ export function LiveDashboard() {
                 >
                   Stop
                 </button>
-                <Badge variant={paperStatus?.running ? "success" : "neutral"}>
-                  {paperStatus?.running ? "RUNNING" : "STOPPED"}
+                <Badge variant={paperRunning ? "success" : "neutral"}>
+                  {paperRunning ? "RUNNING" : "STOPPED"}
                 </Badge>
               </div>
               <p className="font-mono text-xs text-muted-foreground">
                 pid={paperStatus?.pid ?? "-"} | exit={paperStatus?.exit_code ?? "-"}
               </p>
+              {paperStatus?.message ? (
+                <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
+                  {paperStatus.message}
+                </p>
+              ) : null}
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
                   <p className="text-muted-foreground">Seed Capital</p>
@@ -1609,21 +1782,40 @@ export function LiveDashboard() {
                   <p className="font-mono">{formatUsd(liveBalance)}</p>
                 </div>
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
-                  <p className="text-muted-foreground">Collateral Allowance</p>
-                  <p className="font-mono">{formatUsd(liveAllowance)}</p>
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder={formatUsd(liveBalance) ?? "--"}
+                      value={seedCapitalInput}
+                      onChange={(e) => setSeedCapitalInput(e.target.value)}
+                      className="w-full min-w-0 bg-transparent font-mono outline-none placeholder:text-muted-foreground/50"
+                    />
+                    <button
+                      onClick={() => void saveSeedCapital()}
+                      disabled={seedCapitalSaving || !seedCapitalInput}
+                      className="shrink-0 rounded border border-emerald-400/50 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium disabled:opacity-40"
+                    >
+                      {seedCapitalSaving ? "..." : "Save"}
+                    </button>
+                  </div>
                 </div>
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
                   <p className="text-muted-foreground">Funder</p>
                   <p className="truncate font-mono">{liveStatus?.account?.funder ?? "--"}</p>
                 </div>
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
-                  <p className="text-muted-foreground">Signer Key</p>
-                  <p className="font-mono">{liveStatus?.account?.private_key_set ? "set" : "missing"}</p>
+                  <p className="text-muted-foreground">Today&apos;s PnL</p>
+                  <p className={`font-mono font-semibold ${(liveStatus?.daily_risk?.daily_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    ${(liveStatus?.daily_risk?.daily_pnl ?? 0).toFixed(2)} ({liveStatus?.daily_risk?.daily_trades ?? 0} trades)
+                  </p>
                 </div>
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
-                  <p className="text-muted-foreground">Sig/Auth</p>
-                  <p className="font-mono">
-                    sig={liveStatus?.account?.signature_type ?? "--"} | {liveStatus?.account?.creds_source ?? "--"}
+                  <p className="text-muted-foreground">Daily Loss Limit (40% of balance)</p>
+                  <p className={`font-mono ${(liveStatus?.daily_risk?.daily_loss_remaining ?? 50) < (liveStatus?.daily_risk?.daily_loss_limit ?? 50) * 0.3 ? "text-red-400" : ""}`}>
+                    -${(liveStatus?.daily_risk?.daily_loss_limit ?? 0).toFixed(2)} | left ${(liveStatus?.daily_risk?.daily_loss_remaining ?? 0).toFixed(2)}
                   </p>
                 </div>
               </div>
@@ -1865,7 +2057,7 @@ export function LiveDashboard() {
                 <div>
                   <p className="text-lg font-semibold">Polymarket Auth Setup</p>
                   <p className="text-xs text-muted-foreground">
-                    Save private key/funder to local .env, derive API creds, no server restart.
+                    Save private key/funder to local .env.secrets, derive API creds, no server restart.
                   </p>
                 </div>
                 <button
@@ -1929,7 +2121,7 @@ export function LiveDashboard() {
                 </div>
 
                 <p className="rounded-md border border-border/60 bg-background/30 px-2 py-1 text-xs text-muted-foreground">
-                  Save updates <span className="font-mono">.env</span>. Trading auth uses private-key derived
+                  Save updates <span className="font-mono">.env.secrets</span>. Trading auth uses private-key derived
                   API creds in <span className="font-mono">.env.polymarket.generated</span>.
                 </p>
 
@@ -2005,7 +2197,7 @@ export function LiveDashboard() {
                 <div>
                   <p className="text-lg font-semibold">Telegram Bot Setup</p>
                   <p className="text-xs text-muted-foreground">
-                    Live OPEN/CLOSED fill alerts. Save to local <span className="font-mono">.env</span>.
+                    Live OPEN/CLOSED fill alerts. Save to local <span className="font-mono">.env.secrets</span>.
                   </p>
                 </div>
                 <button
@@ -2194,11 +2386,11 @@ export function LiveDashboard() {
                         {t.entry_source ? (
                           <Badge variant="neutral">{t.entry_source.toUpperCase()}</Badge>
                         ) : null}
-                        <span className="font-mono text-muted-foreground">{t.opened_at_utc ?? "--"}</span>
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
                         <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
                       </div>
 
-                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
                         <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
                           <p className="text-muted-foreground">Stake / Entry</p>
                           <p className="font-mono">
@@ -2214,7 +2406,7 @@ export function LiveDashboard() {
                           <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
                         </div>
                         <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
-                          <p className="text-muted-foreground">5m BTC Start/End</p>
+                          <p className="text-muted-foreground">5m BTC Start/End (Binance)</p>
                           <p className="font-mono">
                             {formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}
                           </p>
@@ -2227,6 +2419,15 @@ export function LiveDashboard() {
                           </p>
                           <p className="font-mono text-muted-foreground">
                             mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">
+                            fill {formatNumber(t.exit?.fill_px, 3)} | mkt {formatNumber(t.exit?.market_px, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            settle {formatNumber(t.exit?.settlement_px, 3)} | {t.exit?.kind ?? "--"}
                           </p>
                         </div>
                       </div>
@@ -2383,11 +2584,11 @@ export function LiveDashboard() {
                         <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
                           {t.direction}
                         </Badge>
-                        <span className="font-mono text-muted-foreground">{t.opened_at_utc ?? "--"}</span>
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
                         <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
                       </div>
 
-                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
                         <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
                           <p className="text-muted-foreground">Stake / Entry</p>
                           <p className="font-mono">
@@ -2403,7 +2604,7 @@ export function LiveDashboard() {
                           <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
                         </div>
                         <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
-                          <p className="text-muted-foreground">5m BTC Start/End</p>
+                          <p className="text-muted-foreground">5m BTC Start/End (Binance)</p>
                           <p className="font-mono">
                             {formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}
                           </p>
@@ -2416,6 +2617,15 @@ export function LiveDashboard() {
                           </p>
                           <p className="font-mono text-muted-foreground">
                             mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">
+                            fill {formatNumber(t.exit?.fill_px, 3)} | mkt {formatNumber(t.exit?.market_px, 3)}
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            settle {formatNumber(t.exit?.settlement_px, 3)} | {t.exit?.kind ?? "--"}
                           </p>
                         </div>
                       </div>
@@ -2555,7 +2765,7 @@ export function LiveDashboard() {
                         <span className="font-mono text-muted-foreground">
                           support {item.support_direction ?? "NONE"} {item.support_votes ?? 0}/5
                         </span>
-                        <span className="font-mono text-muted-foreground">{item.ts_utc}</span>
+                        <span className="font-mono text-muted-foreground">{toKST(item.ts_utc)}</span>
                         <span className="font-mono text-muted-foreground">
                           conf {formatNumber(item.avg_confidence, 3)} / thr {formatNumber(item.threshold, 3)}
                         </span>
@@ -2680,7 +2890,7 @@ export function LiveDashboard() {
 
         <footer className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
           <Timer className="h-3.5 w-3.5" />
-          <span>Auto refresh: snapshot 2s / history 6s</span>
+          <span>Auto refresh: snapshot 1s / history 6s / control logs 2-10s</span>
         </footer>
       </div>
     </main>

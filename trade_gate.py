@@ -347,9 +347,18 @@ def evaluate_entry_gate(
 
     fee_rate = max(0.0, float(config.trading.fee_rate))
     min_roi = float(config.trading.min_expected_roi)
-    expected_roi = float((model_prob / entry_price) - 1.0 - fee_rate)
-    break_even_prob = float(entry_price * (1.0 + fee_rate + min_roi))
-    profit_break_even_prob = float(entry_price * (1.0 + fee_rate))
+
+    # ── Spread cost awareness (from RL article insight) ──
+    # The overround (up_ask + down_ask - 1.0) represents the book's spread tax.
+    # If we need to early-exit, we lose roughly half the overround.  Factor this
+    # into the effective fee so that wide-spread windows need bigger edge.
+    overround = max(0.0, up_ask + down_ask - 1.0)
+    spread_cost = overround * 0.5  # half the overround as execution friction
+    effective_fee = fee_rate + spread_cost
+
+    expected_roi = float((model_prob / entry_price) - 1.0 - effective_fee)
+    break_even_prob = float(entry_price * (1.0 + effective_fee + min_roi))
+    profit_break_even_prob = float(entry_price * (1.0 + effective_fee))
     win_prob_floor = float(
         max(
             _clamp(float(config.trading.min_win_probability), 0.0, 0.999),
@@ -357,41 +366,73 @@ def evaluate_entry_gate(
         )
     )
     win_prob_pass = bool(model_prob >= win_prob_floor)
+    # ── Coinflip weak-edge guard ──
+    # When entry_price is near 0.50 (the coin-flip zone), require a stronger
+    # probability edge before allowing entry.  Most recent losses came from
+    # entering at 0.47-0.53 with thin margins that flipped.
+    coinflip_lo = float(getattr(config.trading, "coinflip_guard_lo", 0.44))
+    coinflip_hi = float(getattr(config.trading, "coinflip_guard_hi", 0.56))
+    coinflip_min_prob_margin = float(getattr(config.trading, "coinflip_min_prob_margin", 0.06))
+    coinflip_min_confidence = float(getattr(config.trading, "coinflip_min_confidence", 0.45))
+    coinflip_blocked = False
+    coinflip_reason = ""
+    if coinflip_lo <= entry_price <= coinflip_hi:
+        prob_margin = model_prob - entry_price  # how much model exceeds implied
+        if prob_margin < coinflip_min_prob_margin:
+            coinflip_blocked = True
+            coinflip_reason = (
+                f"coinflip_guard(ask={entry_price:.3f} in [{coinflip_lo:.2f},{coinflip_hi:.2f}], "
+                f"prob_margin={prob_margin:.4f} < {coinflip_min_prob_margin:.3f})"
+            )
+        elif jury_confidence < coinflip_min_confidence:
+            coinflip_blocked = True
+            coinflip_reason = (
+                f"coinflip_guard(ask={entry_price:.3f}, conf={jury_confidence:.3f}"
+                f" < {coinflip_min_confidence:.3f})"
+            )
+
     mode = str(getattr(config.trading, "entry_decision_mode", "HYBRID")).strip().upper()
     if mode == "EV_FIRST":
-        allow = bool(expected_roi >= min_roi and up_regime_pass)
+        allow = bool(expected_roi >= min_roi and up_regime_pass and not coinflip_blocked)
     elif mode == "PROBABILITY_FIRST":
-        allow = bool(win_prob_pass and up_regime_pass)
+        allow = bool(win_prob_pass and up_regime_pass and not coinflip_blocked)
     else:
         # HYBRID (or unknown): require both EV and win-probability gates.
-        allow = bool(expected_roi >= min_roi and win_prob_pass and up_regime_pass)
+        allow = bool(expected_roi >= min_roi and win_prob_pass and up_regime_pass and not coinflip_blocked)
 
-    if (direction == "UP") and bool(config.trading.up_regime_filter_enabled) and (not up_regime_pass):
+    fee_info = f"fee={fee_rate:.2%}+spread={spread_cost:.3f}"
+    if coinflip_blocked:
+        reason = (
+            f"skip {coinflip_reason} | "
+            f"net_ev={expected_roi:+.3%} (p={model_prob:.3f}, fair_up={fair_up:.3f}, "
+            f"disp={dispersion:.3f}, ask={entry_price:.3f}, conf={jury_confidence:.3f}, {fee_info})"
+        )
+    elif (direction == "UP") and bool(config.trading.up_regime_filter_enabled) and (not up_regime_pass):
         reason = (
             f"skip up_regime_filter ({up_regime_reason}) | "
             f"net_ev={expected_roi:+.3%} target={min_roi:.3%} "
             f"(p={model_prob:.3f}, fair_up={fair_up:.3f}, disp={dispersion:.3f}, "
-            f"align={aligned_move_pct:+.4f}%, pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"align={aligned_move_pct:+.4f}%, pen={prob_penalty:.3f}, ask={entry_price:.3f}, {fee_info})"
         )
     elif not win_prob_pass:
         reason = (
             f"skip low win_prob={model_prob:.3f} < floor={win_prob_floor:.3f} "
             f"(mode={mode}, p_profit>={profit_break_even_prob:.3f}, "
-            f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, ask={entry_price:.3f}, {fee_info})"
         )
     elif allow:
         reason = (
             f"net_ev={expected_roi:+.3%} >= target={min_roi:.3%} "
             f"(mode={mode}, p={model_prob:.3f}, p_floor={win_prob_floor:.3f}, "
             f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, align={aligned_move_pct:+.4f}%, "
-            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, {fee_info})"
         )
     else:
         reason = (
             f"skip low net_ev={expected_roi:+.3%} < target={min_roi:.3%} "
             f"(mode={mode}, need p>={break_even_prob:.3f}, p={model_prob:.3f}, p_floor={win_prob_floor:.3f}, "
             f"fair_up={fair_up:.3f}, disp={dispersion:.3f}, align={aligned_move_pct:+.4f}%, "
-            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, fee={fee_rate:.2%})"
+            f"pen={prob_penalty:.3f}, ask={entry_price:.3f}, {fee_info})"
         )
 
     return EntryGateResult(

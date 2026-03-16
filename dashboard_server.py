@@ -29,6 +29,7 @@ from clob_auth import (
     create_authenticated_clob_client,
 )
 from config import config
+from env_paths import PUBLIC_RUNTIME_ENV_PATH, SECRETS_ENV_PATH
 from db_config import (
     connect_db,
     execute_write,
@@ -37,8 +38,6 @@ from db_config import (
     fetch_one,
     fetch_one_dict,
     init_market_schema,
-    is_sqlite_backend,
-    sqlite_db_path,
 )
 from judges import Jury, MarketContext
 from trade_gate import evaluate_entry_gate
@@ -46,7 +45,6 @@ from telegram_notifier import mask_bot_token, resolve_chat_id, send_telegram_mes
 
 
 BASE_DIR = Path(__file__).parent
-DB_PATH = sqlite_db_path()
 DASHBOARD_DIR = BASE_DIR / "dashboard"
 
 STATIC_ROUTES = {
@@ -62,7 +60,8 @@ CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
 }
 
-_ENV_PATH = Path(".env")
+_ENV_PATH = Path(SECRETS_ENV_PATH)
+_PUBLIC_ENV_PATH = Path(PUBLIC_RUNTIME_ENV_PATH)
 _ENV_KEY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
@@ -82,17 +81,17 @@ _LAST_SIGNAL_HISTORY_KEY: Optional[str] = None
 _LAST_SIGNAL_HISTORY_TS: dict[str, float] = {}
 
 # Keep UI signal actionability aligned with paper entry core filters.
-PAPER_ALIGN_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.040"))
-PAPER_ALIGN_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
-PAPER_ALIGN_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "150"))
-PAPER_ALIGN_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "24"))
-PAPER_ALIGN_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "60"))
-PAPER_ALIGN_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "255"))
-PAPER_ALIGN_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
+PAPER_ALIGN_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.015"))
+PAPER_ALIGN_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.50"))
+PAPER_ALIGN_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "40"))
+PAPER_ALIGN_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "8"))
+PAPER_ALIGN_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
+PAPER_ALIGN_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "270"))
+PAPER_ALIGN_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "30"))
 PAPER_ALIGN_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
-PAPER_ALIGN_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.0045"))
-PAPER_ALIGN_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
-PAPER_ALIGN_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
+PAPER_ALIGN_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.0008"))
+PAPER_ALIGN_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.22"))
+PAPER_ALIGN_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.52"))
 
 
 class ManagedProcess:
@@ -229,6 +228,80 @@ def _to_int(value: Any) -> Optional[int]:
         return None
 
 
+_CLOSE_REASON_EXIT_PX_RE = re.compile(r"(?:^|[|,\s])exit_px=([0-9]*\.?[0-9]+)")
+_CLOSE_REASON_FILL_PX_RE = re.compile(r"(?:^|[|,\s])fill_px=([0-9]*\.?[0-9]+)")
+_CLOSE_REASON_FILL_NOTIONAL_RE = re.compile(r"(?:^|[|,\s])fill_notional=\$?([0-9]*\.?[0-9]+)")
+
+
+def _extract_close_reason_prices(close_reason: str | None) -> dict[str, Optional[float]]:
+    reason = str(close_reason or "")
+    out: dict[str, Optional[float]] = {
+        "exit_px": None,
+        "fill_px": None,
+        "fill_notional": None,
+    }
+    if not reason:
+        return out
+    m = _CLOSE_REASON_EXIT_PX_RE.search(reason)
+    if m:
+        out["exit_px"] = _to_float(m.group(1))
+    m = _CLOSE_REASON_FILL_PX_RE.search(reason)
+    if m:
+        out["fill_px"] = _to_float(m.group(1))
+    m = _CLOSE_REASON_FILL_NOTIONAL_RE.search(reason)
+    if m:
+        out["fill_notional"] = _to_float(m.group(1))
+    return out
+
+
+def _build_exit_snapshot(
+    *,
+    direction: str,
+    status: str,
+    won: Optional[int],
+    close_reason: str | None,
+    odds_close_row: dict | None,
+) -> dict[str, Any]:
+    prices = _extract_close_reason_prices(close_reason)
+    d = str(direction or "NO_TRADE").upper()
+    st = str(status or "OPEN").upper()
+    reason = str(close_reason or "").lower()
+
+    side_bid = None
+    side_mid = None
+    if odds_close_row:
+        if d == "UP":
+            side_bid = _to_float(odds_close_row.get("up_best_bid"))
+            side_mid = _to_float(odds_close_row.get("up_mid"))
+        elif d == "DOWN":
+            side_bid = _to_float(odds_close_row.get("down_best_bid"))
+            side_mid = _to_float(odds_close_row.get("down_mid"))
+    market_px = side_bid if side_bid is not None else side_mid
+
+    settlement_px = None
+    if st == "CLOSED" and ("expiry_settlement" in reason or "recovered_expiry_settlement" in reason):
+        if won is not None:
+            settlement_px = 1.0 if int(won) == 1 else 0.0
+
+    if st != "CLOSED":
+        kind = "open"
+    elif settlement_px is not None:
+        kind = "settlement"
+    elif prices["fill_px"] is not None or prices["exit_px"] is not None:
+        kind = "early_exit"
+    else:
+        kind = "closed"
+
+    return {
+        "kind": kind,
+        "market_px": market_px,
+        "exit_px": prices["exit_px"],
+        "fill_px": prices["fill_px"],
+        "fill_notional": prices["fill_notional"],
+        "settlement_px": settlement_px,
+    }
+
+
 def _normalize_live_position_mode(raw: Any) -> str:
     mode = str(raw or "BOTH").strip().upper()
     if mode in ("UP_ONLY", "DOWN_ONLY", "BOTH"):
@@ -356,6 +429,22 @@ def _telegram_snapshot() -> dict[str, Any]:
     }
 
 
+def _paper_telegram_snapshot() -> dict[str, Any]:
+    enabled = bool(getattr(config.trading, "paper_telegram_notify_open", False))
+    token = _clean_str(getattr(config.trading, "live_telegram_bot_token", ""))
+    chat_id = _clean_str(getattr(config.trading, "live_telegram_chat_id", ""))
+    configured = bool(token and chat_id)
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "has_token": bool(token),
+        "has_chat_id": bool(chat_id),
+        "uses_live_telegram": True,
+        "token_masked": mask_bot_token(token),
+        "chat_id": chat_id or None,
+    }
+
+
 def _apply_runtime_telegram(*, enabled: bool, bot_token: str, chat_id: str):
     token = _clean_str(bot_token)
     cid = _clean_str(chat_id)
@@ -365,6 +454,11 @@ def _apply_runtime_telegram(*, enabled: bool, bot_token: str, chat_id: str):
     config.trading.live_telegram_enabled = bool(enabled)
     config.trading.live_telegram_bot_token = token
     config.trading.live_telegram_chat_id = cid
+
+
+def _apply_runtime_paper_telegram_notify_open(*, enabled: bool):
+    _set_runtime_var("PAPER_TELEGRAM_NOTIFY_OPEN", "true" if enabled else "false")
+    config.trading.paper_telegram_notify_open = bool(enabled)
 
 
 def _default_telegram_test_message() -> str:
@@ -572,10 +666,61 @@ def _fetch_live_account_snapshot() -> dict[str, Any]:
         }
 
 
+def _kst_today_start_utc() -> float:
+    """Return UTC timestamp for midnight KST (UTC+9) today."""
+    KST_OFFSET = 9 * 3600
+    kst_now = time.time() + KST_OFFSET
+    kst_midnight = (int(kst_now) // 86400) * 86400
+    return float(kst_midnight - KST_OFFSET)
+
+
+def _fetch_live_daily_risk() -> dict[str, Any]:
+    """Get today's PnL (KST day) and daily loss limit (40% of Seed Capital)."""
+    balance = float(os.getenv("LIVE_EQUITY_SEED_CAPITAL", "40.0"))
+    try:
+        conn = connect_db()
+        init_market_schema(conn)
+        conn.commit()
+        today_start = _kst_today_start_utc()
+        row = fetch_one(
+            conn,
+            "SELECT COALESCE(SUM(pnl), 0), COUNT(*) FROM live_trades "
+            "WHERE status='CLOSED' AND closed_at >= ?",
+            (today_start,),
+        )
+        conn.close()
+        daily_pnl = float(row[0]) if row else 0.0
+        daily_trades = int(row[1]) if row else 0
+        daily_loss_limit = max(1.0, balance * 0.40)
+        return {
+            "seed_capital": round(balance, 2),
+            "daily_pnl": round(daily_pnl, 2),
+            "daily_trades": daily_trades,
+            "daily_loss_limit": round(daily_loss_limit, 2),
+            "daily_loss_remaining": round(max(0, daily_loss_limit + daily_pnl), 2),
+        }
+    except Exception:
+        limit = max(1.0, balance * 0.40)
+        return {
+            "seed_capital": round(balance, 2),
+            "daily_pnl": 0.0,
+            "daily_trades": 0,
+            "daily_loss_limit": round(limit, 2),
+            "daily_loss_remaining": round(limit, 2),
+        }
+
+
 def build_live_control_status() -> dict[str, Any]:
     status = LIVE_TRADING_PROC.status()
     status["account"] = _fetch_live_account_snapshot()
     status["telegram"] = _telegram_snapshot()
+    status["daily_risk"] = _fetch_live_daily_risk()
+    return status
+
+
+def build_paper_control_status() -> dict[str, Any]:
+    status = PAPER_SIM_PROC.status()
+    status["telegram"] = _paper_telegram_snapshot()
     return status
 
 
@@ -641,21 +786,9 @@ def _get_market_start_price(
     window_end: int,
     db_value: Any,
 ) -> Optional[float]:
-    start_price = _to_float(db_value)
-    if start_price is not None:
-        return start_price
-
-    row = fetch_one_dict(
-        conn,
-        """SELECT price FROM btc_ticks
-           WHERE ts >= ? AND ts <= ?
-           ORDER BY ts ASC
-           LIMIT 1""",
-        (float(window_start), float(window_end)),
-    )
-    if not row:
-        return None
-    return _to_float(row["price"])
+    """Return official Price to Beat from DB. No Binance tick fallback — wrong
+    start price causes wrong UP/DOWN direction."""
+    return _to_float(db_value)
 
 
 def _get_recent_results(conn, limit: int = 20) -> list[str]:
@@ -1325,6 +1458,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                           potential_win_pnl, signal_confidence, signal_reason, close_reason, status,
                           opened_at, closed_at, actual_outcome, won, pnl, roi_pct
                    FROM paper_trades
+                   WHERE archived_at IS NULL
                    ORDER BY window_start DESC
                    LIMIT ? OFFSET ?""",
                 (lim, off),
@@ -1337,6 +1471,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                           potential_win_pnl, signal_confidence, signal_reason, status,
                           opened_at, closed_at, actual_outcome, won, pnl, roi_pct
                    FROM paper_trades
+                   WHERE archived_at IS NULL
                    ORDER BY window_start DESC
                    LIMIT ? OFFSET ?""",
                 (lim, off),
@@ -1346,7 +1481,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         return {"ok": False, "error": f"paper_trades unavailable: {e}"}
 
     try:
-        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades")
+        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades WHERE archived_at IS NULL")
         count = int(count_row[0]) if count_row else len(rows)
         stats_row = fetch_one(
             conn,
@@ -1356,7 +1491,8 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                    SUM(CASE WHEN won=1 THEN 1 ELSE 0 END),
                    SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END),
                    COALESCE(SUM(pnl), 0)
-               FROM paper_trades""",
+               FROM paper_trades
+               WHERE archived_at IS NULL""",
         )
         open_cnt = int(stats_row[0] or 0) if stats_row else 0
         closed_cnt = int(stats_row[1] or 0) if stats_row else 0
@@ -1370,7 +1506,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                 conn,
                 """SELECT initial_capital
                    FROM paper_trades
-                   WHERE initial_capital IS NOT NULL
+                   WHERE initial_capital IS NOT NULL AND archived_at IS NULL
                    ORDER BY window_start ASC
                    LIMIT 1""",
             )
@@ -1382,7 +1518,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         if initial_capital is None:
             first_stake_row = fetch_one(
                 conn,
-                "SELECT stake FROM paper_trades ORDER BY window_start ASC LIMIT 1",
+                "SELECT stake FROM paper_trades WHERE archived_at IS NULL ORDER BY window_start ASC LIMIT 1",
             )
             initial_capital = float(first_stake_row[0]) if first_stake_row and first_stake_row[0] is not None else 1000.0
         current_equity = initial_capital + total_pnl
@@ -1393,7 +1529,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
             conn,
             """SELECT id, pnl
                FROM paper_trades
-               WHERE status='CLOSED'
+               WHERE status='CLOSED' AND archived_at IS NULL
                ORDER BY
                  CASE
                    WHEN closed_at IS NOT NULL THEN closed_at
@@ -1435,6 +1571,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         for r in rows:
             ws = _to_int(r.get("window_start"))
             opened_at = _to_float(r.get("opened_at"))
+            closed_at = _to_float(r.get("closed_at"))
 
             window_row = None
             if ws is not None:
@@ -1459,10 +1596,24 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     (ws, opened_at),
                 )
 
+            odds_close_row = None
+            if ws is not None and closed_at is not None:
+                odds_close_row = fetch_one_dict(
+                    conn,
+                    """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
+                       FROM poly_odds
+                       WHERE window_start = ?
+                       ORDER BY ABS(ts - ?) ASC
+                       LIMIT 1""",
+                    (ws, closed_at),
+                )
+
             direction = str(r.get("direction") or "NO_TRADE")
             entry_price = _to_float(r.get("entry_price"))
             shares = _to_float(r.get("shares"))
             stake = _to_float(r.get("stake"))
+            won = _to_int(r.get("won"))
+            close_reason = str(r.get("close_reason") or "") if r.get("close_reason") else None
             to_win_total = shares
             to_win_pnl = _to_float(r.get("potential_win_pnl"))
             if to_win_pnl is None and shares is not None and stake is not None:
@@ -1490,7 +1641,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     "to_win_pnl": to_win_pnl,
                     "signal_confidence": _to_float(r.get("signal_confidence")),
                     "signal_reason": str(r.get("signal_reason") or ""),
-                    "close_reason": str(r.get("close_reason") or "") if r.get("close_reason") else None,
+                    "close_reason": close_reason,
                     "status": str(r.get("status") or "OPEN"),
                     "opened_at": opened_at,
                     "opened_at_utc": (
@@ -1498,9 +1649,9 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                         if opened_at is not None
                         else None
                     ),
-                    "closed_at": _to_float(r.get("closed_at")),
+                    "closed_at": closed_at,
                     "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
-                    "won": _to_int(r.get("won")),
+                    "won": won,
                     "pnl": _to_float(r.get("pnl")),
                     "roi_pct": _to_float(r.get("roi_pct")),
                     "window": {
@@ -1522,6 +1673,22 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                         "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
                         "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
                     },
+                    "odds_at_close": {
+                        "ts": _to_float(odds_close_row.get("ts")) if odds_close_row else None,
+                        "up_mid": _to_float(odds_close_row.get("up_mid")) if odds_close_row else None,
+                        "down_mid": _to_float(odds_close_row.get("down_mid")) if odds_close_row else None,
+                        "up_bid": _to_float(odds_close_row.get("up_best_bid")) if odds_close_row else None,
+                        "up_ask": _to_float(odds_close_row.get("up_best_ask")) if odds_close_row else None,
+                        "down_bid": _to_float(odds_close_row.get("down_best_bid")) if odds_close_row else None,
+                        "down_ask": _to_float(odds_close_row.get("down_best_ask")) if odds_close_row else None,
+                    },
+                    "exit": _build_exit_snapshot(
+                        direction=direction,
+                        status=str(r.get("status") or "OPEN"),
+                        won=won,
+                        close_reason=close_reason,
+                        odds_close_row=odds_close_row,
+                    ),
                 }
             )
 
@@ -1613,6 +1780,7 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
         for r in rows:
             ws = _to_int(r.get("window_start"))
             opened_at = _to_float(r.get("opened_at"))
+            closed_at = _to_float(r.get("closed_at"))
 
             window_row = None
             if ws is not None:
@@ -1637,10 +1805,24 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     (ws, opened_at),
                 )
 
+            odds_close_row = None
+            if ws is not None and closed_at is not None:
+                odds_close_row = fetch_one_dict(
+                    conn,
+                    """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
+                       FROM poly_odds
+                       WHERE window_start = ?
+                       ORDER BY ABS(ts - ?) ASC
+                       LIMIT 1""",
+                    (ws, closed_at),
+                )
+
             direction = str(r.get("direction") or "NO_TRADE")
             entry_price = _to_float(r.get("entry_price"))
             shares = _to_float(r.get("shares"))
             stake = _to_float(r.get("stake"))
+            won = _to_int(r.get("won"))
+            close_reason = str(r.get("close_reason") or "") if r.get("close_reason") else None
             to_win_total = shares
             to_win_pnl = _to_float(r.get("potential_win_pnl"))
             if to_win_pnl is None and shares is not None and stake is not None:
@@ -1669,7 +1851,7 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     "signal_confidence": _to_float(r.get("signal_confidence")),
                     "signal_reason": str(r.get("signal_reason") or ""),
                     "entry_source": str(r.get("entry_source") or "") if r.get("entry_source") else None,
-                    "close_reason": str(r.get("close_reason") or "") if r.get("close_reason") else None,
+                    "close_reason": close_reason,
                     "status": str(r.get("status") or "OPEN"),
                     "opened_at": opened_at,
                     "opened_at_utc": (
@@ -1677,9 +1859,9 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
                         if opened_at is not None
                         else None
                     ),
-                    "closed_at": _to_float(r.get("closed_at")),
+                    "closed_at": closed_at,
                     "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
-                    "won": _to_int(r.get("won")),
+                    "won": won,
                     "pnl": _to_float(r.get("pnl")),
                     "roi_pct": _to_float(r.get("roi_pct")),
                     "window": {
@@ -1701,6 +1883,22 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
                         "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
                         "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
                     },
+                    "odds_at_close": {
+                        "ts": _to_float(odds_close_row.get("ts")) if odds_close_row else None,
+                        "up_mid": _to_float(odds_close_row.get("up_mid")) if odds_close_row else None,
+                        "down_mid": _to_float(odds_close_row.get("down_mid")) if odds_close_row else None,
+                        "up_bid": _to_float(odds_close_row.get("up_best_bid")) if odds_close_row else None,
+                        "up_ask": _to_float(odds_close_row.get("up_best_ask")) if odds_close_row else None,
+                        "down_bid": _to_float(odds_close_row.get("down_best_bid")) if odds_close_row else None,
+                        "down_ask": _to_float(odds_close_row.get("down_best_ask")) if odds_close_row else None,
+                    },
+                    "exit": _build_exit_snapshot(
+                        direction=direction,
+                        status=str(r.get("status") or "OPEN"),
+                        won=won,
+                        close_reason=close_reason,
+                        odds_close_row=odds_close_row,
+                    ),
                 }
             )
 
@@ -1728,14 +1926,6 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
 def build_snapshot() -> dict:
     now_ts = time.time()
     now_iso = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
-
-    if is_sqlite_backend() and not DB_PATH.exists():
-        return {
-            "ok": False,
-            "error": f"Database not found: {DB_PATH}",
-            "server_time": now_ts,
-            "server_time_utc": now_iso,
-        }
 
     try:
         conn = _connect_db()
@@ -1834,9 +2024,6 @@ def build_snapshot() -> dict:
 
 def build_history(minutes: int = 30) -> dict:
     now_ts = time.time()
-    if is_sqlite_backend() and not DB_PATH.exists():
-        return {"ok": False, "error": "Database not found."}
-
     minutes = max(5, min(minutes, 240))
     start_ts = now_ts - minutes * 60.0
 
@@ -1914,7 +2101,7 @@ def control_paper_start(stake: float, interval: float, sizing_mode: str = "adapt
         ),
         meta={"stake": stake, "interval": interval, "sizing_mode": mode},
     )
-    status = PAPER_SIM_PROC.status()
+    status = build_paper_control_status()
     status["ok"] = ok
     status["message"] = msg
     return status
@@ -1922,7 +2109,7 @@ def control_paper_start(stake: float, interval: float, sizing_mode: str = "adapt
 
 def control_paper_stop() -> dict:
     ok, msg = PAPER_SIM_PROC.stop()
-    status = PAPER_SIM_PROC.status()
+    status = build_paper_control_status()
     status["ok"] = ok
     status["message"] = msg
     return status
@@ -1935,23 +2122,17 @@ def control_paper_reset() -> dict:
     if was_running:
         stopped_ok, stopped_msg = PAPER_SIM_PROC.stop()
 
-    deleted = 0
+    archived = 0
     conn = None
     try:
         conn = _connect_db()
-        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades")
-        deleted = int(count_row[0] or 0) if count_row else 0
-        execute_write(conn, "DELETE FROM paper_trades")
-        if is_sqlite_backend():
-            try:
-                execute_write(conn, "DELETE FROM sqlite_sequence WHERE name='paper_trades'")
-            except Exception:
-                pass
-        else:
-            try:
-                execute_write(conn, "ALTER TABLE paper_trades AUTO_INCREMENT = 1")
-            except Exception:
-                pass
+        count_row = fetch_one(conn, "SELECT COUNT(*) FROM paper_trades WHERE archived_at IS NULL")
+        archived = int(count_row[0] or 0) if count_row else 0
+        execute_write(
+            conn,
+            "UPDATE paper_trades SET archived_at = ? WHERE archived_at IS NULL",
+            (time.time(),),
+        )
         conn.commit()
     except Exception as e:
         msg = str(e)
@@ -1959,7 +2140,7 @@ def control_paper_reset() -> dict:
         if ("no such table" in msg.lower()) or ("doesn't exist" in msg.lower()):
             deleted = 0
         else:
-            status = PAPER_SIM_PROC.status()
+            status = build_paper_control_status()
             status["ok"] = False
             status["message"] = f"reset failed: {msg}"
             status["deleted"] = 0
@@ -1972,11 +2153,41 @@ def control_paper_reset() -> dict:
             except Exception:
                 pass
 
-    status = PAPER_SIM_PROC.status()
+    status = build_paper_control_status()
     status["ok"] = True
-    status["message"] = "paper history reset"
-    status["deleted"] = deleted
+    status["message"] = "paper history archived (data preserved for backtesting)"
+    status["deleted"] = archived
     status["stopped"] = {"ok": stopped_ok, "message": stopped_msg}
+    return status
+
+
+def control_paper_telegram_configure(*, enabled: Optional[bool] = None) -> dict[str, Any]:
+    status = build_paper_control_status()
+    running = bool(status.get("running"))
+    if running:
+        status["ok"] = False
+        status["message"] = "Stop paper simulator first to change Telegram notify option."
+        status["telegram"] = _paper_telegram_snapshot()
+        return status
+
+    if enabled is None:
+        desired = bool(getattr(config.trading, "paper_telegram_notify_open", False))
+    else:
+        desired = bool(enabled)
+
+    _apply_runtime_paper_telegram_notify_open(enabled=desired)
+    _update_env_file(
+        _PUBLIC_ENV_PATH,
+        {
+            "PAPER_TELEGRAM_NOTIFY_OPEN": "true" if desired else "false",
+        },
+    )
+
+    status = build_paper_control_status()
+    status["ok"] = True
+    status["message"] = (
+        "Paper Telegram notify option saved. Uses token/chat configured in Live Telegram setup."
+    )
     return status
 
 
@@ -2194,6 +2405,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Silence routine HTTP request logs; keep explicit exception logs only.
         return
 
+    def handle(self) -> None:
+        """
+        Ignore routine client disconnect/reset errors to avoid noisy stack traces.
+        Typical case on Windows: WinError 10054 (client closed the socket).
+        """
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+            return
+        except OSError as e:
+            if int(getattr(e, "winerror", -1)) in {10053, 10054}:
+                return
+            raise
+
     def _send_json(self, payload: dict, code: int = 200):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -2317,7 +2542,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/control/paper":
-            self._send_json(PAPER_SIM_PROC.status(), code=200)
+            self._send_json(build_paper_control_status(), code=200)
             return
 
         if path == "/api/control/live":
@@ -2364,6 +2589,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_paper_reset(), code=200)
             except Exception as e:
                 logger.exception("paper reset error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/paper/telegram-config":
+            enabled_raw = payload.get("enabled")
+            enabled: Optional[bool]
+            if enabled_raw is None:
+                enabled = None
+            else:
+                enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                self._send_json(
+                    control_paper_telegram_configure(
+                        enabled=enabled,
+                    ),
+                    code=200,
+                )
+            except Exception as e:
+                logger.exception("paper telegram-config error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
@@ -2458,6 +2702,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 logger.exception("live telegram-test error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/seed-capital":
+            try:
+                val = float(payload.get("seed_capital", 0))
+                if val <= 0:
+                    self._send_json({"ok": False, "error": "seed_capital must be > 0"}, code=400)
+                    return
+                val_str = f"{val:.2f}"
+                _set_runtime_var("LIVE_EQUITY_SEED_CAPITAL", val_str)
+                _update_env_file(_PUBLIC_ENV_PATH, {"LIVE_EQUITY_SEED_CAPITAL": val_str})
+                self._send_json({"ok": True, "seed_capital": val})
+            except Exception as e:
+                logger.exception("seed-capital save error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

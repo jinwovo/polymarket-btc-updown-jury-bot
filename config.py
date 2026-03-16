@@ -3,13 +3,22 @@ Configuration for the Polymarket BTC Up/Down 5-minute trading bot.
 """
 import os
 from dataclasses import dataclass, field
+from env_paths import (
+    GENERATED_POLYMARKET_ENV_PATH,
+    PUBLIC_RUNTIME_ENV_PATH,
+    SECRETS_ENV_PATH,
+)
 
-# Try to load .env if python-dotenv is available
+# Try to load env files if python-dotenv is available.
+# Load order (override=False for all):
+# 1) tracked non-secret runtime knobs
+# 2) local secrets file
+# 3) auto-generated polymarket API creds
 try:
     from dotenv import load_dotenv
-    load_dotenv()
-    # Optional generated creds file (created from POLYMARKET_PRIVATE_KEY).
-    load_dotenv(".env.polymarket.generated", override=False)
+    load_dotenv(PUBLIC_RUNTIME_ENV_PATH, override=False)
+    load_dotenv(SECRETS_ENV_PATH, override=False)
+    load_dotenv(GENERATED_POLYMARKET_ENV_PATH, override=False)
 except ImportError:
     pass
 
@@ -19,7 +28,6 @@ class BinanceConfig:
     ws_url: str = "wss://stream.binance.com:9443/ws/btcusdt@trade"
     rest_url: str = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
     kline_url: str = "https://api.binance.com/api/v3/klines"
-    aggtrades_url: str = "https://api.binance.com/api/v3/aggTrades"
     price_buffer_seconds: int = 600  # keep last 10 min of tick prices
 
 
@@ -118,7 +126,7 @@ class TradingConfig:
     # Probability-first controls:
     # require model p_win >= max(MIN_WIN_PROBABILITY, profit_break_even_prob + WIN_PROB_MARGIN)
     min_win_probability: float = field(
-        default_factory=lambda: float(os.getenv("MIN_WIN_PROBABILITY", "0.53"))
+        default_factory=lambda: float(os.getenv("MIN_WIN_PROBABILITY", "0.508"))
     )
     win_prob_margin: float = field(
         default_factory=lambda: float(os.getenv("WIN_PROB_MARGIN", "0.005"))
@@ -175,12 +183,24 @@ class TradingConfig:
     up_regime_min_move_from_start_pct: float = field(
         default_factory=lambda: float(os.getenv("UP_REGIME_MIN_MOVE_FROM_START_PCT", "0.005"))
     )
+    # Coinflip weak-edge guard: block entries in the coin-flip price zone
+    # unless the model has a strong enough probability margin over implied.
+    coinflip_guard_lo: float = field(
+        default_factory=lambda: float(os.getenv("COINFLIP_GUARD_LO", "0.44"))
+    )
+    coinflip_guard_hi: float = field(
+        default_factory=lambda: float(os.getenv("COINFLIP_GUARD_HI", "0.56"))
+    )
+    coinflip_min_prob_margin: float = field(
+        default_factory=lambda: float(os.getenv("COINFLIP_MIN_PROB_MARGIN", "0.06"))
+    )
+    coinflip_min_confidence: float = field(
+        default_factory=lambda: float(os.getenv("COINFLIP_MIN_CONFIDENCE", "0.45"))
+    )
     # Jury: minimum same-direction votes required to trade
     jury_threshold: int = field(default_factory=lambda: int(os.getenv("JURY_THRESHOLD", "3")))
     # How many seconds before market close to stop entering
     cutoff_before_close_seconds: int = 60
-    # Kelly criterion fraction (fractional Kelly for safety)
-    kelly_fraction: float = 0.25
     # Live execution mode:
     # - LIMIT_GTC: limit order at/near current ask, wait up to timeout, then cancel remainder
     # - LIMIT_FAK: limit order with fill-and-kill semantics
@@ -250,6 +270,10 @@ class TradingConfig:
     live_telegram_notify_close: bool = field(
         default_factory=lambda: os.getenv("LIVE_TELEGRAM_NOTIFY_CLOSE", "true").lower() == "true"
     )
+    # Paper-sim Telegram notifications reuse live bot token/chat_id credentials.
+    paper_telegram_notify_open: bool = field(
+        default_factory=lambda: os.getenv("PAPER_TELEGRAM_NOTIFY_OPEN", "false").lower() == "true"
+    )
     # Attempt auto-claim/redeem on a rolling interval (best-effort).
     live_auto_claim_enabled: bool = field(
         default_factory=lambda: os.getenv("LIVE_AUTO_CLAIM_ENABLED", "false").lower() == "true"
@@ -292,7 +316,7 @@ class TradingConfig:
         default_factory=lambda: int(os.getenv("LIVE_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
     )
     live_early_exit_stop_loss_roi_pct: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+        default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-40.0"))
     )
     live_early_exit_stop_loss_min_hold_sec: float = field(
         default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC", "35"))
@@ -324,6 +348,205 @@ class TradingConfig:
     live_early_exit_timestop_max_roi_pct: float = field(
         default_factory=lambda: float(os.getenv("LIVE_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
     )
+    live_early_exit_trailing_stop_drop_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_TRAILING_STOP_DROP_PCT",
+                os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_DROP_PCT", "18.0"),
+            )
+        )
+    )
+    live_early_exit_trailing_stop_min_peak_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_TRAILING_STOP_MIN_PEAK_PCT",
+                os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_MIN_PEAK_PCT", "10.0"),
+            )
+        )
+    )
+    live_early_exit_trailing_stop_min_hold_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_TRAILING_STOP_MIN_HOLD_SEC",
+                os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_MIN_HOLD_SEC", "20"),
+            )
+        )
+    )
+    live_early_exit_profit_take_roi_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_PROFIT_TAKE_ROI_PCT",
+                os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_ROI_PCT", "65.0"),
+            )
+        )
+    )
+    live_early_exit_profit_take_min_hold_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_PROFIT_TAKE_MIN_HOLD_SEC",
+                os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_MIN_HOLD_SEC", "20"),
+            )
+        )
+    )
+    live_time_weighted_exit: bool = field(
+        default_factory=lambda: os.getenv(
+            "LIVE_TIME_WEIGHTED_EXIT",
+            os.getenv("PAPER_TIME_WEIGHTED_EXIT", "true"),
+        ).lower()
+        == "true"
+    )
+    live_early_exit_early_opposite_ask_extra: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_OPPOSITE_ASK_EXTRA",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_OPPOSITE_ASK_EXTRA", "0.10"),
+            )
+        )
+    )
+    live_early_exit_early_opposite_loss_extra_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_OPPOSITE_LOSS_EXTRA_PCT",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_OPPOSITE_LOSS_EXTRA_PCT", "18.0"),
+            )
+        )
+    )
+    live_early_exit_early_stop_loss_extra_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_STOP_LOSS_EXTRA_PCT",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_STOP_LOSS_EXTRA_PCT", "12.0"),
+            )
+        )
+    )
+    live_early_exit_early_trailing_drop_extra_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_TRAILING_DROP_EXTRA_PCT",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_TRAILING_DROP_EXTRA_PCT", "14.0"),
+            )
+        )
+    )
+    live_early_exit_early_trailing_peak_extra_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_TRAILING_PEAK_EXTRA_PCT",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_TRAILING_PEAK_EXTRA_PCT", "18.0"),
+            )
+        )
+    )
+    live_early_exit_early_profit_take_extra_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_EARLY_PROFIT_TAKE_EXTRA_PCT",
+                os.getenv("PAPER_EARLY_EXIT_EARLY_PROFIT_TAKE_EXTRA_PCT", "25.0"),
+            )
+        )
+    )
+    live_early_exit_strong_favor_sigma_mult: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_STRONG_FAVOR_SIGMA_MULT",
+                os.getenv("PAPER_EARLY_EXIT_STRONG_FAVOR_SIGMA_MULT", "0.90"),
+            )
+        )
+    )
+    live_early_exit_strong_favor_min_move_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_STRONG_FAVOR_MIN_MOVE_PCT",
+                os.getenv("PAPER_EARLY_EXIT_STRONG_FAVOR_MIN_MOVE_PCT", "0.020"),
+            )
+        )
+    )
+    live_early_exit_favor_hold_min_remaining_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_FAVOR_HOLD_MIN_REMAINING_SEC",
+                os.getenv("PAPER_EARLY_EXIT_FAVOR_HOLD_MIN_REMAINING_SEC", "60"),
+            )
+        )
+    )
+    live_early_exit_favor_hold_break_even_floor_roi_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_FAVOR_HOLD_BREAK_EVEN_FLOOR_ROI_PCT",
+                os.getenv("PAPER_EARLY_EXIT_FAVOR_HOLD_BREAK_EVEN_FLOOR_ROI_PCT", "-8.0"),
+            )
+        )
+    )
+    live_early_exit_opposite_late_only_remaining_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_OPPOSITE_LATE_ONLY_REMAINING_SEC",
+                os.getenv("PAPER_EARLY_EXIT_OPPOSITE_LATE_ONLY_REMAINING_SEC", "135"),
+            )
+        )
+    )
+    live_early_exit_opposite_severe_adverse_sigma_mult: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_SIGMA_MULT",
+                os.getenv("PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_SIGMA_MULT", "1.35"),
+            )
+        )
+    )
+    live_early_exit_opposite_severe_adverse_min_move_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_MIN_MOVE_PCT",
+                os.getenv("PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_MIN_MOVE_PCT", "0.060"),
+            )
+        )
+    )
+    live_early_exit_trailing_late_only_remaining_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_TRAILING_LATE_ONLY_REMAINING_SEC",
+                os.getenv("PAPER_EARLY_EXIT_TRAILING_LATE_ONLY_REMAINING_SEC", "140"),
+            )
+        )
+    )
+    live_early_exit_trailing_force_peak_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_TRAILING_FORCE_PEAK_PCT",
+                os.getenv("PAPER_EARLY_EXIT_TRAILING_FORCE_PEAK_PCT", "95"),
+            )
+        )
+    )
+    live_early_exit_break_even_late_only_remaining_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_BREAK_EVEN_LATE_ONLY_REMAINING_SEC",
+                os.getenv("PAPER_EARLY_EXIT_BREAK_EVEN_LATE_ONLY_REMAINING_SEC", "120"),
+            )
+        )
+    )
+    live_early_exit_break_even_force_peak_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT",
+                os.getenv("PAPER_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT", "90"),
+            )
+        )
+    )
+    live_early_exit_profit_take_late_only_remaining_sec: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC",
+                os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC", "115"),
+            )
+        )
+    )
+    live_early_exit_profit_take_force_roi_pct: float = field(
+        default_factory=lambda: float(
+            os.getenv(
+                "LIVE_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT",
+                os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT", "110"),
+            )
+        )
+    )
     # Optional profit-locking liquidation near expiry to reduce claim dependency.
     # If enabled, bot will attempt SELL FAK close when remaining time is short and bid is strong enough.
     live_pre_expiry_liquidation_enabled: bool = field(
@@ -354,7 +577,7 @@ class TradingConfig:
         default_factory=lambda: float(os.getenv("LIVE_MAX_OPPOSITE_IMPLIED", "0.62"))
     )
     live_min_entry_side_implied: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+        default_factory=lambda: float(os.getenv("LIVE_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
     )
     live_max_contra_gap: float = field(
         default_factory=lambda: float(os.getenv("LIVE_MAX_CONTRA_GAP", "0.030"))
@@ -441,9 +664,6 @@ class TradingConfig:
 
 @dataclass
 class RiskConfig:
-    daily_loss_limit: float = field(
-        default_factory=lambda: float(os.getenv("DAILY_LOSS_LIMIT", "50.0"))
-    )
     max_consecutive_losses: int = 5
     max_open_positions: int = 3
     cooldown_after_loss_streak_seconds: int = 300

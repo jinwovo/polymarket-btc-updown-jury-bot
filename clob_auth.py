@@ -15,12 +15,16 @@ from pathlib import Path
 from typing import Any
 
 from config import config
+from env_paths import (
+    GENERATED_POLYMARKET_ENV_PATH,
+    SECRETS_ENV_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
 _DERIVED_CREDS_CACHE: dict[str, Any] = {}
-_ENV_PATH = Path(".env")
-_GENERATED_ENV_PATH = Path(".env.polymarket.generated")
+_ENV_PATH = Path(SECRETS_ENV_PATH)
+_GENERATED_ENV_PATH = Path(GENERATED_POLYMARKET_ENV_PATH)
 _MANAGED_ENV_KEYS = (
     "POLYMARKET_PRIVATE_KEY",
     "POLYMARKET_FUNDER",
@@ -234,18 +238,19 @@ def builder_credentials_snapshot() -> dict[str, Any]:
             "api_passphrase": api_passphrase,
         }
 
-    env_data = _read_env_file(_ENV_PATH)
-    api_key = _clean(env_data.get("POLY_BUILDER_API_KEY"))
-    api_secret = _clean(env_data.get("POLY_BUILDER_API_SECRET"))
-    api_passphrase = _clean(env_data.get("POLY_BUILDER_API_PASSPHRASE"))
-    if api_key and api_secret and api_passphrase:
-        return {
-            "exists": True,
-            "source": "env_file",
-            "api_key": api_key,
-            "api_secret": api_secret,
-            "api_passphrase": api_passphrase,
-        }
+    for path, source in ((_ENV_PATH, "secrets_env_file"),):
+        env_data = _read_env_file(path)
+        api_key = _clean(env_data.get("POLY_BUILDER_API_KEY"))
+        api_secret = _clean(env_data.get("POLY_BUILDER_API_SECRET"))
+        api_passphrase = _clean(env_data.get("POLY_BUILDER_API_PASSPHRASE"))
+        if api_key and api_secret and api_passphrase:
+            return {
+                "exists": True,
+                "source": source,
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "api_passphrase": api_passphrase,
+            }
 
     return {
         "exists": False,
@@ -266,7 +271,7 @@ def apply_runtime_auth(
     persist_env: bool = True,
 ) -> dict[str, Any]:
     """
-    Apply auth inputs immediately in current process and optionally persist to .env.
+    Apply auth inputs immediately in current process and optionally persist to .env.secrets.
     """
     pk = _normalize_private_key(private_key)
     fd = _clean(funder)

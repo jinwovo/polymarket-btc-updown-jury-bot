@@ -40,7 +40,9 @@ export async function POST(request: NextRequest) {
           ? "/api/control/live/telegram-test"
       : action === "auth_config"
         ? "/api/control/live/auth-config"
-        : "/api/control/live/start";
+        : action === "seed_capital"
+          ? "/api/control/live/seed-capital"
+          : "/api/control/live/start";
 
   try {
     const response = await fetch(`${PY_API_BASE}${endpoint}`, {

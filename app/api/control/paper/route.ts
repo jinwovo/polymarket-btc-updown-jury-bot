@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
       ? "/api/control/paper/stop"
       : action === "reset"
         ? "/api/control/paper/reset"
+        : action === "telegram_config"
+          ? "/api/control/paper/telegram-config"
         : "/api/control/paper/start";
 
   try {

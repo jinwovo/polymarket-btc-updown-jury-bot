@@ -16,6 +16,7 @@ Usage:
 import argparse
 import logging
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -29,10 +30,15 @@ from db_config import (
     fetch_all_dicts,
     fetch_one,
     fetch_one_dict,
-    is_sqlite_backend,
 )
+from entry_parity import (
+    ParityAdaptiveConfig,
+    ParityAdaptiveState,
+    compute_parity_thresholds,
+)
+from exit_policy import ExitPolicyConfig, ExitPolicyInput, evaluate_exit_policy
+from telegram_notifier import send_telegram_message
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
-
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -40,31 +46,306 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("paper_sim")
+_PAPER_TELEGRAM_WARNED_NOT_READY = False
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+# --------------- Data Collector Health Check ---------------
+_DATA_STALE_WARN_INTERVAL = 120  # seconds between repeated warnings
+_last_stale_warn_ts: float = 0.0
+_data_collector_pid: int | None = None
+
+PAPER_AUTO_START_COLLECTOR = os.getenv("PAPER_AUTO_START_COLLECTOR", "true").lower() == "true"
+PAPER_DATA_MAX_AGE_SEC = float(os.getenv("PAPER_DATA_MAX_AGE_SEC", "120"))
+
+
+def _check_data_freshness(conn) -> bool:
+    """Return True if data is fresh enough to trade. Warn loudly + auto-start collector if stale."""
+    global _last_stale_warn_ts, _data_collector_pid
+    now = time.time()
+    try:
+        row = fetch_one(conn, "SELECT MAX(ts) FROM btc_ticks")
+        if not row or row[0] is None:
+            _warn_stale(now, "No btc_ticks data at all!")
+            _maybe_start_collector()
+            return False
+        latest = float(row[0])
+        age = now - latest
+        if age > PAPER_DATA_MAX_AGE_SEC:
+            _warn_stale(now, f"btc_ticks data is {age:.0f}s old (max {PAPER_DATA_MAX_AGE_SEC:.0f}s)")
+            _maybe_start_collector()
+            return False
+        return True
+    except Exception as e:
+        logger.error("Data freshness check error: %s", e)
+        return False
+
+
+def _warn_stale(now: float, msg: str):
+    global _last_stale_warn_ts
+    if now - _last_stale_warn_ts >= _DATA_STALE_WARN_INTERVAL:
+        logger.warning("DATA STALE: %s — no trading possible until data_collector feeds fresh data!", msg)
+        _last_stale_warn_ts = now
+
+
+def _maybe_start_collector():
+    """Auto-start data_collector.py if not already running."""
+    global _data_collector_pid
+    if not PAPER_AUTO_START_COLLECTOR:
+        return
+    # Check if our previously launched collector is still alive
+    if _data_collector_pid is not None:
+        try:
+            os.kill(_data_collector_pid, 0)  # signal 0 = check existence
+            return  # still running
+        except OSError:
+            _data_collector_pid = None  # dead, try again
+
+    try:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_collector.py")
+        proc = subprocess.Popen(
+            [sys.executable, script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _data_collector_pid = proc.pid
+        logger.warning("Auto-started data_collector.py (PID %d)", proc.pid)
+    except Exception as e:
+        logger.error("Failed to auto-start data_collector: %s", e)
+
+
+def _paper_telegram_ready() -> tuple[bool, str, str]:
+    global _PAPER_TELEGRAM_WARNED_NOT_READY
+    enabled = bool(getattr(config.trading, "paper_telegram_notify_open", False))
+    token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+    chat_id = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+    ready = bool(enabled and token and chat_id)
+    if enabled and not ready and not _PAPER_TELEGRAM_WARNED_NOT_READY:
+        _PAPER_TELEGRAM_WARNED_NOT_READY = True
+        logger.warning(
+            "Paper Telegram notify enabled, but live Telegram token/chat_id is missing."
+        )
+    if ready:
+        _PAPER_TELEGRAM_WARNED_NOT_READY = False
+    return ready, token, chat_id
+
+
+def _format_paper_open_telegram(
+    *,
+    window_slug: str,
+    window_start: int,
+    direction: str,
+    stake: float,
+    entry_price: float,
+    up_ask: float | None,
+    down_ask: float | None,
+    btc_start: float | None,
+    btc_now: float | None,
+    confidence: float,
+    reason: str,
+) -> str:
+    to_win_total = (stake / entry_price) if (stake > 0.0 and 0.0 < entry_price < 1.0) else 0.0
+    expected_pnl = max(0.0, to_win_total - stake)
+    now_utc = datetime.now(timezone.utc).isoformat()
+    reason_text = str(reason or "").strip().replace("\n", " ")
+    if len(reason_text) > 260:
+        reason_text = f"{reason_text[:257]}..."
+    return (
+        "[PAPER OPEN]\n"
+        f"time(UTC): {now_utc}\n"
+        f"side: {direction}\n"
+        f"slug: {window_slug}\n"
+        f"window_start: {window_start}\n"
+        f"stake: ${float(stake):,.2f}\n"
+        f"entry odds: {float(entry_price):.3f}\n"
+        f"Polymarket ask (UP/DOWN): "
+        f"{f'{float(up_ask):.3f}' if up_ask is not None else '--'} / "
+        f"{f'{float(down_ask):.3f}' if down_ask is not None else '--'}\n"
+        f"5m start price: {f'{float(btc_start):,.2f}' if btc_start is not None else '--'}\n"
+        f"current BTC: {f'{float(btc_now):,.2f}' if btc_now is not None else '--'}\n"
+        f"to-win total: ${to_win_total:,.2f}\n"
+        f"expected pnl: ${expected_pnl:,.2f}\n"
+        f"confidence: {float(confidence):.3f}\n"
+        f"reason: {reason_text or '--'}"
+    )
+
+
+def _send_paper_open_telegram(
+    *,
+    window_slug: str,
+    window_start: int,
+    direction: str,
+    stake: float,
+    entry_price: float,
+    up_ask: float | None,
+    down_ask: float | None,
+    btc_start: float | None,
+    btc_now: float | None,
+    confidence: float,
+    reason: str,
+):
+    ready, token, chat_id = _paper_telegram_ready()
+    if not ready:
+        return
+    try:
+        text = _format_paper_open_telegram(
+            window_slug=window_slug,
+            window_start=window_start,
+            direction=direction,
+            stake=stake,
+            entry_price=entry_price,
+            up_ask=up_ask,
+            down_ask=down_ask,
+            btc_start=btc_start,
+            btc_now=btc_now,
+            confidence=confidence,
+            reason=reason,
+        )
+        result = send_telegram_message(
+            token=token,
+            chat_id=chat_id,
+            text=text,
+            timeout=8.0,
+            auto_resolve_chat=False,
+        )
+        if not bool(result.get("ok")):
+            logger.warning(
+                "Paper Telegram send failed: %s",
+                result.get("error") or "unknown",
+            )
+    except Exception as e:
+        logger.warning("Paper Telegram send exception: %s", e)
+
+
+def _format_paper_close_telegram(
+    *,
+    close_type: str,
+    window_slug: str,
+    window_start: int,
+    direction: str,
+    stake: float,
+    entry_price: float,
+    btc_start: float | None,
+    btc_end: float | None,
+    btc_exit: float | None,
+    outcome: str | None,
+    up_ask: float | None,
+    down_ask: float | None,
+    exit_price: float | None,
+    pnl: float,
+    roi_pct: float,
+    reason: str,
+) -> str:
+    now_utc = datetime.now(timezone.utc).isoformat()
+    status = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "FLAT")
+    reason_text = str(reason or "").strip().replace("\n", " ")
+    if len(reason_text) > 320:
+        reason_text = f"{reason_text[:317]}..."
+    settle_price = 1.0 if outcome and str(outcome).upper() == str(direction).upper() else 0.0
+    return (
+        f"[PAPER CLOSE:{close_type.upper()}] {status}\n"
+        f"time(UTC): {now_utc}\n"
+        f"side: {direction}\n"
+        f"slug: {window_slug}\n"
+        f"window_start: {window_start}\n"
+        f"stake: ${float(stake):,.2f}\n"
+        f"entry odds: {float(entry_price):.3f}\n"
+        f"exit odds: {f'{float(exit_price):.3f}' if exit_price is not None else '--'}\n"
+        f"settlement odds: {f'{float(settle_price):.3f}' if outcome else '--'}\n"
+        f"Polymarket ask(close UP/DOWN): "
+        f"{f'{float(up_ask):.3f}' if up_ask is not None else '--'} / "
+        f"{f'{float(down_ask):.3f}' if down_ask is not None else '--'}\n"
+        f"5m start/end(Binance): "
+        f"{f'{float(btc_start):,.2f}' if btc_start is not None else '--'} / "
+        f"{f'{float(btc_end):,.2f}' if btc_end is not None else '--'}\n"
+        f"BTC at exit: {f'{float(btc_exit):,.2f}' if btc_exit is not None else '--'}\n"
+        f"outcome: {str(outcome or '--').upper()}\n"
+        f"realized pnl: ${float(pnl):,.2f} ({float(roi_pct):+.2f}%)\n"
+        f"reason: {reason_text or '--'}"
+    )
+
+
+def _send_paper_close_telegram(
+    *,
+    close_type: str,
+    window_slug: str,
+    window_start: int,
+    direction: str,
+    stake: float,
+    entry_price: float,
+    btc_start: float | None,
+    btc_end: float | None,
+    btc_exit: float | None,
+    outcome: str | None,
+    up_ask: float | None,
+    down_ask: float | None,
+    exit_price: float | None,
+    pnl: float,
+    roi_pct: float,
+    reason: str,
+):
+    ready, token, chat_id = _paper_telegram_ready()
+    if not ready:
+        return
+    try:
+        text = _format_paper_close_telegram(
+            close_type=close_type,
+            window_slug=window_slug,
+            window_start=window_start,
+            direction=direction,
+            stake=stake,
+            entry_price=entry_price,
+            btc_start=btc_start,
+            btc_end=btc_end,
+            btc_exit=btc_exit,
+            outcome=outcome,
+            up_ask=up_ask,
+            down_ask=down_ask,
+            exit_price=exit_price,
+            pnl=pnl,
+            roi_pct=roi_pct,
+            reason=reason,
+        )
+        result = send_telegram_message(
+            token=token,
+            chat_id=chat_id,
+            text=text,
+            timeout=8.0,
+            auto_resolve_chat=False,
+        )
+        if not bool(result.get("ok")):
+            logger.warning(
+                "Paper Telegram close send failed: %s",
+                result.get("error") or "unknown",
+            )
+    except Exception as e:
+        logger.warning("Paper Telegram close send exception: %s", e)
+
+
 PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
-PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.040"))
-PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
-PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.35"))
-PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.50"))
+PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.015"))
+PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.50"))
+PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.22"))
+PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.52"))
 PAPER_MIN_BET = float(os.getenv("PAPER_MIN_BET", "25"))
-PAPER_MAX_BET_FRAC = float(os.getenv("PAPER_MAX_BET_FRAC", "0.10"))
-PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "60"))
-PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "255"))
-PAPER_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "45"))
-PAPER_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "150"))
-PAPER_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "24"))
+PAPER_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
+PAPER_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "270"))
+PAPER_DOWN_ENTRY_END_SEC = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
+PAPER_DOWN_MIN_ENTRY_PRICE = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.42"))
+PAPER_MIN_SECONDS_REMAINING = float(os.getenv("PAPER_MIN_SECONDS_REMAINING", "30"))
+PAPER_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "100"))
+PAPER_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "16"))
 PAPER_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
-PAPER_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.0045"))
+PAPER_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
+PAPER_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.030"))
 # Dynamic minimum trade gap:
 # - base gap is permissive enough to allow a strong signal in the next 5m window
 # - adaptive gap expands toward target gap when performance deteriorates
-PAPER_BASE_TRADE_GAP_SEC = float(os.getenv("PAPER_BASE_TRADE_GAP_SEC", "300"))
-PAPER_TARGET_TRADE_GAP_SEC = float(os.getenv("PAPER_TARGET_TRADE_GAP_SEC", "1200"))
+PAPER_BASE_TRADE_GAP_SEC = float(os.getenv("PAPER_BASE_TRADE_GAP_SEC", "120"))
+PAPER_TARGET_TRADE_GAP_SEC = float(os.getenv("PAPER_TARGET_TRADE_GAP_SEC", "600"))
 PAPER_MAX_DRAWDOWN_STOP_PCT = float(os.getenv("PAPER_MAX_DRAWDOWN_STOP_PCT", "0.20"))
 PAPER_RECENT_PERF_WINDOW = int(os.getenv("PAPER_RECENT_PERF_WINDOW", "8"))
 PAPER_MIN_RECENT_WIN_RATE = float(os.getenv("PAPER_MIN_RECENT_WIN_RATE", "0.55"))
@@ -79,16 +360,20 @@ PAPER_AGGRESSIVE_MAX_BET_FRAC = float(os.getenv("PAPER_AGGRESSIVE_MAX_BET_FRAC",
 PAPER_AGGRESSIVE_KELLY_FRAC = float(os.getenv("PAPER_AGGRESSIVE_KELLY_FRAC", "0.50"))
 PAPER_AGGRESSIVE_LOSS_DEBOOST = float(os.getenv("PAPER_AGGRESSIVE_LOSS_DEBOOST", "0.82"))
 # Anti-freeze controls: gradually relax strictness when no entry happens for long.
-PAPER_STALE_RELAX_START_SEC = float(os.getenv("PAPER_STALE_RELAX_START_SEC", "3600"))
-PAPER_STALE_RELAX_FULL_SEC = float(os.getenv("PAPER_STALE_RELAX_FULL_SEC", "14400"))
-PAPER_STALE_RELAX_MAX = float(os.getenv("PAPER_STALE_RELAX_MAX", "0.60"))
+PAPER_STALE_RELAX_START_SEC = float(os.getenv("PAPER_STALE_RELAX_START_SEC", "2400"))
+PAPER_STALE_RELAX_FULL_SEC = float(os.getenv("PAPER_STALE_RELAX_FULL_SEC", "9000"))
+PAPER_STALE_RELAX_MAX = float(os.getenv("PAPER_STALE_RELAX_MAX", "0.50"))
 PAPER_STRICTNESS_UNANIMOUS_AT = float(os.getenv("PAPER_STRICTNESS_UNANIMOUS_AT", "0.90"))
 PAPER_ADAPTIVE_MAX_ASK_FLOOR = float(os.getenv("PAPER_ADAPTIVE_MAX_ASK_FLOOR", "0.47"))
 PAPER_PERF_PAUSE_SEC = float(os.getenv("PAPER_PERF_PAUSE_SEC", "1800"))
 
+# Lag probability edge: model_prob must exceed normalized market prob by this margin.
+# Matched to backtest's live_min_lag_prob_edge for entry quality.
+PAPER_MIN_LAG_PROB_EDGE = float(os.getenv("PAPER_MIN_LAG_PROB_EDGE", "0.020"))
+
 # Direction consistency filter (market-implied probability alignment).
 PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
-PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
 # If opposite ask is materially higher than selected side ask, skip unless model/confidence are very strong.
 PAPER_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
 PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
@@ -97,8 +382,14 @@ PAPER_CONTRA_OVERRIDE_MIN_CONF = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF
 PAPER_TREND_ALIGN_LOOKBACK_SEC = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
 PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
 
+# Macro trend filter: block counter-trend entries when BTC has a clear
+# multi-window directional trend.  Lookback crosses window boundaries.
+PAPER_MACRO_TREND_LOOKBACK_SEC = float(os.getenv("PAPER_MACRO_TREND_LOOKBACK_SEC", "900"))
+PAPER_MACRO_TREND_BLOCK_PCT = float(os.getenv("PAPER_MACRO_TREND_BLOCK_PCT", "0.040"))
+PAPER_MACRO_TREND_EXTRA_EV = float(os.getenv("PAPER_MACRO_TREND_EXTRA_EV", "0.04"))
+
 # DOWN-side hardening when BTC is above the window start.
-PAPER_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.015"))
+PAPER_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
 PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
 PAPER_DOWN_ABOVE_START_EV_PENALTY = float(os.getenv("PAPER_DOWN_ABOVE_START_EV_PENALTY", "0.020"))
 
@@ -110,7 +401,7 @@ PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT = float(
     os.getenv("PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT", "-20.0")
 )
 PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS = int(os.getenv("PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS", "3"))
-PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-60.0"))
+PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT", "-85.0"))
 PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC", "35"))
 PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF = float(
     os.getenv("PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF", "0.75")
@@ -133,66 +424,153 @@ PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT = float(
 PAPER_EARLY_EXIT_MAX_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_MAX_HOLD_SEC", "220"))
 PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC", "20"))
 PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT", "-8.0"))
+# Trailing stop: exit when ROI drops by this many % from peak ROI.
+# Set to 999 via env to effectively disable (binary market hold-to-expiry strategy).
+PAPER_EARLY_EXIT_TRAILING_STOP_DROP_PCT = float(os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_DROP_PCT", "999"))
+PAPER_EARLY_EXIT_TRAILING_STOP_MIN_PEAK_PCT = float(os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_MIN_PEAK_PCT", "10.0"))
+PAPER_EARLY_EXIT_TRAILING_STOP_MIN_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_TRAILING_STOP_MIN_HOLD_SEC", "20"))
+# Profit take: exit immediately when ROI exceeds threshold.
+PAPER_EARLY_EXIT_PROFIT_TAKE_ROI_PCT = float(os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_ROI_PCT", "65.0"))
+PAPER_EARLY_EXIT_PROFIT_TAKE_MIN_HOLD_SEC = float(os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_MIN_HOLD_SEC", "20"))
+PAPER_TIME_WEIGHTED_EXIT = os.getenv("PAPER_TIME_WEIGHTED_EXIT", "true").lower() == "true"
+PAPER_EARLY_EXIT_EARLY_OPPOSITE_ASK_EXTRA = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_OPPOSITE_ASK_EXTRA", "0.10")
+)
+PAPER_EARLY_EXIT_EARLY_OPPOSITE_LOSS_EXTRA_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_OPPOSITE_LOSS_EXTRA_PCT", "18.0")
+)
+PAPER_EARLY_EXIT_EARLY_STOP_LOSS_EXTRA_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_STOP_LOSS_EXTRA_PCT", "12.0")
+)
+PAPER_EARLY_EXIT_EARLY_TRAILING_DROP_EXTRA_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_TRAILING_DROP_EXTRA_PCT", "14.0")
+)
+PAPER_EARLY_EXIT_EARLY_TRAILING_PEAK_EXTRA_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_TRAILING_PEAK_EXTRA_PCT", "18.0")
+)
+PAPER_EARLY_EXIT_EARLY_PROFIT_TAKE_EXTRA_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_EARLY_PROFIT_TAKE_EXTRA_PCT", "25.0")
+)
+PAPER_EARLY_EXIT_STRONG_FAVOR_SIGMA_MULT = float(
+    os.getenv("PAPER_EARLY_EXIT_STRONG_FAVOR_SIGMA_MULT", "0.90")
+)
+PAPER_EARLY_EXIT_STRONG_FAVOR_MIN_MOVE_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_STRONG_FAVOR_MIN_MOVE_PCT", "0.020")
+)
+PAPER_EARLY_EXIT_FAVOR_HOLD_MIN_REMAINING_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_FAVOR_HOLD_MIN_REMAINING_SEC", "60")
+)
+PAPER_EARLY_EXIT_FAVOR_HOLD_BREAK_EVEN_FLOOR_ROI_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_FAVOR_HOLD_BREAK_EVEN_FLOOR_ROI_PCT", "-8.0")
+)
+PAPER_EARLY_EXIT_OPPOSITE_LATE_ONLY_REMAINING_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_OPPOSITE_LATE_ONLY_REMAINING_SEC", "135")
+)
+PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_SIGMA_MULT = float(
+    os.getenv("PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_SIGMA_MULT", "1.35")
+)
+PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_MIN_MOVE_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_MIN_MOVE_PCT", "0.060")
+)
+PAPER_EARLY_EXIT_TRAILING_LATE_ONLY_REMAINING_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_TRAILING_LATE_ONLY_REMAINING_SEC", "140")
+)
+PAPER_EARLY_EXIT_TRAILING_FORCE_PEAK_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_TRAILING_FORCE_PEAK_PCT", "95")
+)
+PAPER_EARLY_EXIT_BREAK_EVEN_LATE_ONLY_REMAINING_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_BREAK_EVEN_LATE_ONLY_REMAINING_SEC", "120")
+)
+PAPER_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT", "90")
+)
+PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC", "115")
+)
+PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT = float(
+    os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT", "110")
+)
 
 # In-memory debounce for noisy opposite-probability spikes.
 _EARLY_EXIT_OPPOSITE_HITS: dict[int, int] = {}
+# Track peak ROI per trade for trailing stop.
+_PEAK_ROI_PER_TRADE: dict[int, float] = {}
+
+
+def _paper_exit_policy_config() -> ExitPolicyConfig:
+    return ExitPolicyConfig(
+        enabled=bool(PAPER_ENABLE_EARLY_EXIT),
+        min_elapsed_sec=float(PAPER_EARLY_EXIT_MIN_ELAPSED_SEC),
+        opposite_ask=float(PAPER_EARLY_EXIT_OPPOSITE_ASK),
+        opposite_min_loss_roi_pct=float(PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT),
+        opposite_confirm_polls=int(PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS),
+        stop_loss_roi_pct=float(PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT),
+        stop_loss_min_hold_sec=float(PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC),
+        stop_loss_high_conf_cutoff=float(PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF),
+        stop_loss_high_conf_min_hold_sec=float(PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC),
+        stop_loss_low_conf_cutoff=float(PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF),
+        stop_loss_low_conf_relax_pct=float(PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT),
+        stop_loss_require_btc_adverse=bool(PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE),
+        stop_loss_btc_adverse_pct=float(PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT),
+        max_hold_sec=float(PAPER_EARLY_EXIT_MAX_HOLD_SEC),
+        timestop_max_remain_sec=float(PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC),
+        timestop_max_roi_pct=float(PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT),
+        trailing_stop_drop_pct=float(PAPER_EARLY_EXIT_TRAILING_STOP_DROP_PCT),
+        trailing_stop_min_peak_pct=float(PAPER_EARLY_EXIT_TRAILING_STOP_MIN_PEAK_PCT),
+        trailing_stop_min_hold_sec=float(PAPER_EARLY_EXIT_TRAILING_STOP_MIN_HOLD_SEC),
+        profit_take_roi_pct=float(PAPER_EARLY_EXIT_PROFIT_TAKE_ROI_PCT),
+        profit_take_min_hold_sec=float(PAPER_EARLY_EXIT_PROFIT_TAKE_MIN_HOLD_SEC),
+        time_weight_enabled=bool(PAPER_TIME_WEIGHTED_EXIT),
+        early_opposite_ask_extra=float(PAPER_EARLY_EXIT_EARLY_OPPOSITE_ASK_EXTRA),
+        early_opposite_loss_extra_pct=float(PAPER_EARLY_EXIT_EARLY_OPPOSITE_LOSS_EXTRA_PCT),
+        early_stop_loss_extra_pct=float(PAPER_EARLY_EXIT_EARLY_STOP_LOSS_EXTRA_PCT),
+        early_trailing_drop_extra_pct=float(PAPER_EARLY_EXIT_EARLY_TRAILING_DROP_EXTRA_PCT),
+        early_trailing_peak_extra_pct=float(PAPER_EARLY_EXIT_EARLY_TRAILING_PEAK_EXTRA_PCT),
+        early_profit_take_extra_pct=float(PAPER_EARLY_EXIT_EARLY_PROFIT_TAKE_EXTRA_PCT),
+        strong_favor_sigma_mult=float(PAPER_EARLY_EXIT_STRONG_FAVOR_SIGMA_MULT),
+        strong_favor_min_move_pct=float(PAPER_EARLY_EXIT_STRONG_FAVOR_MIN_MOVE_PCT),
+        favor_hold_min_remaining_sec=float(PAPER_EARLY_EXIT_FAVOR_HOLD_MIN_REMAINING_SEC),
+        favor_hold_break_even_floor_roi_pct=float(PAPER_EARLY_EXIT_FAVOR_HOLD_BREAK_EVEN_FLOOR_ROI_PCT),
+        opposite_late_only_remaining_sec=float(PAPER_EARLY_EXIT_OPPOSITE_LATE_ONLY_REMAINING_SEC),
+        opposite_severe_adverse_sigma_mult=float(PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_SIGMA_MULT),
+        opposite_severe_adverse_min_move_pct=float(PAPER_EARLY_EXIT_OPPOSITE_SEVERE_ADVERSE_MIN_MOVE_PCT),
+        trailing_late_only_remaining_sec=float(PAPER_EARLY_EXIT_TRAILING_LATE_ONLY_REMAINING_SEC),
+        trailing_force_peak_pct=float(PAPER_EARLY_EXIT_TRAILING_FORCE_PEAK_PCT),
+        break_even_late_only_remaining_sec=float(PAPER_EARLY_EXIT_BREAK_EVEN_LATE_ONLY_REMAINING_SEC),
+        break_even_force_peak_pct=float(PAPER_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT),
+        profit_take_late_only_remaining_sec=float(PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC),
+        profit_take_force_roi_pct=float(PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT),
+    )
 
 
 def init_paper_table(conn):
-    if is_sqlite_backend():
-        sql = """
-        CREATE TABLE IF NOT EXISTS paper_trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            window_start INTEGER NOT NULL UNIQUE,
-            window_end INTEGER NOT NULL,
-            direction TEXT NOT NULL,
-            stake REAL NOT NULL,
-            entry_price REAL NOT NULL,
-            payout_multiple REAL NOT NULL,
-            shares REAL NOT NULL,
-            potential_win_pnl REAL NOT NULL,
-            signal_confidence REAL NOT NULL,
-            signal_reason TEXT,
-            close_reason TEXT,
-            initial_capital REAL,
-            risk_fraction REAL,
-            status TEXT NOT NULL DEFAULT 'OPEN',
-            opened_at REAL NOT NULL,
-            closed_at REAL,
-            actual_outcome TEXT,
-            won INTEGER,
-            pnl REAL,
-            roi_pct REAL
-        )
-        """
-    else:
-        sql = """
-        CREATE TABLE IF NOT EXISTS paper_trades (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            window_start BIGINT NOT NULL UNIQUE,
-            window_end BIGINT NOT NULL,
-            direction VARCHAR(16) NOT NULL,
-            stake DOUBLE NOT NULL,
-            entry_price DOUBLE NOT NULL,
-            payout_multiple DOUBLE NOT NULL,
-            shares DOUBLE NOT NULL,
-            potential_win_pnl DOUBLE NOT NULL,
-            signal_confidence DOUBLE NOT NULL,
-            signal_reason TEXT NULL,
-            close_reason TEXT NULL,
-            initial_capital DOUBLE NULL,
-            risk_fraction DOUBLE NULL,
-            status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
-            opened_at DOUBLE NOT NULL,
-            closed_at DOUBLE NULL,
-            actual_outcome VARCHAR(16) NULL,
-            won TINYINT NULL,
-            pnl DOUBLE NULL,
-            roi_pct DOUBLE NULL,
-            INDEX idx_paper_status (status),
-            INDEX idx_paper_closed (closed_at)
-        ) ENGINE=InnoDB
-        """
+    sql = """
+    CREATE TABLE IF NOT EXISTS paper_trades (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        window_start BIGINT NOT NULL UNIQUE,
+        window_end BIGINT NOT NULL,
+        direction VARCHAR(16) NOT NULL,
+        stake DOUBLE NOT NULL,
+        entry_price DOUBLE NOT NULL,
+        payout_multiple DOUBLE NOT NULL,
+        shares DOUBLE NOT NULL,
+        potential_win_pnl DOUBLE NOT NULL,
+        signal_confidence DOUBLE NOT NULL,
+        signal_reason TEXT NULL,
+        close_reason TEXT NULL,
+        initial_capital DOUBLE NULL,
+        risk_fraction DOUBLE NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+        opened_at DOUBLE NOT NULL,
+        closed_at DOUBLE NULL,
+        actual_outcome VARCHAR(16) NULL,
+        won TINYINT NULL,
+        pnl DOUBLE NULL,
+        roi_pct DOUBLE NULL,
+        INDEX idx_paper_status (status),
+        INDEX idx_paper_closed (closed_at)
+    ) ENGINE=InnoDB
+    """
     execute_write(conn, sql)
     # Lightweight schema migration for existing deployments.
     try:
@@ -207,17 +585,21 @@ def init_paper_table(conn):
         execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN close_reason TEXT")
     except Exception:
         pass
+    try:
+        execute_write(conn, "ALTER TABLE paper_trades ADD COLUMN archived_at REAL")
+    except Exception:
+        pass
     conn.commit()
 
 
 def _equity_snapshot(conn, initial_capital: float) -> tuple[float, float]:
     closed_pnl_row = fetch_one(
         conn,
-        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status='CLOSED'",
+        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status='CLOSED' AND archived_at IS NULL",
     )
     open_notional_row = fetch_one(
         conn,
-        "SELECT COALESCE(SUM(stake), 0) FROM paper_trades WHERE status='OPEN'",
+        "SELECT COALESCE(SUM(stake), 0) FROM paper_trades WHERE status='OPEN' AND archived_at IS NULL",
     )
     closed_pnl = float(closed_pnl_row[0] or 0.0) if closed_pnl_row else 0.0
     open_notional = float(open_notional_row[0] or 0.0) if open_notional_row else 0.0
@@ -234,43 +616,30 @@ def _compute_bet_size(
     entry_price: float | None = None,
     model_prob: float | None = None,
     confidence: float | None = None,
+    max_edge: float | None = None,
 ) -> float:
+    """Adaptive bet sizing: 5-15% of equity based on conviction.
+    Matched to RiskManager.compute_bet_size — uses max_edge for conviction,
+    caps at 20% of equity to prevent runaway bet sizes."""
     if available_equity <= 0:
         return 0.0
-    rf = _clamp(risk_fraction, 0.01, 1.0)
-    edge_scale = _clamp(expected_roi / 0.10, 0.4, 1.4)
-    target_frac = min(PAPER_MAX_BET_FRAC, rf * edge_scale)
-    hard_cap_frac = PAPER_MAX_BET_FRAC
 
-    if PAPER_PROFIT_MODE == "aggressive":
-        fee_rate = max(0.0, float(config.trading.fee_rate))
-        p = _clamp(float(model_prob or 0.0), 0.0, 1.0)
-        px = float(entry_price or 0.0)
-        gain = ((1.0 / px) - 1.0 - fee_rate) if 0.0 < px < 1.0 else 0.0
-        loss = 1.0 + fee_rate
-        kelly_frac = 0.0
-        if gain > 1e-9:
-            # Generalized Kelly for +gain / -loss payoff.
-            kelly_frac = ((p * gain) - ((1.0 - p) * loss)) / (gain * loss)
-            kelly_frac = _clamp(kelly_frac, 0.0, 1.0)
+    # Use max_edge (jury edge) for conviction, matching backtest's risk_mgr
+    edge = _clamp(float(max_edge or expected_roi), 0.0, 0.30)
+    conf = _clamp(float(confidence or 0.5), 0.0, 1.0)
+    conviction = edge * conf
+    # Normalize: 0.02 = weak, 0.12+ = very strong
+    conv_norm = _clamp((conviction - 0.02) / 0.10, 0.0, 1.0)
 
-        conf = _clamp(float(confidence or 0.0), 0.0, 1.0)
-        conf_boost = 1.0 + 0.50 * _clamp((conf - 0.50) / 0.50, 0.0, 1.0)
-        growth_frac = _clamp(PAPER_AGGRESSIVE_KELLY_FRAC, 0.0, 1.0) * kelly_frac * conf_boost
-        growth_cap = _clamp(PAPER_AGGRESSIVE_MAX_BET_FRAC, PAPER_MAX_BET_FRAC, 0.40)
-        growth_frac = min(growth_cap, growth_frac)
+    # Lerp 5%-15% of equity
+    BET_PCT_MIN = 0.05
+    BET_PCT_MAX = 0.15
+    bet_pct = BET_PCT_MIN + conv_norm * (BET_PCT_MAX - BET_PCT_MIN)
+    sized = available_equity * bet_pct
 
-        if expected_roi > 0.0:
-            roi_frac = min(growth_cap, rf * _clamp(expected_roi / 0.08, 0.5, 2.0))
-            growth_frac = max(growth_frac, roi_frac)
-
-        target_frac = max(target_frac, growth_frac)
-        hard_cap_frac = max(PAPER_MAX_BET_FRAC, growth_cap)
-
-    raw_size = available_equity * target_frac
-    hard_cap = max(PAPER_MIN_BET, initial_capital * hard_cap_frac)
-    sized = min(raw_size, available_equity, hard_cap)
-    return round(max(0.0, sized), 2)
+    # Cap at 20% of equity (matched to backtest ceiling)
+    max_bet = available_equity * 0.20
+    return round(max(PAPER_MIN_BET, min(sized, max_bet)), 2)
 
 
 def _recent_risk_state(conn) -> tuple[int, float]:
@@ -278,7 +647,7 @@ def _recent_risk_state(conn) -> tuple[int, float]:
         conn,
         """SELECT pnl
            FROM paper_trades
-           WHERE status='CLOSED'
+           WHERE status='CLOSED' AND archived_at IS NULL
            ORDER BY
              CASE
                WHEN closed_at IS NOT NULL THEN closed_at
@@ -309,7 +678,7 @@ def _recent_performance(conn, limit: int) -> tuple[int, float, float]:
         conn,
         """SELECT won, pnl
            FROM paper_trades
-           WHERE status='CLOSED'
+           WHERE status='CLOSED' AND archived_at IS NULL
            ORDER BY
              CASE
                WHEN closed_at IS NOT NULL THEN closed_at
@@ -328,7 +697,7 @@ def _recent_performance(conn, limit: int) -> tuple[int, float, float]:
 
 
 def _last_opened_at(conn) -> float:
-    row = fetch_one(conn, "SELECT MAX(opened_at) FROM paper_trades")
+    row = fetch_one(conn, "SELECT MAX(opened_at) FROM paper_trades WHERE archived_at IS NULL")
     if not row or row[0] is None:
         return 0.0
     try:
@@ -347,7 +716,7 @@ def _last_closed_at(conn) -> float:
                END
              )
            FROM paper_trades
-           WHERE status='CLOSED'""",
+           WHERE status='CLOSED' AND archived_at IS NULL""",
     )
     if not row or row[0] is None:
         return 0.0
@@ -374,7 +743,7 @@ def _equity_drawdown_pct(conn, initial_capital: float) -> float:
         conn,
         """SELECT pnl
            FROM paper_trades
-           WHERE status='CLOSED'
+           WHERE status='CLOSED' AND archived_at IS NULL
            ORDER BY
              CASE
                WHEN closed_at IS NOT NULL THEN closed_at
@@ -421,6 +790,44 @@ def _window_sample_counts(conn, window_start: int, now_ts: float) -> tuple[int, 
 
 def _recent_move_pct(conn, window_start: int, now_ts: float, lookback_sec: float) -> float | None:
     lo_ts = max(float(window_start), float(now_ts) - max(1.0, float(lookback_sec)))
+    hi_ts = float(now_ts)
+    first_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts ASC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    last_row = fetch_one(
+        conn,
+        """SELECT price
+           FROM btc_ticks
+           WHERE ts >= ? AND ts <= ?
+           ORDER BY ts DESC
+           LIMIT 1""",
+        (lo_ts, hi_ts),
+    )
+    if not first_row or not last_row:
+        return None
+    try:
+        p0 = float(first_row[0])
+        p1 = float(last_row[0])
+        if p0 <= 0.0:
+            return None
+        return ((p1 - p0) / p0) * 100.0
+    except Exception:
+        return None
+
+
+def _macro_trend_pct(conn, now_ts: float, lookback_sec: float = 900.0) -> float | None:
+    """BTC move % over the last *lookback_sec* seconds, crossing window boundaries.
+
+    Unlike _recent_move_pct which is clamped to the current window,
+    this looks at absolute BTC price history to capture the macro trend.
+    """
+    lo_ts = max(0.0, float(now_ts) - max(60.0, float(lookback_sec)))
     hi_ts = float(now_ts)
     first_row = fetch_one(
         conn,
@@ -538,6 +945,7 @@ def _close_trade_early(
     direction: str,
     stake: float,
     shares: float,
+    entry_price: float,
     reason: str,
     odds_row: dict | None,
 ) -> bool:
@@ -571,6 +979,40 @@ def _close_trade_early(
         exit_price,
         pnl,
         roi_pct,
+    )
+    # Get current BTC price at the moment of exit
+    btc_exit_price = _price_at_or_near(conn, closed_at, prefer_before=True)
+    if btc_exit_price is not None:
+        logger.warning(
+            "  BTC at exit: $%.2f", btc_exit_price,
+        )
+    window_row = fetch_one_dict(
+        conn,
+        """SELECT slug, btc_start_price, btc_end_price, actual_outcome
+           FROM market_windows
+           WHERE window_start = ?
+           LIMIT 1""",
+        (int(window_start),),
+    )
+    up_ask = _safe_prob(odds_row.get("up_best_ask")) or _safe_prob(odds_row.get("up_mid")) if odds_row else None
+    down_ask = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid")) if odds_row else None
+    _send_paper_close_telegram(
+        close_type="early_exit",
+        window_slug=str((window_row or {}).get("slug") or f"window-{window_start}"),
+        window_start=int(window_start),
+        direction=str(direction),
+        stake=float(stake),
+        entry_price=float(entry_price),
+        btc_start=float((window_row or {}).get("btc_start_price")) if (window_row and window_row.get("btc_start_price") is not None) else None,
+        btc_end=float((window_row or {}).get("btc_end_price")) if (window_row and window_row.get("btc_end_price") is not None) else None,
+        btc_exit=float(btc_exit_price) if btc_exit_price is not None else None,
+        outcome=str((window_row or {}).get("actual_outcome")) if (window_row and window_row.get("actual_outcome")) else None,
+        up_ask=float(up_ask) if up_ask is not None else None,
+        down_ask=float(down_ask) if down_ask is not None else None,
+        exit_price=float(exit_price),
+        pnl=float(pnl),
+        roi_pct=float(roi_pct),
+        reason=str(reason),
     )
     return True
 
@@ -674,6 +1116,7 @@ def open_trade_if_signal(
     direction = str(signal.get("direction", "NO_TRADE"))
     window_start = window.get("window_start")
     window_end = window.get("window_end")
+    window_slug = str(window.get("slug") or "--")
 
     if not actionable or direction not in ("UP", "DOWN"):
         return False
@@ -686,6 +1129,10 @@ def open_trade_if_signal(
     seconds_elapsed = float(seconds_elapsed)
     seconds_remaining = max(0.0, float(window_end) - now_ts)
     if seconds_elapsed < PAPER_ENTRY_START_SEC or seconds_elapsed > PAPER_ENTRY_END_SEC:
+        return False
+    # DOWN-specific entry time cutoff (late DOWN entries lose money)
+    if direction == "DOWN" and seconds_elapsed > PAPER_DOWN_ENTRY_END_SEC:
+        logger.debug("Skip late DOWN entry ws=%s: elapsed=%.1fs > %.1fs", window_start, seconds_elapsed, PAPER_DOWN_ENTRY_END_SEC)
         return False
     if seconds_remaining < PAPER_MIN_SECONDS_REMAINING:
         return False
@@ -705,7 +1152,7 @@ def open_trade_if_signal(
 
     exists = fetch_one(
         conn,
-        "SELECT id FROM paper_trades WHERE window_start = ? LIMIT 1",
+        "SELECT id FROM paper_trades WHERE window_start = ? AND archived_at IS NULL LIMIT 1",
         (int(window_start),),
     )
     if exists:
@@ -728,6 +1175,11 @@ def open_trade_if_signal(
     entry_price = float(entry_price)
     if entry_price <= 0.0 or entry_price >= 1.0:
         logger.warning("Invalid entry ask %.6f for %s; skipping trade", entry_price, direction)
+        return False
+
+    # DOWN-specific min entry price (cheap DOWN tokens are traps)
+    if direction == "DOWN" and entry_price < PAPER_DOWN_MIN_ENTRY_PRICE:
+        logger.debug("Skip cheap DOWN ws=%s: price=%.3f < %.3f", window_start, entry_price, PAPER_DOWN_MIN_ENTRY_PRICE)
         return False
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
@@ -762,6 +1214,14 @@ def open_trade_if_signal(
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
     confidence = float(signal.get("avg_confidence") or 0.0)
     btc_move_from_start_pct = ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
+    # Divergence risk filter: Binance-Chainlink price gap can flip settlement
+    # outcome when BTC is too close to window start price.
+    if abs(btc_move_from_start_pct) < PAPER_MIN_BOUNDARY_DIST_PCT:
+        logger.debug(
+            "Skip divergence risk ws=%s: |btc_move|=%.4f%% < %.4f%%",
+            window_start, abs(btc_move_from_start_pct), PAPER_MIN_BOUNDARY_DIST_PCT,
+        )
+        return False
     recent_move_pct = _recent_move_pct(
         conn,
         int(window_start),
@@ -822,6 +1282,25 @@ def open_trade_if_signal(
         )
         return False
 
+    # ── Macro trend filter (crosses window boundaries) ──
+    macro_move = _macro_trend_pct(conn, now_ts, PAPER_MACRO_TREND_LOOKBACK_SEC)
+    if macro_move is not None:
+        macro_opposing = (
+            (direction == "DOWN" and macro_move > PAPER_MACRO_TREND_BLOCK_PCT)
+            or (direction == "UP" and macro_move < -PAPER_MACRO_TREND_BLOCK_PCT)
+        )
+        if macro_opposing:
+            logger.warning(
+                "Skip macro-trend misalign ws=%s dir=%s: macro_move=%+.4f%% "
+                "(threshold=%.4f%%, lookback=%.0fs)",
+                window_start,
+                direction,
+                macro_move,
+                PAPER_MACRO_TREND_BLOCK_PCT,
+                PAPER_MACRO_TREND_LOOKBACK_SEC,
+            )
+            return False
+
     recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
 
     gate = evaluate_entry_gate(
@@ -841,6 +1320,20 @@ def open_trade_if_signal(
     if not gate.allow:
         logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
         return False
+    # Lag probability edge: our model_prob must beat normalized market prob
+    if side_implied is not None and opposite_implied is not None:
+        market_total = float(side_implied) + float(opposite_implied)
+        if market_total > 0:
+            market_dir_prob = float(side_implied) / market_total
+            lag_prob_edge = float(gate.model_prob) - market_dir_prob
+            if lag_prob_edge < PAPER_MIN_LAG_PROB_EDGE:
+                logger.warning(
+                    "Skip lag-prob-edge ws=%s dir=%s: model=%.3f market=%.3f edge=%.3f < %.3f",
+                    window_start, direction, float(gate.model_prob),
+                    market_dir_prob, lag_prob_edge, PAPER_MIN_LAG_PROB_EDGE,
+                )
+                return False
+
     contra_gap = None
     if side_implied is not None and opposite_implied is not None:
         contra_gap = float(opposite_implied) - float(side_implied)
@@ -867,30 +1360,40 @@ def open_trade_if_signal(
     realized_equity, available_equity = _equity_snapshot(conn, initial_capital)
     drawdown_pct = _equity_drawdown_pct(conn, initial_capital)
 
-    # Adaptive strictness in [0, 1]: increases after losses/drawdown/weak performance.
-    strictness = 0.0
-    strictness += min(0.45, loss_streak * 0.15)
-    strictness += max(0.0, recent_loss_rate - 0.50) * 0.70
-    strictness += min(0.40, drawdown_pct * 0.80)
-    if perf_count >= 4 and perf_pnl < 0.0:
-        strictness += 0.10
-    strictness = _clamp(strictness, 0.0, 1.0)
     last_opened_at = _last_opened_at(conn)
     stale_relax = _stale_relax_factor(last_opened_at=last_opened_at, now_ts=now_ts)
-    stale_relax_gain = _clamp(PAPER_STALE_RELAX_MAX, 0.0, 1.0) * stale_relax
-    strictness_eff = _clamp(strictness * (1.0 - stale_relax_gain), 0.0, 1.0)
-
-    adaptive_min_ev = PAPER_MIN_EXPECTED_ROI * (1.0 + 0.9 * strictness_eff) + min(loss_streak, 3) * 0.005
-    adaptive_min_support = _clamp(PAPER_MIN_SUPPORT_RATIO + 0.20 * strictness_eff, PAPER_MIN_SUPPORT_RATIO, 1.0)
-    adaptive_min_conf = _clamp(PAPER_MIN_CONFIDENCE + 0.18 * strictness_eff, PAPER_MIN_CONFIDENCE, 0.80)
-    ask_floor = _clamp(PAPER_ADAPTIVE_MAX_ASK_FLOOR, 0.40, PAPER_MAX_ENTRY_PRICE)
-    adaptive_max_ask = _clamp(PAPER_MAX_ENTRY_PRICE - 0.08 * strictness_eff, ask_floor, PAPER_MAX_ENTRY_PRICE)
-    if PAPER_PROFIT_MODE == "aggressive":
-        relax = _clamp(PAPER_AGGRESSIVE_ENTRY_RELAX, 0.0, 0.60)
-        adaptive_min_ev = max(0.0, adaptive_min_ev * (1.0 - relax))
-        adaptive_min_support = _clamp(adaptive_min_support - (0.10 * relax), 0.55, 1.0)
-        adaptive_min_conf = _clamp(adaptive_min_conf - (0.08 * relax), 0.28, 0.80)
-        adaptive_max_ask = _clamp(adaptive_max_ask + (0.06 * relax), ask_floor, 0.62)
+    parity_thresholds = compute_parity_thresholds(
+        ParityAdaptiveConfig(
+            min_expected_roi=float(PAPER_MIN_EXPECTED_ROI),
+            min_support_ratio=float(PAPER_MIN_SUPPORT_RATIO),
+            min_confidence=float(PAPER_MIN_CONFIDENCE),
+            max_entry_price=float(PAPER_MAX_ENTRY_PRICE),
+            adaptive_max_ask_floor=float(PAPER_ADAPTIVE_MAX_ASK_FLOOR),
+            require_unanimous=bool(PAPER_REQUIRE_UNANIMOUS),
+            strictness_unanimous_at=float(PAPER_STRICTNESS_UNANIMOUS_AT),
+            base_trade_gap_sec=float(PAPER_BASE_TRADE_GAP_SEC),
+            target_trade_gap_sec=float(PAPER_TARGET_TRADE_GAP_SEC),
+            stale_relax_max=float(PAPER_STALE_RELAX_MAX),
+            profit_mode=str(PAPER_PROFIT_MODE),
+            aggressive_entry_relax=float(PAPER_AGGRESSIVE_ENTRY_RELAX),
+            aggressive_gap_mult=float(PAPER_AGGRESSIVE_GAP_MULT),
+        ),
+        ParityAdaptiveState(
+            loss_streak=int(loss_streak),
+            recent_loss_rate=float(recent_loss_rate),
+            drawdown_pct=float(drawdown_pct),
+            perf_count=int(perf_count),
+            perf_pnl=float(perf_pnl),
+            stale_relax=float(stale_relax),
+        ),
+    )
+    strictness = float(parity_thresholds.strictness)
+    strictness_eff = float(parity_thresholds.strictness_eff)
+    adaptive_min_ev = float(parity_thresholds.adaptive_min_ev)
+    adaptive_min_support = float(parity_thresholds.adaptive_min_support)
+    adaptive_min_conf = float(parity_thresholds.adaptive_min_conf)
+    adaptive_max_ask = float(parity_thresholds.adaptive_max_ask)
+    dynamic_gap = float(parity_thresholds.dynamic_gap)
 
     if direction == "DOWN" and btc_move_from_start_pct > 0.0:
         if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
@@ -905,12 +1408,6 @@ def open_trade_if_signal(
         ev_penalty = PAPER_DOWN_ABOVE_START_EV_PENALTY * _clamp(ratio, 0.0, 1.0)
         adaptive_min_ev += ev_penalty
 
-    dynamic_gap = PAPER_BASE_TRADE_GAP_SEC + strictness_eff * (
-        max(PAPER_BASE_TRADE_GAP_SEC, PAPER_TARGET_TRADE_GAP_SEC) - PAPER_BASE_TRADE_GAP_SEC
-    )
-    if PAPER_PROFIT_MODE == "aggressive":
-        dynamic_gap *= _clamp(PAPER_AGGRESSIVE_GAP_MULT, 0.35, 1.0)
-    dynamic_gap = max(0.0, dynamic_gap)
     since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
     high_quality_override = (
         gate.expected_roi >= PAPER_HIGH_QUALITY_EV
@@ -940,7 +1437,7 @@ def open_trade_if_signal(
             adaptive_min_support * 100.0,
         )
         return False
-    require_unanimous = PAPER_REQUIRE_UNANIMOUS or strictness_eff >= PAPER_STRICTNESS_UNANIMOUS_AT
+    require_unanimous = bool(parity_thresholds.require_unanimous)
     if require_unanimous and support_ratio < 1.0:
         logger.warning(
             "Skip non-unanimous ws=%s dir=%s: strictness=%.2f(->%.2f) support=%.1f%%",
@@ -1004,6 +1501,12 @@ def open_trade_if_signal(
             )
             return False
 
+        # Compute max_edge from judges (matched to backtest's decision.max_edge)
+        judges_list = signal.get("judges") or []
+        _max_edge = max(
+            (float(j.get("confidence") or 0.0) for j in judges_list),
+            default=float(confidence),
+        )
         stake = _compute_bet_size(
             available_equity=available_equity,
             initial_capital=initial_capital,
@@ -1012,6 +1515,7 @@ def open_trade_if_signal(
             entry_price=entry_price,
             model_prob=gate.model_prob,
             confidence=confidence,
+            max_edge=_max_edge,
         )
         if loss_streak > 0:
             # Adaptive de-risking after losses.
@@ -1073,18 +1577,32 @@ def open_trade_if_signal(
         dynamic_gap,
         sizing_mode,
     )
+    _send_paper_open_telegram(
+        window_slug=window_slug,
+        window_start=int(window_start),
+        direction=direction,
+        stake=float(stake),
+        entry_price=float(entry_price),
+        up_ask=float(up_ask_val) if up_ask_val is not None else None,
+        down_ask=float(down_ask_val) if down_ask_val is not None else None,
+        btc_start=float(btc_start) if btc_start is not None else None,
+        btc_now=float(btc_now) if btc_now is not None else None,
+        confidence=float(conf),
+        reason=str(reason),
+    )
     return True
 
 
 def resolve_open_trades(conn) -> int:
     _backfill_unresolved_windows(conn)
     now_ts = time.time()
+    exit_cfg = _paper_exit_policy_config()
 
     open_rows = fetch_all_dicts(
         conn,
         """SELECT id, window_start, window_end, direction, stake, shares, entry_price, opened_at, signal_confidence
            FROM paper_trades
-           WHERE status = 'OPEN'
+           WHERE status = 'OPEN' AND archived_at IS NULL
            ORDER BY window_start ASC""",
     )
     if not open_rows:
@@ -1102,9 +1620,18 @@ def resolve_open_trades(conn) -> int:
         direction = str(row["direction"])
         stake = float(row["stake"])
         shares = float(row["shares"])
+        entry_price = float(row.get("entry_price") or 0.5)
         opened_at = float(row.get("opened_at") or 0.0)
         signal_confidence = float(row.get("signal_confidence") or 0.0)
         window_end = float(row.get("window_end") or 0.0)
+        window_row = fetch_one_dict(
+            conn,
+            """SELECT slug, btc_start_price, btc_end_price, actual_outcome
+               FROM market_windows
+               WHERE window_start = ?
+               LIMIT 1""",
+            (ws,),
+        )
 
         # 1) Expiry settlement (binary resolution)
         outcome = outcome_row[0] if outcome_row else None
@@ -1136,41 +1663,77 @@ def resolve_open_trades(conn) -> int:
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
 
             if pnl > 0:
+                btc_exit_px = _price_at_or_near(conn, now_ts, prefer_before=True)
                 logger.warning(
-                    "PROFIT ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    "PROFIT ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%% btc_exit=$%.2f",
                     ws,
                     direction,
                     outcome,
                     pnl,
                     roi_pct,
+                    float(btc_exit_px) if btc_exit_px else 0.0,
                 )
             elif pnl < 0:
+                btc_exit_px = _price_at_or_near(conn, now_ts, prefer_before=True)
                 logger.warning(
-                    "LOSS   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    "LOSS   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%% btc_exit=$%.2f",
                     ws,
                     direction,
                     outcome,
                     pnl,
                     roi_pct,
+                    float(btc_exit_px) if btc_exit_px else 0.0,
                 )
             else:
+                btc_exit_px = _price_at_or_near(conn, now_ts, prefer_before=True)
                 logger.warning(
-                    "FLAT   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
+                    "FLAT   ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%% btc_exit=$%.2f",
                     ws,
                     direction,
                     outcome,
                     pnl,
                     roi_pct,
+                    float(btc_exit_px) if btc_exit_px else 0.0,
                 )
+            odds_close_row = _latest_odds_for_window(conn, ws)
+            up_ask_close = (
+                (_safe_prob(odds_close_row.get("up_best_ask")) or _safe_prob(odds_close_row.get("up_mid")))
+                if odds_close_row
+                else None
+            )
+            down_ask_close = (
+                (_safe_prob(odds_close_row.get("down_best_ask")) or _safe_prob(odds_close_row.get("down_mid")))
+                if odds_close_row
+                else None
+            )
+            settle_exit_price = 1.0 if int(won) == 1 else 0.0
+            _send_paper_close_telegram(
+                close_type="expiry_settlement",
+                window_slug=str((window_row or {}).get("slug") or f"window-{ws}"),
+                window_start=int(ws),
+                direction=str(direction),
+                stake=float(stake),
+                entry_price=float(entry_price),
+                btc_start=float((window_row or {}).get("btc_start_price")) if (window_row and window_row.get("btc_start_price") is not None) else None,
+                btc_end=float((window_row or {}).get("btc_end_price")) if (window_row and window_row.get("btc_end_price") is not None) else None,
+                btc_exit=float(btc_exit_px) if btc_exit_px is not None else None,
+                outcome=str(outcome),
+                up_ask=float(up_ask_close) if up_ask_close is not None else None,
+                down_ask=float(down_ask_close) if down_ask_close is not None else None,
+                exit_price=float(settle_exit_price),
+                pnl=float(pnl),
+                roi_pct=float(roi_pct),
+                reason="expiry_settlement",
+            )
             continue
 
         # 2) Early exit checks for open markets
-        if not PAPER_ENABLE_EARLY_EXIT:
+        if not exit_cfg.enabled:
             continue
         if opened_at <= 0.0:
             continue
         hold_sec = now_ts - opened_at
-        if hold_sec < PAPER_EARLY_EXIT_MIN_ELAPSED_SEC:
+        if hold_sec < exit_cfg.min_elapsed_sec:
             continue
 
         odds_row = _latest_odds_for_window(conn, ws)
@@ -1185,43 +1748,16 @@ def resolve_open_trades(conn) -> int:
         up_ask = _safe_prob(odds_row.get("up_best_ask")) or _safe_prob(odds_row.get("up_mid"))
         down_ask = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid"))
         opposite_ask = up_ask if direction == "DOWN" else down_ask
-
-        early_reason = None
-        if (
-            opposite_ask is not None
-            and opposite_ask >= PAPER_EARLY_EXIT_OPPOSITE_ASK
-            and mtm_roi_pct <= PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT
-        ):
-            hits = _EARLY_EXIT_OPPOSITE_HITS.get(trade_id, 0) + 1
-            _EARLY_EXIT_OPPOSITE_HITS[trade_id] = hits
-            if hits >= max(1, PAPER_EARLY_EXIT_OPPOSITE_CONFIRM_POLLS):
-                early_reason = (
-                    f"opposite_prob_surge(opposite_ask={opposite_ask:.3f}"
-                    f" >= {PAPER_EARLY_EXIT_OPPOSITE_ASK:.3f},"
-                    f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_OPPOSITE_MIN_LOSS_ROI_PCT:+.2f}%,"
-                    f" hits={hits})"
-                )
-        else:
-            _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
-
-        dynamic_stop_loss_roi = PAPER_EARLY_EXIT_STOP_LOSS_ROI_PCT
-        dynamic_stop_loss_min_hold = max(PAPER_EARLY_EXIT_MIN_ELAPSED_SEC, PAPER_EARLY_EXIT_STOP_LOSS_MIN_HOLD_SEC)
-        if signal_confidence >= PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_CUTOFF:
-            dynamic_stop_loss_min_hold = min(
-                dynamic_stop_loss_min_hold,
-                max(PAPER_EARLY_EXIT_MIN_ELAPSED_SEC, PAPER_EARLY_EXIT_STOP_LOSS_HIGH_CONF_MIN_HOLD_SEC),
-            )
-        elif signal_confidence <= PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_CUTOFF:
-            dynamic_stop_loss_roi -= abs(PAPER_EARLY_EXIT_STOP_LOSS_LOW_CONF_RELAX_PCT)
+        remaining_sec = max(0.0, window_end - now_ts) if window_end > 0 else 0.0
 
         btc_move_from_entry_pct = None
         btc_adverse_ok = True
-        if PAPER_EARLY_EXIT_STOP_LOSS_REQUIRE_BTC_ADVERSE:
+        btc_now_px = _price_at_or_near(conn, now_ts, prefer_before=True)
+        if exit_cfg.stop_loss_require_btc_adverse:
             btc_entry_px = _price_at_or_near(conn, opened_at, prefer_before=True) if opened_at > 0 else None
-            btc_now_px = _price_at_or_near(conn, now_ts, prefer_before=True)
             if btc_entry_px is not None and btc_entry_px > 0 and btc_now_px is not None and btc_now_px > 0:
                 btc_move_from_entry_pct = ((float(btc_now_px) - float(btc_entry_px)) / float(btc_entry_px)) * 100.0
-                adverse_thr = abs(float(PAPER_EARLY_EXIT_STOP_LOSS_BTC_ADVERSE_PCT))
+                adverse_thr = abs(float(exit_cfg.stop_loss_btc_adverse_pct))
                 if direction == "UP":
                     btc_adverse_ok = btc_move_from_entry_pct <= -adverse_thr
                 else:
@@ -1229,37 +1765,45 @@ def resolve_open_trades(conn) -> int:
             else:
                 btc_adverse_ok = False
 
-        if (
-            early_reason is None
-            and hold_sec >= dynamic_stop_loss_min_hold
-            and mtm_roi_pct <= dynamic_stop_loss_roi
-            and btc_adverse_ok
-        ):
+        recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=180.0)
+        current_btc_px = float(recent_prices[-1]) if recent_prices else float(btc_now_px or 0.0)
+        start_btc_px = (
+            float(window_row.get("btc_start_price"))
+            if (window_row and window_row.get("btc_start_price") is not None)
+            else float(current_btc_px or 0.0)
+        )
+        peak = max(float(_PEAK_ROI_PER_TRADE.get(trade_id, -999.0)), float(mtm_roi_pct))
+        _PEAK_ROI_PER_TRADE[trade_id] = peak
+
+        exit_decision = evaluate_exit_policy(
+            ExitPolicyInput(
+                direction=direction,
+                hold_sec=float(hold_sec),
+                seconds_elapsed=max(1.0, float(now_ts - ws)),
+                seconds_remaining=float(remaining_sec),
+                signal_confidence=float(signal_confidence),
+                mtm_roi_pct=float(mtm_roi_pct),
+                current_price=float(current_btc_px),
+                start_price=float(start_btc_px),
+                peak_roi_pct=float(peak),
+                opposite_ask=float(opposite_ask) if opposite_ask is not None else None,
+                recent_prices=list(recent_prices),
+                recent_timestamps=list(recent_ts),
+                btc_adverse_ok=bool(btc_adverse_ok),
+                btc_move_from_entry_pct=(
+                    float(btc_move_from_entry_pct)
+                    if btc_move_from_entry_pct is not None
+                    else None
+                ),
+                opposite_hits=int(_EARLY_EXIT_OPPOSITE_HITS.get(trade_id, 0)),
+            ),
+            exit_cfg,
+        )
+        if exit_decision.opposite_hits > 0:
+            _EARLY_EXIT_OPPOSITE_HITS[trade_id] = int(exit_decision.opposite_hits)
+        else:
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
-            btc_move_note = (
-                f", btc_entry_move={btc_move_from_entry_pct:+.4f}%"
-                if btc_move_from_entry_pct is not None
-                else ""
-            )
-            early_reason = (
-                f"stop_loss(roi={mtm_roi_pct:+.2f}%"
-                f" <= {dynamic_stop_loss_roi:+.2f}%"
-                f", hold={hold_sec:.1f}s >= {dynamic_stop_loss_min_hold:.1f}s"
-                f", conf={signal_confidence:.3f}"
-                f"{btc_move_note})"
-            )
-        elif (
-            early_reason is None
-            and hold_sec >= PAPER_EARLY_EXIT_MAX_HOLD_SEC
-            and mtm_roi_pct <= PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT
-        ):
-            remaining_sec = max(0.0, window_end - now_ts) if window_end > 0 else 0.0
-            if remaining_sec <= PAPER_EARLY_EXIT_TIMESTOP_MAX_REMAIN_SEC:
-                _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
-                early_reason = (
-                    f"time_stop(hold={hold_sec:.1f}s, rem={remaining_sec:.1f}s,"
-                    f" roi={mtm_roi_pct:+.2f}% <= {PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT:+.2f}%)"
-                )
+        early_reason = exit_decision.reason
 
         if early_reason:
             closed = _close_trade_early(
@@ -1269,12 +1813,14 @@ def resolve_open_trades(conn) -> int:
                 direction=direction,
                 stake=stake,
                 shares=shares,
+                entry_price=entry_price,
                 reason=early_reason,
                 odds_row=odds_row,
             )
             if closed:
                 resolved += 1
                 _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
+                _PEAK_ROI_PER_TRADE.pop(trade_id, None)
 
     if resolved:
         conn.commit()
@@ -1285,7 +1831,7 @@ def show_status(conn):
     try:
         cap_row = fetch_one(
             conn,
-            "SELECT initial_capital FROM paper_trades WHERE initial_capital IS NOT NULL ORDER BY window_start ASC LIMIT 1",
+            "SELECT initial_capital FROM paper_trades WHERE initial_capital IS NOT NULL AND archived_at IS NULL ORDER BY window_start ASC LIMIT 1",
         )
     except Exception:
         cap_row = None
@@ -1303,7 +1849,8 @@ def show_status(conn):
                SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS wins,
                SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END) AS losses,
                COALESCE(SUM(pnl), 0) AS total_pnl
-           FROM paper_trades""",
+           FROM paper_trades
+           WHERE archived_at IS NULL""",
     )
 
     total = int(stats[0] or 0)
@@ -1335,6 +1882,7 @@ def show_status(conn):
         """SELECT window_start, direction, stake, entry_price, payout_multiple,
                   potential_win_pnl, status, actual_outcome, pnl, roi_pct
            FROM paper_trades
+           WHERE archived_at IS NULL
            ORDER BY window_start DESC
            LIMIT 12""",
     )
@@ -1369,7 +1917,8 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         "entry=%.0f~%.0fs remain>=%.0fs samples(t/o)=%d/%d gap=%.0f~%.0fs unanim=%s(at>=%.2f) "
         "stale_relax(start=%.0fs full=%.0fs max=%.0f%% ask_floor=%.2f) perf_pause=%.0fs "
         "align(side>=%.2f,opp<=%.2f) contra_gap<=%.3f(ovr p>=%.2f conf>=%.2f) "
-        "trend_align(lookback=%.0fs opp<=%.4f%%) down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
+        "trend_align(lookback=%.0fs opp<=%.4f%%) macro_trend(lookback=%.0fs block>=%.4f%%) "
+        "down_guard(block>=%.4f%%,+mom=%.4f%%,+ev=%.2f%%) "
         "profit_mode=%s(relax=%.0f%% gapx=%.2f maxBetFrac=%.2f kelly=%.2f deboost=%.2f) "
         "early_exit=%s(opp>=%.2f,sl<=%.1f%%@hold>=%.0fs highConf>=%.2f->%.0fs lowConf<=%.2f relax=%.1f%%,"
         " btcAdv=%s@%.3f%% maxHold=%.0fs ts<=%.1f%%)",
@@ -1400,6 +1949,8 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_CONTRA_OVERRIDE_MIN_CONF,
         PAPER_TREND_ALIGN_LOOKBACK_SEC,
         PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT,
+        PAPER_MACRO_TREND_LOOKBACK_SEC,
+        PAPER_MACRO_TREND_BLOCK_PCT,
         PAPER_DOWN_ABOVE_START_BLOCK_PCT,
         PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA,
         PAPER_DOWN_ABOVE_START_EV_PENALTY * 100.0,
@@ -1422,10 +1973,21 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         PAPER_EARLY_EXIT_MAX_HOLD_SEC,
         PAPER_EARLY_EXIT_TIMESTOP_MAX_ROI_PCT,
     )
+    _tg_ready, _tg_token, _tg_chat = _paper_telegram_ready()
+    logger.warning(
+        "Paper Telegram: notify_open=%s configured=%s (token=%s chat=%s)",
+        bool(getattr(config.trading, "paper_telegram_notify_open", False)),
+        bool(_tg_ready),
+        bool(_tg_token),
+        bool(_tg_chat),
+    )
 
     try:
         while True:
             try:
+                if not _check_data_freshness(conn):
+                    time.sleep(interval_sec)
+                    continue
                 resolve_open_trades(conn)
                 open_trade_if_signal(
                     conn,

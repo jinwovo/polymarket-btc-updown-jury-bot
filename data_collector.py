@@ -2,7 +2,7 @@
 Real-time data collector for Polymarket BTC Up/Down 5m markets.
 
 Records BOTH Binance tick prices AND Polymarket real UP/DOWN odds
-every second into a local SQLite database.
+every second into the database.
 
 Run this for a few days first, THEN backtest against real data.
 
@@ -20,12 +20,14 @@ import logging
 import sys
 import argparse
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-import websockets
-import httpx
+import math
 
+import numpy as np
+import websockets
+
+from binance_ws import ChainlinkCalibrator
 from config import config
 from db_config import (
     connect_db,
@@ -36,8 +38,6 @@ from db_config import (
     fetch_all_dicts,
     fetch_one,
     init_market_schema,
-    is_sqlite_backend,
-    sqlite_db_path,
     upsert_btc_ticks_sql,
     upsert_feature_1s_sql,
     upsert_market_window_sql,
@@ -60,8 +60,6 @@ logger = logging.getLogger("collector")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-DB_PATH = sqlite_db_path()
-
 
 # ---------------------------------------------------------------------------
 # Database
@@ -80,11 +78,21 @@ class DataCollector:
         self.poly_client = PolymarketClient()
         self.current_market: Optional[MarketInfo] = None
         self.current_window_start: int = 0
-        self.btc_price: Optional[float] = None
+        self.btc_price: Optional[float] = None  # raw Binance
+        self.btc_price_adjusted: Optional[float] = None  # Chainlink-calibrated
+        self._chainlink = ChainlinkCalibrator()
         self.window_start_price: Optional[float] = None
         self._window_start_official: bool = False
-        self._last_ptb_sync_ts: float = 0.0
+        self._ptb_scrape_done: bool = False
         self._running = False
+
+        # Ring buffer for recent prices (for diffusion/lag_freshness computation)
+        self._recent_prices: list[float] = []
+        self._recent_timestamps: list[float] = []
+        # Raw Binance prices for Chainlink calibration offset lookup
+        self._raw_prices: list[float] = []
+        self._raw_timestamps: list[float] = []
+        self._RECENT_MAX = 600  # keep ~10 min of 1s data
 
         # Batch insert buffer
         self._tick_buffer: list[tuple] = []
@@ -109,13 +117,33 @@ class DataCollector:
         logger.info("Recording: BTC ticks + Polymarket odds")
         logger.info("=" * 50)
 
-        # Run in parallel: Binance WS + Polymarket polling + flush loop
+        # Run in parallel: Binance WS + Polymarket polling + flush loop + Chainlink
         await asyncio.gather(
             self._binance_ws_loop(),
             self._polymarket_poll_loop(),
             self._flush_loop(),
             self._window_tracker_loop(),
+            self._chainlink.poll_loop(
+                get_binance_price=lambda: self.btc_price,
+                get_binance_price_at=self._get_raw_price_at,
+            ),
         )
+
+    def _get_raw_price_at(self, ts: float):
+        """Look up raw Binance price closest to a given timestamp."""
+        if not self._raw_prices:
+            return None
+        best = None
+        best_diff = float("inf")
+        for i in range(len(self._raw_timestamps)):
+            diff = abs(self._raw_timestamps[i] - ts)
+            if diff < best_diff:
+                best_diff = diff
+                best = self._raw_prices[i]
+        # Only use if within 5 seconds
+        if best_diff > 5.0:
+            return None
+        return best
 
     async def _binance_ws_loop(self):
         """Connect to Binance WebSocket and record every trade."""
@@ -132,26 +160,28 @@ class DataCollector:
                         volume = float(data.get("q", 0))
 
                         self.btc_price = price
+                        self.btc_price_adjusted = self._chainlink.adjust(price)
 
-                        # If the window started before first BTC tick arrived, backfill start price once.
-                        if self.current_window_start > 0 and self.window_start_price is None:
-                            self.window_start_price = price
-                            try:
-                                execute_write(
-                                    self.db,
-                                    """UPDATE market_windows
-                                       SET btc_start_price = COALESCE(btc_start_price, ?)
-                                       WHERE window_start = ?""",
-                                    (price, self.current_window_start),
-                                )
-                                self.db.commit()
-                            except Exception as e:
-                                logger.debug(f"Start price backfill failed: {e}")
+                        # Store raw Binance prices for Chainlink offset calibration
+                        self._raw_prices.append(price)
+                        self._raw_timestamps.append(ts)
+                        if len(self._raw_prices) > self._RECENT_MAX:
+                            self._raw_prices = self._raw_prices[-self._RECENT_MAX:]
+                            self._raw_timestamps = self._raw_timestamps[-self._RECENT_MAX:]
 
-                        # Buffer ticks (aggregate to ~100ms resolution to reduce DB writes)
-                        # Only keep the latest tick per 100ms bucket
+                        # Update ring buffer with calibrated price
+                        self._recent_prices.append(self.btc_price_adjusted)
+                        self._recent_timestamps.append(ts)
+                        if len(self._recent_prices) > self._RECENT_MAX:
+                            self._recent_prices = self._recent_prices[-self._RECENT_MAX:]
+                            self._recent_timestamps = self._recent_timestamps[-self._RECENT_MAX:]
+
+                        # Note: btc_start_price is only set from official Price to Beat (PTB).
+                        # Binance fallback removed — wrong start price causes wrong direction.
+
+                        # Buffer ticks with Chainlink-calibrated price
                         bucket = round(ts, 1)
-                        self._tick_buffer.append((bucket, price, volume))
+                        self._tick_buffer.append((bucket, self.btc_price_adjusted, volume))
 
             except websockets.ConnectionClosed:
                 logger.warning("Binance WS disconnected, reconnecting...")
@@ -168,16 +198,21 @@ class DataCollector:
                     updated = await self.poly_client.refresh_odds(self.current_market)
                     if updated:
                         now = time.time()
+                        _ub = self.current_market.up_best_bid
+                        _ua = self.current_market.up_best_ask
+                        _db = self.current_market.down_best_bid
+                        _da = self.current_market.down_best_ask
+                        _spread_up = (float(_ua) - float(_ub)) if (_ua and _ub) else None
+                        _spread_down = (float(_da) - float(_db)) if (_da and _db) else None
+                        _overround = (float(_ua) + float(_da) - 1.0) if (_ua and _da) else None
                         self._odds_buffer.append((
                             now,
                             self.current_window_start,
                             self.current_market.slug,
                             self.current_market.up_price,
                             self.current_market.down_price,
-                            self.current_market.up_best_bid,
-                            self.current_market.up_best_ask,
-                            self.current_market.down_best_bid,
-                            self.current_market.down_best_ask,
+                            _ub, _ua, _db, _da,
+                            _spread_up, _spread_down, _overround,
                         ))
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
@@ -194,14 +229,15 @@ class DataCollector:
 
                 if window_start != self.current_window_start:
                     # New window! Record end of previous window
-                    if self.current_window_start > 0 and self.btc_price is not None:
-                        self._finalize_window(self.current_window_start, self.btc_price)
+                    if self.current_window_start > 0 and self.btc_price_adjusted is not None:
+                        self._finalize_window(self.current_window_start, self.btc_price_adjusted)
 
-                    # Start tracking new window
+                    # Start tracking new window — chainlink_adj immediately, scrape at +3s
                     self.current_window_start = window_start
-                    self.window_start_price = self.btc_price
+                    self.window_start_price = None
                     self._window_start_official = False
-                    self._last_ptb_sync_ts = 0.0
+                    self._window_start_source = "none"
+                    self._ptb_scrape_done = False
 
                     # Find the Polymarket market
                     self.current_market = await self.poly_client.find_market(window_start)
@@ -211,17 +247,26 @@ class DataCollector:
                             self.current_market.price_to_beat is not None
                             and float(self.current_market.price_to_beat) > 0.0
                         ):
-                            # Use Polymarket official reference level when available.
                             self.window_start_price = float(self.current_market.price_to_beat)
                             self._window_start_official = True
+                            self._window_start_source = "ptb_api"
+                            self._ptb_scrape_done = True
+                        elif (
+                            self._chainlink.is_calibrated
+                            and self.btc_price is not None
+                        ):
+                            # Immediate fallback — scrape will correct in ~3s
+                            self.window_start_price = self._chainlink.adjust(self.btc_price)
+                            self._window_start_official = True
+                            self._window_start_source = "chainlink_adj"
                         self._record_window_start(
                             window_start,
                             window_start + config.polymarket.interval_seconds,
                             self.current_market,
                         )
-                        btc_str = f"${self.btc_price:,.2f}" if self.btc_price is not None else "N/A"
+                        btc_str = f"${self.btc_price_adjusted:,.2f}" if self.btc_price_adjusted is not None else "N/A"
                         start_str = (
-                            f"${self.window_start_price:,.2f}"
+                            f"${self.window_start_price:,.2f} ({self._window_start_source})"
                             if self.window_start_price is not None
                             else "N/A"
                         )
@@ -254,57 +299,174 @@ class DataCollector:
             await asyncio.sleep(1.0)
 
     async def _maybe_sync_window_start_from_price_to_beat(self, now_ts: float):
-        """Backfill/correct window start with official Price to Beat when it arrives late."""
+        """Scrape exact PTB ~3s after window start, correct chainlink_adj estimate."""
         if self.current_window_start <= 0 or self.current_market is None:
             return
-        if self._window_start_official and self.window_start_price is not None:
+        elapsed = now_ts - float(self.current_window_start)
+
+        # --- Phase 1: if no price at all, set chainlink_adj immediately ---
+        if not self._window_start_official or self.window_start_price is None:
+            if self._chainlink.is_calibrated and self.btc_price is not None:
+                adj_px = self._chainlink.adjust(self.btc_price)
+                self.window_start_price = adj_px
+                self._window_start_official = True
+                self._window_start_source = "chainlink_adj"
+                try:
+                    execute_write(
+                        self.db,
+                        """UPDATE market_windows
+                           SET btc_start_price = ?
+                           WHERE window_start = ?""",
+                        (adj_px, self.current_window_start),
+                    )
+                    self.db.commit()
+                except Exception:
+                    pass
+                logger.info(
+                    "Window start set from calibrated Binance: %s | $%.2f",
+                    self.current_market.slug, adj_px,
+                )
+            elif elapsed > 5.0:
+                logger.warning(
+                    "No start price for %s (elapsed=%.0fs)",
+                    self.current_market.slug, elapsed,
+                )
             return
 
-        # Gamma can lag a few seconds after window rollover.
-        if now_ts - float(self.current_window_start) > 120.0:
+        # --- Phase 2: scrape exact PTB + Current price at ~3s (one-shot) ---
+        if self._ptb_scrape_done:
             return
-        if (now_ts - self._last_ptb_sync_ts) < 3.0:
+        if elapsed < 3.0:
             return
-        self._last_ptb_sync_ts = now_ts
+        self._ptb_scrape_done = True
 
-        ptb = self.current_market.price_to_beat
-        if ptb is None or float(ptb) <= 0.0:
-            ptb = await self.poly_client.fetch_price_to_beat(self.current_market.slug)
-            if ptb is None or float(ptb) <= 0.0:
-                return
-            self.current_market.price_to_beat = float(ptb)
+        scraped_ptb, scraped_current = await self.poly_client.scrape_prices(
+            self.current_market.slug
+        )
 
-        new_start = float(ptb)
-        prev_start = self.window_start_price
-        self.window_start_price = new_start
-        self._window_start_official = True
+        # --- Calibrate offset using Polymarket Current price ---
+        if scraped_current is not None and scraped_current > 0:
+            binance_now = self.btc_price
+            if binance_now is not None and binance_now > 0:
+                new_offset = binance_now - scraped_current
+                old_offset = self._chainlink.offset if self._chainlink else 0
+                if self._chainlink is not None:
+                    self._chainlink.offset = new_offset
+                    self._chainlink.chainlink_price = scraped_current
+                    self._chainlink.binance_at_update = binance_now
+                logger.info(
+                    "Calibration updated from Polymarket scrape: "
+                    "poly_current=$%.2f binance=$%.2f new_offset=$%.2f (was $%.2f)",
+                    scraped_current, binance_now, new_offset, old_offset,
+                )
 
+        if scraped_ptb is None or scraped_ptb <= 0:
+            logger.warning("PTB scrape returned None for %s, keeping %s ($%.2f)",
+                           self.current_market.slug, self._window_start_source,
+                           self.window_start_price or 0)
+            return
+
+        prev = self.window_start_price
+        prev_src = self._window_start_source
+        self.window_start_price = scraped_ptb
+        self._window_start_source = "ptb_scrape"
+        delta = abs(scraped_ptb - prev) if prev else 0
         try:
             execute_write(
                 self.db,
                 """UPDATE market_windows
                    SET btc_start_price = ?
                    WHERE window_start = ?""",
-                (new_start, self.current_window_start),
+                (scraped_ptb, self.current_window_start),
             )
             self.db.commit()
-        except Exception as e:
-            logger.debug(f"Price-to-beat sync DB update failed: {e}")
-            return
+        except Exception:
+            pass
+        logger.info(
+            "Window start corrected by scrape: %s | $%.2f -> $%.2f (delta=$%.2f, was %s)",
+            self.current_market.slug, prev or 0, scraped_ptb, delta, prev_src,
+        )
 
-        if prev_start is None:
-            logger.info(
-                "Window start set from Price to Beat: %s | $%.2f",
-                self.current_market.slug,
-                new_start,
-            )
-        elif abs(float(prev_start) - new_start) >= 0.01:
-            logger.warning(
-                "Window start corrected to Price to Beat: %s | %.2f -> %.2f",
-                self.current_market.slug,
-                float(prev_start),
-                new_start,
-            )
+    # ------------------------------------------------------------------
+    # Inline diffusion / lag helpers (mirror judges.py logic)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _estimate_sigma(prices: list[float], timestamps: list[float]) -> float | None:
+        """Estimate annualised volatility (sigma) from recent tick log-returns."""
+        n = min(len(prices), len(timestamps))
+        if n < 24:
+            return None
+        p = np.asarray(prices[:n], dtype=float)
+        t = np.asarray(timestamps[:n], dtype=float)
+        if np.any(p <= 0):
+            return None
+        logp = np.log(p)
+        dlog = np.diff(logp)
+        dt = np.diff(t)
+        valid = dt > 1e-6
+        if not np.any(valid):
+            return None
+        dlog = dlog[valid]
+        dt = dt[valid]
+        if len(dlog) < 12:
+            return None
+        total_dt = float(np.sum(dt))
+        if total_dt <= 1e-6:
+            return None
+        mu = float(np.sum(dlog) / total_dt)
+        resid = dlog - (mu * dt)
+        var = float(np.sum((resid ** 2) / np.maximum(dt, 1e-6)) / len(resid))
+        return math.sqrt(max(var, 1e-12))
+
+    @staticmethod
+    def _diffusion_p_up(
+        start_price: float,
+        current_price: float,
+        seconds_remaining: float,
+        sigma: float,
+    ) -> float | None:
+        """P(UP at close) via diffusion model N(x / (sigma*sqrt(t)))."""
+        if start_price <= 0 or current_price <= 0 or sigma <= 1e-10:
+            return None
+        t = max(1.0, seconds_remaining)
+        x = math.log(current_price / start_price)
+        denom = sigma * math.sqrt(t)
+        if denom < 1e-8:
+            return 1.0 if x > 0 else 0.0
+        z = max(-8.0, min(8.0, x / denom))
+        # Φ(z) via math.erfc
+        return 0.5 * math.erfc(-z / math.sqrt(2.0))
+
+    @staticmethod
+    def _compute_lag_freshness(
+        prices: list[float],
+        timestamps: list[float],
+        start_price: float,
+    ) -> float | None:
+        """Lag freshness 0-1: how recently the BTC move happened."""
+        n = min(len(prices), len(timestamps))
+        if n < 15 or start_price <= 0:
+            return None
+        current = float(prices[n - 1])
+        latest_ts = float(timestamps[n - 1])
+
+        def _price_ago(sec: float) -> float | None:
+            target = latest_ts - max(1.0, sec)
+            for i in range(n - 1, -1, -1):
+                if float(timestamps[i]) <= target:
+                    return float(prices[i])
+            return float(prices[0])
+
+        p5 = _price_ago(5.0)
+        p10 = _price_ago(10.0)
+        p30 = _price_ago(30.0)
+        move_5s = abs(current - p5) / start_price if p5 else 0.0
+        move_10s = abs(current - p10) / start_price if p10 else 0.0
+        move_30s = abs(current - p30) / start_price if p30 else 0.0
+        if move_30s < 1e-8:
+            return 0.5
+        recency_ratio = max(move_5s, move_10s * 0.8) / max(move_30s, 1e-8)
+        return max(0.0, min(1.0, recency_ratio * 1.4))
 
     def _collect_feature_1s(self, now_ts: float):
         if self.current_window_start <= 0:
@@ -329,7 +491,7 @@ class DataCollector:
                 start_price = float(row[0])
                 self.window_start_price = start_price
 
-        btc_price = self.btc_price
+        btc_price = self.btc_price_adjusted
 
         slug = (
             self.current_market.slug
@@ -366,6 +528,31 @@ class DataCollector:
         btc_move_pct = ((btc_price - start_price) / start_price) * 100.0
         self._last_feature1s_bucket = ts_sec
 
+        # --- Enrichment: bid, spread, overround, diffusion, lag ---
+        up_bid = (
+            float(self.current_market.up_best_bid)
+            if self.current_market and self.current_market.up_best_bid is not None
+            else None
+        )
+        down_bid = (
+            float(self.current_market.down_best_bid)
+            if self.current_market and self.current_market.down_best_bid is not None
+            else None
+        )
+        spread_up = (up_ask - up_bid) if (up_ask is not None and up_bid is not None) else None
+        spread_down = (down_ask - down_bid) if (down_ask is not None and down_bid is not None) else None
+        overround = (up_ask + down_ask - 1.0) if (up_ask is not None and down_ask is not None) else None
+
+        sigma_est = self._estimate_sigma(self._recent_prices, self._recent_timestamps)
+        p_up_diffusion = (
+            self._diffusion_p_up(start_price, btc_price, seconds_remaining, sigma_est)
+            if sigma_est is not None
+            else None
+        )
+        lag_freshness = self._compute_lag_freshness(
+            self._recent_prices, self._recent_timestamps, start_price,
+        )
+
         self._feature1s_buffer.append(
             (
                 ts_sec,
@@ -374,13 +561,22 @@ class DataCollector:
                 slug,
                 seconds_elapsed,
                 seconds_remaining,
-                float(start_price) if start_price is not None else None,
-                float(btc_price) if btc_price is not None else None,
-                float(btc_move_pct) if btc_move_pct is not None else None,
+                float(start_price),
+                float(btc_price),
+                float(btc_move_pct),
                 up_ask,
                 down_ask,
                 up_mid,
                 down_mid,
+                # --- new enrichment columns (7 cols) ---
+                up_bid,
+                down_bid,
+                spread_up,
+                spread_down,
+                overround,
+                sigma_est,
+                p_up_diffusion,
+                lag_freshness,
             )
         )
 
@@ -398,7 +594,7 @@ class DataCollector:
 
     def _finalize_window(self, window_start: int, end_price: float):
         try:
-            # Get start price from DB
+            # Get start price from DB (should be official PTB)
             row = fetch_one(
                 self.db,
                 "SELECT btc_start_price FROM market_windows WHERE window_start = ?",
@@ -409,6 +605,7 @@ class DataCollector:
                 start_price = row[0]
                 outcome = "UP" if end_price >= start_price else "DOWN"
             else:
+                logger.warning("Window %s finalized without PTB start price — outcome UNKNOWN", window_start)
                 outcome = "UNKNOWN"
 
             execute_write(
@@ -426,11 +623,83 @@ class DataCollector:
                     f"Window ended: {outcome} | "
                     f"${start_price:,.2f} -> ${end_price:,.2f} ({change_pct:+.4f}%)"
                 )
+
+            # Schedule async PTB backfill — Gamma API only returns PTB after resolution
+            asyncio.get_event_loop().create_task(
+                self._backfill_ptb(window_start)
+            )
         except Exception as e:
             logger.error(f"Finalize error: {e}")
 
+    async def _backfill_ptb(self, window_start: int):
+        """After window resolution, fetch official PTB and actual settlement outcome
+        from Polymarket. Corrects market_windows with oracle-based data."""
+        slug = f"{config.polymarket.market_slug_prefix}-{window_start}"
+        for delay in (5, 15, 30):
+            await asyncio.sleep(delay)
+            try:
+                ptb = await self.poly_client.fetch_price_to_beat(slug)
+                # Also check Polymarket's actual settlement outcome (Chainlink-based)
+                poly_outcome = await self.poly_client.fetch_settlement_outcome(window_start)
+                if ptb is not None and float(ptb) > 0.0:
+                    ptb_f = float(ptb)
+                    row = fetch_one(
+                        self.db,
+                        "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
+                        (window_start,),
+                    )
+                    if row is None:
+                        return
+                    old_start = float(row[0]) if row[0] else None
+                    end_price = float(row[1]) if row[1] else None
+                    old_outcome = str(row[2]) if row[2] else None
+                    # Prefer Polymarket's oracle-based outcome over Binance comparison
+                    if poly_outcome in ("UP", "DOWN"):
+                        outcome = poly_outcome
+                    elif end_price is not None:
+                        outcome = "UP" if end_price >= ptb_f else "DOWN"
+                    else:
+                        outcome = None
+                    execute_write(
+                        self.db,
+                        """UPDATE market_windows
+                           SET btc_start_price = ?, actual_outcome = COALESCE(?, actual_outcome)
+                           WHERE window_start = ?""",
+                        (ptb_f, outcome, window_start),
+                    )
+                    self.db.commit()
+                    delta = abs(ptb_f - old_start) if old_start else 0
+                    corrected = (
+                        f" [CORRECTED from {old_outcome}]"
+                        if old_outcome and outcome and old_outcome != outcome
+                        else ""
+                    )
+                    logger.info(
+                        "PTB backfill: %s | $%.2f (was $%.2f, delta=$%.2f) outcome=%s%s",
+                        slug, ptb_f, old_start or 0, delta, outcome, corrected,
+                    )
+                    return
+                elif poly_outcome in ("UP", "DOWN"):
+                    # No PTB yet but we have the settlement outcome
+                    execute_write(
+                        self.db,
+                        """UPDATE market_windows
+                           SET actual_outcome = ?
+                           WHERE window_start = ? AND actual_outcome != ?""",
+                        (poly_outcome, window_start, poly_outcome),
+                    )
+                    self.db.commit()
+                    logger.info(
+                        "Settlement outcome backfill: %s outcome=%s (no PTB yet)",
+                        slug, poly_outcome,
+                    )
+                    return
+            except Exception as e:
+                logger.debug("PTB backfill attempt failed for %s: %s", slug, e)
+        logger.warning("PTB backfill exhausted retries for %s", slug)
+
     async def _flush_loop(self):
-        """Periodically flush buffered data to SQLite."""
+        """Periodically flush buffered data to the database."""
         while self._running:
             await asyncio.sleep(self._flush_loop_interval)
             self._flush(force=False)
@@ -505,10 +774,6 @@ class DataCollector:
 # ---------------------------------------------------------------------------
 
 def show_status():
-    if is_sqlite_backend() and not DB_PATH.exists():
-        print("No database found. Run `python data_collector.py` first.")
-        return
-
     try:
         conn = connect_db()
         init_market_schema(conn)
@@ -545,7 +810,7 @@ def show_status():
         "SELECT COUNT(*) FROM market_windows WHERE actual_outcome='DOWN'"
     )[0]
 
-    db_size_line = f"{DB_PATH.stat().st_size / 1024 / 1024:.1f} MB" if is_sqlite_backend() else "N/A (MariaDB)"
+    db_size_line = "MariaDB"
 
     print(f"""
 {'='*50}
@@ -603,10 +868,6 @@ def show_status():
 
 
 def export_data():
-    if is_sqlite_backend() and not DB_PATH.exists():
-        print("No database found.")
-        return
-
     import pandas as pd
 
     try:
