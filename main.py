@@ -3161,7 +3161,7 @@ class TradingBot:
         )
         if decision.direction == "DOWN" and seconds_elapsed > down_entry_end:
             self._log_rejected_live(
-                decision, ctx, sec_elapsed, "down_late_entry",
+                decision, ctx, seconds_elapsed, "down_late_entry",
                 f"DOWN late entry: elapsed={seconds_elapsed:.0f}s > {down_entry_end:.0f}s",
             )
             return
@@ -3251,7 +3251,7 @@ class TradingBot:
         )
         if decision.direction == "DOWN" and side_ask is not None and side_ask < down_min_price:
             self._log_rejected_live(
-                decision, ctx, sec_elapsed, "down_cheap_token",
+                decision, ctx, seconds_elapsed, "down_cheap_token",
                 f"cheap DOWN token: ask={side_ask:.3f} < {down_min_price:.3f}",
             )
             return
@@ -3277,7 +3277,7 @@ class TradingBot:
         )
         if abs(btc_move_from_start_pct) < min_boundary:
             self._log_rejected_live(
-                decision, ctx, sec_elapsed, "divergence_risk",
+                decision, ctx, seconds_elapsed, "divergence_risk",
                 f"divergence risk: |btc_move|={abs(btc_move_from_start_pct):.4f}% < {min_boundary:.4f}%",
             )
             return
