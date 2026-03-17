@@ -326,7 +326,7 @@ def _send_paper_close_telegram(
 
 
 PAPER_RISK_FRACTION = float(os.getenv("PAPER_RISK_FRACTION", "0.20"))
-PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.015"))
+PAPER_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.020"))
 PAPER_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.50"))
 PAPER_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.22"))
 PAPER_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.52"))
@@ -340,7 +340,8 @@ PAPER_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "100"))
 PAPER_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "16"))
 PAPER_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
 PAPER_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
-PAPER_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.030"))
+PAPER_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.040"))
+PAPER_DOWN_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.050"))
 # Dynamic minimum trade gap:
 # - base gap is permissive enough to allow a strong signal in the next 5m window
 # - adaptive gap expands toward target gap when performance deteriorates
@@ -375,7 +376,7 @@ PAPER_MIN_LAG_PROB_EDGE = float(os.getenv("PAPER_MIN_LAG_PROB_EDGE", "0.020"))
 PAPER_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
 PAPER_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
 # If opposite ask is materially higher than selected side ask, skip unless model/confidence are very strong.
-PAPER_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
+PAPER_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.50"))
 PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
 PAPER_CONTRA_OVERRIDE_MIN_CONF = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
 # Additional trend alignment to avoid entering on short-lived flips near local extrema.
@@ -1158,8 +1159,37 @@ def open_trade_if_signal(
     if exists:
         return False
 
-    up_ask_val = _safe_prob(market.get("up_ask"))
-    down_ask_val = _safe_prob(market.get("down_ask"))
+    # ── Fetch REAL-TIME CLOB ask prices (same source as live trading) ──
+    # This ensures paper and live see identical orderbook state.
+    up_token_id = window.get("up_token_id")
+    down_token_id = window.get("down_token_id")
+
+    up_ask_val = _safe_prob(market.get("up_ask"))     # DB fallback
+    down_ask_val = _safe_prob(market.get("down_ask"))  # DB fallback
+
+    if up_token_id and down_token_id:
+        from polymarket_client import fetch_clob_book_sync
+        _up_bid, _up_ask, _ = fetch_clob_book_sync(up_token_id)
+        _dn_bid, _dn_ask, _ = fetch_clob_book_sync(down_token_id)
+        clob_up = _up_ask if 0 < _up_ask < 1 else None
+        clob_dn = _dn_ask if 0 < _dn_ask < 1 else None
+        if clob_up is not None or clob_dn is not None:
+            db_up = up_ask_val
+            db_dn = down_ask_val
+            up_ask_val = clob_up if clob_up is not None else up_ask_val
+            down_ask_val = clob_dn if clob_dn is not None else down_ask_val
+            if db_up is not None and clob_up is not None and abs(db_up - clob_up) > 0.03:
+                logger.warning(
+                    "Paper CLOB vs DB divergence ws=%s: UP db=%.3f clob=%.3f",
+                    window_start, db_up, clob_up,
+                )
+            if db_dn is not None and clob_dn is not None and abs(db_dn - clob_dn) > 0.03:
+                logger.warning(
+                    "Paper CLOB vs DB divergence ws=%s: DOWN db=%.3f clob=%.3f",
+                    window_start, db_dn, clob_dn,
+                )
+    else:
+        logger.debug("No token IDs in snapshot; using DB odds (ws=%s)", window_start)
 
     entry_price = up_ask_val if direction == "UP" else down_ask_val
     if entry_price is None:
@@ -1216,10 +1246,15 @@ def open_trade_if_signal(
     btc_move_from_start_pct = ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
     # Divergence risk filter: Binance-Chainlink price gap can flip settlement
     # outcome when BTC is too close to window start price.
-    if abs(btc_move_from_start_pct) < PAPER_MIN_BOUNDARY_DIST_PCT:
+    # DOWN needs a wider boundary distance due to higher mean-reversion + Chainlink UP bias
+    effective_boundary = (
+        PAPER_DOWN_MIN_BOUNDARY_DIST_PCT if direction == "DOWN"
+        else PAPER_MIN_BOUNDARY_DIST_PCT
+    )
+    if abs(btc_move_from_start_pct) < effective_boundary:
         logger.debug(
-            "Skip divergence risk ws=%s: |btc_move|=%.4f%% < %.4f%%",
-            window_start, abs(btc_move_from_start_pct), PAPER_MIN_BOUNDARY_DIST_PCT,
+            "Skip divergence risk ws=%s dir=%s: |btc_move|=%.4f%% < %.4f%%",
+            window_start, direction, abs(btc_move_from_start_pct), effective_boundary,
         )
         return False
     recent_move_pct = _recent_move_pct(
@@ -1739,6 +1774,26 @@ def resolve_open_trades(conn) -> int:
         odds_row = _latest_odds_for_window(conn, ws)
         if not odds_row:
             continue
+
+        # Overlay real-time CLOB prices onto odds_row for mark-to-market
+        _win_row = fetch_one_dict(
+            conn,
+            "SELECT up_token_id, down_token_id FROM market_windows WHERE window_start = ? LIMIT 1",
+            (ws,),
+        )
+        if _win_row and _win_row.get("up_token_id") and _win_row.get("down_token_id"):
+            from polymarket_client import fetch_clob_book_sync
+            _ub, _ua, _ = fetch_clob_book_sync(str(_win_row["up_token_id"]))
+            _db2, _da, _ = fetch_clob_book_sync(str(_win_row["down_token_id"]))
+            if 0 < _ua < 1:
+                odds_row["up_best_ask"] = _ua
+            if 0 < _ub < 1:
+                odds_row["up_best_bid"] = _ub
+            if 0 < _da < 1:
+                odds_row["down_best_ask"] = _da
+            if 0 < _db2 < 1:
+                odds_row["down_best_bid"] = _db2
+
         _exit_px, _value, mtm_pnl, mtm_roi_pct = _mark_to_market(
             direction=direction,
             stake=stake,

@@ -569,10 +569,10 @@ class Backtester:
             # Quick filter
             btc_change_pct = ((btc_current - btc_start) / btc_start) * 100.0
             # Divergence risk: Binance-Chainlink gap can flip outcomes near start price.
-            # Only apply in early window (< 120s) — after that, price has had time
-            # to establish direction and the entry gate handles quality.
-            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.030"))
-            if abs(btc_change_pct) < _bt_min_boundary and seconds_elapsed < 120:
+            # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias.
+            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.040"))
+            _bt_down_boundary = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.050"))
+            if abs(btc_change_pct) < _bt_min_boundary:
                 check_time += self.check_interval
                 continue
 
@@ -626,11 +626,15 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
-            # DOWN-specific entry time cutoff (late DOWN entries lose money)
-            _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
-            if decision.direction == "DOWN" and seconds_elapsed > _bt_down_end:
-                check_time += self.check_interval
-                continue
+            # DOWN-specific: wider boundary distance + entry time cutoff
+            if decision.direction == "DOWN":
+                if abs(btc_change_pct) < _bt_down_boundary:
+                    check_time += self.check_interval
+                    continue
+                _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
+                if seconds_elapsed > _bt_down_end:
+                    check_time += self.check_interval
+                    continue
 
             support_votes = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
             support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
@@ -755,7 +759,7 @@ class Backtester:
                         continue
 
             # --- Contra gap (matches paper/live) ---
-            _bt_contra = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
+            _bt_contra = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.50"))
             _bt_contra_prob = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
             _bt_contra_conf = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
             if up_ask is not None and down_ask is not None:

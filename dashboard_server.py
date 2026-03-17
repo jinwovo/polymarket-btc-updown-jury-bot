@@ -2010,6 +2010,8 @@ def build_snapshot() -> dict:
                 "seconds_elapsed": elapsed,
                 "seconds_remaining": remain,
                 "progress_pct": progress,
+                "up_token_id": str(window["up_token_id"]) if window and window.get("up_token_id") else None,
+                "down_token_id": str(window["down_token_id"]) if window and window.get("down_token_id") else None,
             },
             "market": market_obj,
             "signal": signal,

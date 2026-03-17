@@ -580,7 +580,7 @@ class TradingConfig:
         default_factory=lambda: float(os.getenv("LIVE_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
     )
     live_max_contra_gap: float = field(
-        default_factory=lambda: float(os.getenv("LIVE_MAX_CONTRA_GAP", "0.030"))
+        default_factory=lambda: float(os.getenv("LIVE_MAX_CONTRA_GAP", "0.50"))
     )
     live_contra_override_min_model_prob: float = field(
         default_factory=lambda: float(os.getenv("LIVE_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))

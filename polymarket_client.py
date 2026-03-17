@@ -1935,3 +1935,34 @@ class PolymarketClient:
     async def close(self):
         self.stop_odds_polling()
         await self._http.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Synchronous CLOB fetch — used by paper_trade_sim to match live ask prices
+# ---------------------------------------------------------------------------
+
+def fetch_clob_book_sync(token_id: str) -> tuple[float, float, float]:
+    """
+    Synchronous CLOB orderbook fetch — returns (best_bid, best_ask, mid_price).
+    Paper trade uses this so it sees the exact same prices as the live trading path,
+    instead of reading potentially stale DB odds.
+    Falls back to (0.0, 1.0, 0.5) on any error.
+    """
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                f"{config.polymarket.clob_url}/book",
+                params={"token_id": token_id},
+            )
+            if resp.status_code != 200:
+                return 0.0, 1.0, 0.5
+            book = resp.json()
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            best_bid = max((float(b.get("price", 0.0)) for b in bids), default=0.0)
+            best_ask = min((float(a.get("price", 1.0)) for a in asks), default=1.0)
+            mid = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask < 1 else 0.5
+            return best_bid, best_ask, mid
+    except Exception as e:
+        logger.debug("fetch_clob_book_sync(%s) failed: %s", token_id, e)
+        return 0.0, 1.0, 0.5

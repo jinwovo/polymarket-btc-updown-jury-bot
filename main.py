@@ -245,7 +245,7 @@ MIRROR_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.020"))
 MIRROR_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
 MIRROR_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.40"))
 MIRROR_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.52"))
-MIRROR_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "10"))
+MIRROR_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
 MIRROR_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
 MIRROR_DOWN_ENTRY_END_SEC = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
 MIRROR_DOWN_MIN_ENTRY_PRICE = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.42"))
@@ -254,12 +254,13 @@ MIRROR_MIN_TICK_SAMPLES = int(os.getenv("PAPER_MIN_TICK_SAMPLES", "100"))
 MIRROR_MIN_ODDS_SAMPLES = int(os.getenv("PAPER_MIN_ODDS_SAMPLES", "16"))
 MIRROR_RECENT_MOVE_LOOKBACK_SEC = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
 MIRROR_MIN_RECENT_MOVE_PCT = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
-MIRROR_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.025"))
+MIRROR_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.040"))
+MIRROR_DOWN_MIN_BOUNDARY_DIST_PCT = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.050"))
 MIRROR_TREND_ALIGN_LOOKBACK_SEC = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
 MIRROR_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
 MIRROR_MAX_OPPOSITE_IMPLIED = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
 MIRROR_MIN_ENTRY_SIDE_IMPLIED = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
-MIRROR_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.030"))
+MIRROR_MAX_CONTRA_GAP = float(os.getenv("PAPER_MAX_CONTRA_GAP", "0.50"))
 MIRROR_CONTRA_OVERRIDE_MIN_MODEL_PROB = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_MODEL_PROB", "0.66"))
 MIRROR_CONTRA_OVERRIDE_MIN_CONF = float(os.getenv("PAPER_CONTRA_OVERRIDE_MIN_CONF", "0.75"))
 MIRROR_DOWN_ABOVE_START_BLOCK_PCT = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
@@ -3270,11 +3271,19 @@ class TradingBot:
             else 0.0
         )
         # Divergence risk filter: Binance-Chainlink gap can flip settlement
-        min_boundary = (
-            float(MIRROR_MIN_BOUNDARY_DIST_PCT)
-            if LIVE_MIRROR_PAPER_GATES
-            else float(getattr(config.trading, "min_boundary_dist_pct", 0.025))
-        )
+        # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias
+        if decision.direction == "DOWN":
+            min_boundary = (
+                float(MIRROR_DOWN_MIN_BOUNDARY_DIST_PCT)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(getattr(config.trading, "down_min_boundary_dist_pct", 0.050))
+            )
+        else:
+            min_boundary = (
+                float(MIRROR_MIN_BOUNDARY_DIST_PCT)
+                if LIVE_MIRROR_PAPER_GATES
+                else float(getattr(config.trading, "min_boundary_dist_pct", 0.040))
+            )
         if abs(btc_move_from_start_pct) < min_boundary:
             self._log_rejected_live(
                 decision, ctx, seconds_elapsed, "divergence_risk",
