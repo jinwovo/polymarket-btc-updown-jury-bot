@@ -16,8 +16,8 @@ from env_paths import (
 # 3) auto-generated polymarket API creds
 try:
     from dotenv import load_dotenv
-    load_dotenv(PUBLIC_RUNTIME_ENV_PATH, override=False)
-    load_dotenv(SECRETS_ENV_PATH, override=False)
+    load_dotenv(PUBLIC_RUNTIME_ENV_PATH, override=True)
+    load_dotenv(SECRETS_ENV_PATH, override=True)
     load_dotenv(GENERATED_POLYMARKET_ENV_PATH, override=False)
 except ImportError:
     pass
