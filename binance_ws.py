@@ -30,6 +30,9 @@ CHAINLINK_BTC_USD_POLYGON = "0xc907E116054Ad103354f2D350FD2514433D57F6f"
 CHAINLINK_POLL_INTERVAL = 10  # poll every 10s to catch 27s updates quickly
 POLYGON_RPC_URLS = [
     "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon-rpc.com",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon.llamarpc.com",
 ]
 
 AGGREGATOR_V3_ABI = [
@@ -136,11 +139,26 @@ class ChainlinkCalibrator:
                 age,
             )
 
+    # Max age (seconds) before calibration is considered stale.
+    # If Chainlink hasn't updated in this long, fall back to raw Binance
+    # to avoid huge price errors from an outdated offset.
+    MAX_CALIBRATION_AGE_SEC = 120.0
+
     def adjust(self, binance_price: float) -> float:
         """Apply calibration offset to a Binance price.
         Returns Chainlink-estimated price."""
         if self.chainlink_price is None:
             return binance_price  # no calibration data yet
+        # Stale calibration guard: if last Chainlink update is too old,
+        # the offset may be wildly wrong.  Fall back to raw Binance.
+        age = time.time() - self.chainlink_updated_at if self.chainlink_updated_at > 0 else 999
+        if age > self.MAX_CALIBRATION_AGE_SEC:
+            logger.warning(
+                "Chainlink calibration stale (%.0fs old, max=%ds). "
+                "Using raw Binance price $%.2f instead of adjusted.",
+                age, int(self.MAX_CALIBRATION_AGE_SEC), binance_price,
+            )
+            return binance_price
         return binance_price - self.offset
 
     @property
