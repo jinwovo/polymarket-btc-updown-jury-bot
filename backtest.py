@@ -847,7 +847,7 @@ class Backtester:
             self.last_trade_ts = check_time  # trade gap enforcement
 
             rm_trade = self.risk_mgr.record_trade(decision.direction, bet_size, entry_price)
-            self.risk_mgr.resolve_trade(rm_trade, won)
+            self.risk_mgr.resolve_trade(rm_trade, won, actual_pnl=pnl)
             return True
 
             check_time += self.check_interval

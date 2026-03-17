@@ -134,19 +134,27 @@ class RiskManager:
         logger.info(f"Trade recorded: {direction} ${amount:.2f} @ {price:.4f}")
         return trade
 
-    def resolve_trade(self, trade: TradeRecord, won: bool):
-        """Resolve a pending trade with its outcome."""
+    def resolve_trade(self, trade: TradeRecord, won: bool, actual_pnl: float | None = None):
+        """Resolve a pending trade with its outcome.
+
+        Args:
+            actual_pnl: If provided, use this PnL instead of recalculating
+                        from settlement.  Needed when early exits produce a
+                        PnL different from full win/loss settlement.
+        """
+        trade.result = "WIN" if won else "LOSS"
         if won:
-            # Payout is amount / price (number of shares) * $1 per share if won
-            shares = trade.amount / trade.price if trade.price > 0 else 0
-            payout = shares  # $1 per winning share
-            trade.pnl = payout - trade.amount
-            trade.result = "WIN"
             self.consecutive_losses = 0
         else:
-            trade.pnl = -trade.amount
-            trade.result = "LOSS"
             self.consecutive_losses += 1
+
+        if actual_pnl is not None:
+            trade.pnl = actual_pnl
+        elif won:
+            shares = trade.amount / trade.price if trade.price > 0 else 0
+            trade.pnl = shares - trade.amount
+        else:
+            trade.pnl = -trade.amount
 
         self.daily_pnl += trade.pnl
         self.equity += trade.pnl

@@ -491,6 +491,12 @@ PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC = float(
 PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT = float(
     os.getenv("PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT", "110")
 )
+PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_OPPOSITE_ASK = float(
+    os.getenv("PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_OPPOSITE_ASK", "0.05")
+)
+PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_MIN_HOLD_SEC = float(
+    os.getenv("PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_MIN_HOLD_SEC", "10")
+)
 
 # In-memory debounce for noisy opposite-probability spikes.
 _EARLY_EXIT_OPPOSITE_HITS: dict[int, int] = {}
@@ -541,6 +547,8 @@ def _paper_exit_policy_config() -> ExitPolicyConfig:
         break_even_force_peak_pct=float(PAPER_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT),
         profit_take_late_only_remaining_sec=float(PAPER_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC),
         profit_take_force_roi_pct=float(PAPER_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT),
+        near_certain_win_opposite_ask=float(PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_OPPOSITE_ASK),
+        near_certain_win_min_hold_sec=float(PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_MIN_HOLD_SEC),
     )
 
 

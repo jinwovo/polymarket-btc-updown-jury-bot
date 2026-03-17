@@ -100,6 +100,11 @@ class ExitPolicyConfig:
     strong_favor_min_move_pct: float = 0.020
     favor_hold_min_remaining_sec: float = 60.0
     favor_hold_break_even_floor_roi_pct: float = -8.0
+    # Near-certain win: exit immediately when opposite token is this cheap
+    # (our side ≈ 1 - opposite_ask, e.g. opposite <= 0.05 → side >= 0.95).
+    # No point risking a late reversal when we've essentially won.
+    near_certain_win_opposite_ask: float = 0.05
+    near_certain_win_min_hold_sec: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -244,6 +249,26 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
             boundary_sigma_pct=boundary_sigma_pct,
             strong_favor=strong_favor,
             severe_adverse=severe_adverse,
+        )
+
+    # Near-certain win: our side token ≈ 1 - opposite_ask.
+    # When opposite is nearly worthless, we've essentially won — sell now
+    # rather than risk a late reversal for a tiny extra payout.
+    ncw_threshold = float(cfg.near_certain_win_opposite_ask)
+    if (
+        reason is None
+        and ncw_threshold > 0
+        and inp.opposite_ask is not None
+        and float(inp.opposite_ask) <= ncw_threshold
+        and hold_sec >= float(cfg.near_certain_win_min_hold_sec)
+        and mtm_roi_pct > 0
+    ):
+        side_approx = 1.0 - float(inp.opposite_ask)
+        reason = (
+            f"near_certain_win(opposite_ask={float(inp.opposite_ask):.3f}"
+            f" <= {ncw_threshold:.3f},"
+            f" side≈{side_approx:.3f},"
+            f" roi={mtm_roi_pct:+.2f}%, hold={hold_sec:.1f}s)"
         )
 
     if (

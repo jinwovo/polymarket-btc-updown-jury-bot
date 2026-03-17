@@ -304,6 +304,10 @@ def _classify_order_exception(exc: Exception) -> tuple[str, bool]:
     ):
         return "rejected_no_match_fak", False
 
+    # Network-level errors: request never reached the server, so no fill possible.
+    if "request exception" in lower:
+        return "network_error", False
+
     # Unknown exceptions are treated as uncertain to preserve safety.
     return "unknown_error", True
 
@@ -1260,7 +1264,22 @@ class PolymarketClient:
             order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
             client = self._clob_client
             signed = await asyncio.to_thread(client.create_order, order_args)
-            resp = await asyncio.to_thread(client.post_order, signed, orderType=order_type_value)
+
+            # Retry once on transient network errors (Request exception!)
+            max_post_attempts = 2
+            resp = None
+            for _attempt in range(max_post_attempts):
+                try:
+                    resp = await asyncio.to_thread(client.post_order, signed, orderType=order_type_value)
+                    break
+                except Exception as _net_err:
+                    if "request exception" in str(_net_err).lower() and _attempt < max_post_attempts - 1:
+                        logger.warning("Limit order network error (attempt %d), retrying in 0.5s: %s", _attempt + 1, _net_err)
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise
+            if resp is None:
+                raise RuntimeError("post_order returned None after retries")
 
             result = self._normalize_execution_result(
                 mode=mode,

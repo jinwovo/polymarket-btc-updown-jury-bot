@@ -1927,12 +1927,19 @@ class TradingBot:
             )
             if recovered:
                 return True
+            # Recovery confirmed no position on exchange — order never filled.
+            # Safe to skip without kill-switch; next signal will retry naturally.
             if self._maintenance_mode:
                 logger.warning(
                     "%s uncertain entry unresolved; maintenance pause active, suppressing kill-switch fallback",
                     source,
                 )
-                return False
+            else:
+                logger.warning(
+                    "%s uncertain entry not filled; skipping (will retry on next signal)",
+                    source,
+                )
+            return False
         return self._handle_order_result(
             result,
             direction=direction,
@@ -1956,6 +1963,7 @@ class TradingBot:
 
         attempts = 4
         delay_sec = 0.6
+        no_position_count = 0
         for idx in range(attempts):
             if idx > 0:
                 await asyncio.sleep(delay_sec)
@@ -1965,6 +1973,7 @@ class TradingBot:
                 return False
             trade = self.current_trade
             if trade is None or trade.result != "PENDING":
+                no_position_count += 1
                 await self._log_live_exposure_snapshot(f"{source} entry-uncertain attempt={idx + 1} no-position")
                 continue
             self.current_trade_window_start = (
@@ -2007,6 +2016,16 @@ class TradingBot:
                 )
             return True
         await self._log_live_exposure_snapshot(f"{source} entry-uncertain final")
+        # If ALL attempts confirmed no position on exchange, the order simply
+        # never went through (API hiccup).  Safe to skip — no kill-switch needed.
+        if no_position_count >= attempts:
+            logger.warning(
+                "%s uncertain entry confirmed NOT filled after %s attempts "
+                "(balance=0, orders=0). Skipping — next signal will retry.",
+                source,
+                attempts,
+            )
+            return False
         logger.warning(
             "%s uncertain entry could not be confirmed via reconcile after %s attempts",
             source,
@@ -4032,7 +4051,7 @@ class TradingBot:
             resampled_ts = [float(t.timestamp) for t in recent]
 
         return MarketContext(
-            current_binance_price=self.price_feed.current_price,
+            current_binance_price=self.price_feed.adjusted_price or self.price_feed.current_price,
             market_start_price=self.market_start_price,
             recent_prices=resampled_prices,
             recent_timestamps=resampled_ts,
