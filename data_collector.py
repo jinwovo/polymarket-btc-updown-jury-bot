@@ -117,7 +117,7 @@ class DataCollector:
         logger.info("Recording: BTC ticks + Polymarket odds")
         logger.info("=" * 50)
 
-        # Run in parallel: Binance WS + Polymarket polling + flush loop + Chainlink
+        # Run in parallel: Binance WS + Polymarket polling + flush loop + Chainlink + price sync
         await asyncio.gather(
             self._binance_ws_loop(),
             self._polymarket_poll_loop(),
@@ -127,6 +127,7 @@ class DataCollector:
                 get_binance_price=lambda: self.btc_price,
                 get_binance_price_at=self._get_raw_price_at,
             ),
+            self._polymarket_price_sync_loop(),
         )
 
     def _get_raw_price_at(self, ts: float):
@@ -387,6 +388,48 @@ class DataCollector:
             self.current_market.slug, prev or 0, scraped_ptb, delta, prev_src,
         )
 
+    async def _polymarket_price_sync_loop(self):
+        """Continuously extract Polymarket's 'Current price' from Playwright page
+        every ~5s (page reload + extract). Keeps Chainlink calibration offset
+        accurate, replacing unreliable RPC-based Chainlink polling."""
+        _last_log = 0.0
+        _consecutive_none = 0
+        # Wait for initial scrape to load the Playwright page
+        await asyncio.sleep(10.0)
+        while self._running:
+            try:
+                poly_price = await self.poly_client.extract_current_price()
+                if poly_price is not None and poly_price > 0:
+                    _consecutive_none = 0
+                    binance_now = self.btc_price
+                    if binance_now is not None and binance_now > 0:
+                        new_offset = binance_now - poly_price
+                        old_offset = self._chainlink.offset
+                        self._chainlink.offset = new_offset
+                        self._chainlink.chainlink_price = poly_price
+                        self._chainlink.binance_at_update = binance_now
+                        self._chainlink.chainlink_updated_at = time.time()
+                        self._chainlink.polymarket_sync_active = True
+                        self.btc_price_adjusted = binance_now - new_offset  # = poly_price
+
+                        # Log offset changes > $5 or every 60s
+                        now = time.time()
+                        offset_delta = abs(new_offset - old_offset)
+                        if offset_delta > 5.0 or (now - _last_log) > 60.0:
+                            logger.info(
+                                "Price sync: poly=$%.2f binance=$%.2f offset=$%.2f (delta=$%.2f)",
+                                poly_price, binance_now, new_offset, offset_delta,
+                            )
+                            _last_log = now
+                else:
+                    _consecutive_none += 1
+                    if _consecutive_none == 30:
+                        logger.warning("Price sync: no Polymarket price for 30s")
+                        _consecutive_none = 0
+            except Exception as e:
+                logger.debug("Price sync error: %s", e)
+            await asyncio.sleep(1.0)
+
     # ------------------------------------------------------------------
     # Inline diffusion / lag helpers (mirror judges.py logic)
     # ------------------------------------------------------------------
@@ -632,15 +675,32 @@ class DataCollector:
             logger.error(f"Finalize error: {e}")
 
     async def _backfill_ptb(self, window_start: int):
-        """After window resolution, fetch official PTB and actual settlement outcome
-        from Polymarket. Corrects market_windows with oracle-based data."""
+        """After window resolution, fetch official PTB, actual settlement outcome,
+        and Final price from Polymarket. Corrects market_windows with oracle-based data."""
         slug = f"{config.polymarket.market_slug_prefix}-{window_start}"
-        for delay in (5, 15, 30):
+        final_price_scraped = False
+        for delay in (5, 15, 30, 60, 120):
             await asyncio.sleep(delay)
             try:
                 ptb = await self.poly_client.fetch_price_to_beat(slug)
-                # Also check Polymarket's actual settlement outcome (Chainlink-based)
                 poly_outcome = await self.poly_client.fetch_settlement_outcome(window_start)
+
+                # At 60s+, also scrape Final price from the resolved page
+                if delay >= 60 and not final_price_scraped:
+                    fp = await self.poly_client.scrape_final_price(slug)
+                    if fp is not None and fp > 10000:
+                        execute_write(
+                            self.db,
+                            "UPDATE market_windows SET btc_end_price = ? WHERE window_start = ?",
+                            (fp, window_start),
+                        )
+                        self.db.commit()
+                        final_price_scraped = True
+                        logger.info(
+                            "Final price backfill: %s | end=$%.2f (scraped from Polymarket)",
+                            slug, fp,
+                        )
+
                 if ptb is not None and float(ptb) > 0.0:
                     ptb_f = float(ptb)
                     row = fetch_one(
@@ -680,7 +740,6 @@ class DataCollector:
                     )
                     return
                 elif poly_outcome in ("UP", "DOWN"):
-                    # No PTB yet but we have the settlement outcome
                     execute_write(
                         self.db,
                         """UPDATE market_windows

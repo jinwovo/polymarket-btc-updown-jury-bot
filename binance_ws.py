@@ -80,6 +80,9 @@ class ChainlinkCalibrator:
         self._running = False
         self._decimals: int = 8
         self._rpc_idx = 0
+        # When True, Polymarket scraping is the primary calibration source.
+        # Chainlink poll_loop will NOT overwrite the offset.
+        self.polymarket_sync_active: bool = False
 
     def _init_web3(self):
         try:
@@ -187,15 +190,22 @@ class ChainlinkCalibrator:
                     None, self._fetch_once
                 )
                 if new_round:
-                    # Use Binance price at the exact time Chainlink updated
-                    bp = None
-                    if get_binance_price_at is not None and self.chainlink_updated_at > 0:
-                        bp = get_binance_price_at(self.chainlink_updated_at)
-                    # Fallback to current price if lookup fails
-                    if bp is None or bp <= 0:
-                        bp = get_binance_price()
-                    if bp is not None and bp > 0:
-                        self.update_offset(bp)
+                    # Skip offset update when Polymarket scraping is active
+                    # (it's more accurate and updates every 1s)
+                    if self.polymarket_sync_active:
+                        logger.debug(
+                            "Chainlink new round detected but polymarket_sync_active, skipping offset update"
+                        )
+                    else:
+                        # Use Binance price at the exact time Chainlink updated
+                        bp = None
+                        if get_binance_price_at is not None and self.chainlink_updated_at > 0:
+                            bp = get_binance_price_at(self.chainlink_updated_at)
+                        # Fallback to current price if lookup fails
+                        if bp is None or bp <= 0:
+                            bp = get_binance_price()
+                        if bp is not None and bp > 0:
+                            self.update_offset(bp)
             except Exception as e:
                 logger.warning("Chainlink poll error: %s", e)
             await asyncio.sleep(CHAINLINK_POLL_INTERVAL)

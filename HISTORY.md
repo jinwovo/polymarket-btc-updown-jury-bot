@@ -25,6 +25,42 @@ Trade ID 기준으로 어떤 로직이 적용되었는지 추적합니다.
 
 ---
 
+## 2026-03-18
+
+### 변경사항 — BTC 현재가 소스 전환 (Chainlink RPC → Polymarket Playwright 스크래핑)
+
+**심각도: CRITICAL — 실제 돈 손실 발생**
+
+- **문제 발견**: 봇의 BTC 현재가가 Polymarket 표시 가격과 **$90~178 차이**
+  - Chainlink RPC (Polygon) 503 에러 빈발 → 오프셋 보정 실패 → 가격 드리프트
+  - 실제 Live 거래에서 WIN으로 표시됐지만 **실제로는 LOST** (가격 오차로 승/패 판정 오류)
+  - Settlement은 Chainlink oracle 기준 → 봇 가격 ≠ 결제 가격
+
+- **해결: Polymarket 페이지에서 실시간 스크래핑 (1초 간격)**
+  - `<number-flow-react>` Shadow DOM 웹 컴포넌트 → `--current` CSS 변수로 각 자릿수 읽기
+  - `polymarket_client.py`: `_extract_prices_from_page()` Shadow DOM 파싱, `extract_current_price()` 비동기 래퍼
+  - `main.py` / `data_collector.py`: `_polymarket_price_sync_loop()` 1초 간격 실행
+  - `binance_ws.py`: `polymarket_sync_active` 플래그 → Chainlink이 오프셋 덮어쓰기 방지
+
+- **기타 수정사항**
+  - `config.py`: `load_dotenv(override=False)` → `override=True` (재시작 시 env 반영 안 되는 버그)
+  - `polymarket_client.py`: API 네트워크 에러 → kill-switch 대신 재시도 (`"request exception"` 분류)
+  - `main.py`: uncertain entry에서 no-position 확인 시 kill-switch 미발동
+  - `binance_ws.py`: Chainlink RPC fallback URL 4개, stale calibration guard (120초)
+  - Paper/Live 진입 게이트 정렬 (implied_side, boundary_dist, down_min_price 완화)
+
+### ⚠️ 데이터 정확도 경계선
+
+| 기간 | BTC 가격 소스 | 정확도 |
+|------|---------------|--------|
+| ~2026-03-17 | Binance + Chainlink RPC 보정 | **$50~180 오차 가능** |
+| 2026-03-18~ | Polymarket Playwright 스크래핑 (1초) | **정확** (Polymarket 표시가 = 결제 기준) |
+
+- **이전 백테스팅 결과는 신뢰하기 어려움** — `btc_ticks`, `feature_1s`의 가격 자체가 틀렸을 가능성
+- **2026-03-18부터 새로 데이터 적재** → 이 데이터로 백테스팅해야 정확한 결과
+
+---
+
 ## 2026-03-16
 
 ### 변경사항 (Paper #39~)
@@ -237,3 +273,7 @@ Trade ID 기준으로 어떤 로직이 적용되었는지 추적합니다.
 | 03-16 | **코드 clamp가 env 설정 무시**: `min(35, env)` / `max(-45, env)` 같은 safety clamp가 hold-to-expiry 설정(999/-85)을 덮어씀. env만 바꾸면 안 되고 코드의 clamp도 확인해야 함 |
 | 03-16 | Entry 파라미터(lag_edge, min_edge, min_roi) 전부 non-binding — 실제 gate는 jury 3/3 consensus + boundary distance. 수익 극대화 레버는 bet sizing(max_bet_size)뿐 |
 | 03-16 | 백테스트 속도: pandas `.abs().idxmin()` O(n) → `np.searchsorted` O(log n)로 10x 개선. sweep 가능해짐 |
+| 03-18 | **BTC 현재가 $90~178 오차**: Chainlink RPC 불안정 → 실거래 승/패 판정 오류. Polymarket Playwright 스크래핑으로 전환 |
+| 03-18 | **`<number-flow-react>` Shadow DOM**: Polymarket 가격이 일반 텍스트가 아닌 웹 컴포넌트. `--current` CSS 변수로 읽어야 함 |
+| 03-18 | **2026-03-18 이전 데이터 신뢰 불가**: Chainlink 드리프트로 btc_ticks/feature_1s 가격 오차. 새 데이터로 백테스팅 필요 |
+| 03-18 | `load_dotenv(override=False)` 함정: 부모 프로세스(dashboard)가 옛 env 값 가지고 있으면 자식에서 변경해도 무시됨 |

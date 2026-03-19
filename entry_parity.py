@@ -87,7 +87,7 @@ def compute_parity_thresholds(
         adaptive_min_ev = max(0.0, adaptive_min_ev * (1.0 - relax))
         adaptive_min_support = _clamp(adaptive_min_support - (0.10 * relax), 0.35, 1.0)
         adaptive_min_conf = _clamp(adaptive_min_conf - (0.08 * relax), 0.15, 0.80)
-        adaptive_max_ask = _clamp(adaptive_max_ask + (0.03 * relax), ask_floor, 0.54)
+        adaptive_max_ask = _clamp(adaptive_max_ask + (0.03 * relax), ask_floor, float(cfg.max_entry_price) + 0.02)
 
     dynamic_gap = float(cfg.base_trade_gap_sec) + strictness_eff * (
         max(float(cfg.base_trade_gap_sec), float(cfg.target_trade_gap_sec))

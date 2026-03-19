@@ -325,6 +325,9 @@ class MarketInfo:
     up_price: float       # current price of UP outcome (0-1)
     down_price: float     # current price of DOWN outcome (0-1)
     active: bool
+    # Gamma API initial prices (never overwritten by refresh_odds)
+    gamma_up_price: float = 0.5
+    gamma_down_price: float = 0.5
     # Real-time orderbook snapshot
     up_best_bid: float = 0.0
     up_best_ask: float = 1.0
@@ -415,6 +418,7 @@ class PolymarketClient:
     _pw_browser = None   # Chromium browser (kept alive)
     _pw_page = None      # Reusable page
     _pw_executor = None  # Dedicated single thread for Playwright (thread-bound)
+    _pw_navigating = False  # True during page.goto/reload — sync loop should skip
 
     @classmethod
     def _ensure_browser(cls):
@@ -448,6 +452,8 @@ class PolymarketClient:
     @classmethod
     def _extract_prices_from_page(cls) -> tuple[Optional[float], Optional[float]]:
         """Extract PTB and Current price from page using JavaScript.
+        Current price uses <number-flow-react> Shadow DOM web component.
+        Each digit has CSS variable --current: N with the actual visible digit.
         Returns (ptb, current_price). Either may be None."""
         import re
         ptb = None
@@ -457,45 +463,127 @@ class PolymarketClient:
                 const body = document.body.innerText;
                 const result = {};
 
-                // Extract "Price to beat" value — take text up to "Current price" or 100 chars
+                // --- PTB: plain text, easy to parse ---
                 const ptbIdx = body.indexOf('Price to beat');
                 if (ptbIdx !== -1) {
                     const after = body.substring(ptbIdx + 13);
                     const cpBoundary = after.indexOf('Current price');
-                    const chunk = cpBoundary > 0 ? after.substring(0, cpBoundary) : after.substring(0, 100);
-                    result.ptb = chunk;
+                    const cpLower = after.toLowerCase().indexOf('current price');
+                    const boundary = cpBoundary > 0 ? cpBoundary : (cpLower > 0 ? cpLower : 100);
+                    result.ptb = after.substring(0, boundary);
                 }
 
-                // Extract "Current price" value — take next 100 chars
-                const cpIdx = body.indexOf('Current price');
-                if (cpIdx !== -1) {
-                    result.cp = body.substring(cpIdx + 13, cpIdx + 113);
+                // --- Current price: <number-flow-react> with Shadow DOM ---
+                // Find all number-flow-react elements on the page
+                const nfElements = document.querySelectorAll('number-flow-react');
+                const decoded = [];
+
+                for (const nf of nfElements) {
+                    const shadow = nf.shadowRoot;
+                    if (!shadow) continue;
+
+                    let price = '';
+
+                    // Read integer part digits from --current CSS variable
+                    const integerPart = shadow.querySelector('[part="integer"]');
+                    if (integerPart) {
+                        for (const child of integerPart.children) {
+                            const part = child.getAttribute('part') || '';
+                            if (part.includes('digit')) {
+                                const cur = child.style.getPropertyValue('--current');
+                                if (cur !== null && cur !== '') {
+                                    price += cur.trim();
+                                }
+                            } else if (part.includes('symbol')) {
+                                // Comma separator
+                                price += ',';
+                            }
+                        }
+                    }
+
+                    // Read fraction part
+                    const fractionPart = shadow.querySelector('[part="fraction"]');
+                    if (fractionPart) {
+                        for (const child of fractionPart.children) {
+                            const part = child.getAttribute('part') || '';
+                            if (part.includes('digit')) {
+                                const cur = child.style.getPropertyValue('--current');
+                                if (cur !== null && cur !== '') {
+                                    if (!price.includes('.')) price += '.';
+                                    price += cur.trim();
+                                }
+                            } else if (part.includes('symbol')) {
+                                price += '.';
+                            }
+                        }
+                    }
+
+                    if (price) decoded.push(price);
                 }
+
+                result.nf_prices = decoded.join('|');
+                result.nf_count = nfElements.length;
+
+                // Fallback: all dollar amounts from innerText
+                const allPrices = [];
+                const re = /\\$[\\d,]+\\.\\d{2}/g;
+                let m;
+                while ((m = re.exec(body)) !== null) {
+                    allPrices.push(m[0]);
+                }
+                result.all_prices = allPrices.slice(0, 10).join('|');
 
                 return JSON.stringify(result);
             }""")
             if text:
                 data = json.loads(text)
-                # Parse PTB
+                # Parse PTB (plain text)
                 ptb_text = data.get("ptb", "")
-                logger.info("PTB raw text: %r", ptb_text[:80] if ptb_text else "")
                 if ptb_text:
                     m = re.search(r'\$?([\d,]+\.\d{2})', ptb_text)
                     if m:
                         val = float(m.group(1).replace(",", ""))
                         if val > 1000:
                             ptb = val
-                # Parse Current price
-                cp_text = data.get("cp", "")
-                logger.info("CP raw text: %r", cp_text[:80] if cp_text else "")
-                if cp_text:
-                    m = re.search(r'\$?([\d,]+\.\d{2})', cp_text)
-                    if m:
-                        val = float(m.group(1).replace(",", ""))
-                        if val > 1000:
-                            current = val
-        except Exception:
-            pass
+
+                # Parse Current price from number-flow-react Shadow DOM
+                nf_prices = data.get("nf_prices", "")
+                if nf_prices:
+                    for price_str in nf_prices.split("|"):
+                        cleaned = price_str.replace(",", "")
+                        m = re.search(r'(\d+\.\d{2})', cleaned)
+                        if m:
+                            val = float(m.group(1))
+                            if val > 10000:  # BTC-range price
+                                current = val
+                                logger.debug(
+                                    "CP from number-flow-react: $%.2f (raw=%r)",
+                                    current, price_str,
+                                )
+                                break
+
+                # Fallback: second BTC price from all_prices
+                if current is None:
+                    all_prices_str = data.get("all_prices", "")
+                    if all_prices_str:
+                        btc_prices = []
+                        for p_str in all_prices_str.split("|"):
+                            m = re.search(r'[\d,]+\.\d{2}', p_str)
+                            if m:
+                                val = float(m.group(0).replace(",", ""))
+                                if val > 10000:
+                                    btc_prices.append(val)
+                        if len(btc_prices) >= 2:
+                            current = btc_prices[1]
+
+                if current is None:
+                    logger.warning(
+                        "CP extraction failed. nf_prices=%r nf_count=%s all_prices=%r",
+                        nf_prices, data.get("nf_count", 0),
+                        data.get("all_prices", "")[:150],
+                    )
+        except Exception as e:
+            logger.debug("Price extraction error: %s", e)
         return ptb, current
 
     @classmethod
@@ -505,6 +593,7 @@ class PolymarketClient:
         if not cls._ensure_browser():
             return None, None
         url = f"https://polymarket.com/event/{slug}"
+        cls._pw_navigating = True
         try:
             cls._pw_page.goto(url, wait_until="domcontentloaded", timeout=12000)
 
@@ -515,6 +604,7 @@ class PolymarketClient:
 
                 ptb, current = cls._extract_prices_from_page()
                 if ptb is not None:
+                    cls._pw_navigating = False
                     return ptb, current
 
                 # PTB not found — reload and try again
@@ -527,7 +617,73 @@ class PolymarketClient:
             logger.warning("PTB scrape failed for %s: %s", slug, e)
             # Full reset — browser may have crashed (EPIPE)
             cls._reset_browser()
+        finally:
+            cls._pw_navigating = False
         return None, None
+
+    @classmethod
+    def _scrape_final_price_sync(cls, slug: str) -> Optional[float]:
+        """Scrape 'Final price' from a resolved window's page using a SEPARATE TAB.
+        Main page (_pw_page) stays on the current window — price sync unaffected.
+        The Final price appears ~60s after window end as plain text.
+        Returns the BTC final price or None."""
+        import re
+        if cls._pw_browser is None:
+            if not cls._ensure_browser():
+                return None
+        url = f"https://polymarket.com/event/{slug}"
+        temp_page = None
+        try:
+            # Open a new tab — main _pw_page is untouched
+            temp_page = cls._pw_browser.new_page()
+            temp_page.goto(url, wait_until="domcontentloaded", timeout=12000)
+            import time
+            time.sleep(2.5)
+
+            # "Final price" is plain text: <span ...>$74,061.55</span>
+            text = temp_page.evaluate("""() => {
+                const body = document.body.innerText;
+                const result = {};
+
+                const fpIdx = body.indexOf('Final price');
+                if (fpIdx !== -1) {
+                    result.fp = body.substring(fpIdx + 11, fpIdx + 200);
+                }
+
+                return JSON.stringify(result);
+            }""")
+            if text:
+                data = json.loads(text)
+                fp_text = data.get("fp", "")
+                if fp_text:
+                    m = re.search(r'\$?([\d,]+\.\d{2})', fp_text)
+                    if m:
+                        val = float(m.group(1).replace(",", ""))
+                        if val > 10000:
+                            logger.info("Final price scraped: $%.2f from %s", val, slug)
+                            return val
+                logger.debug("Final price not found for %s: %r", slug, fp_text[:80] if fp_text else "")
+        except Exception as e:
+            logger.debug("Final price scrape failed for %s: %s", slug, e)
+        finally:
+            if temp_page:
+                try:
+                    temp_page.close()
+                except Exception:
+                    pass
+        return None
+
+    async def scrape_final_price(self, slug: str, **kwargs) -> Optional[float]:
+        """Scrape Final price from resolved window using a separate browser tab.
+        Does NOT interrupt the main page or price sync loop."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._get_executor(), self._scrape_final_price_sync, slug
+            )
+        except Exception as e:
+            logger.debug("Final price scrape error for %s: %s", slug, e)
+            return None
 
     @classmethod
     def _reset_browser(cls):
@@ -593,6 +749,32 @@ class PolymarketClient:
         except Exception as e:
             logger.debug("PTB scrape thread error for %s: %s", slug, e)
             return None, None
+
+    @classmethod
+    def _extract_current_price_sync(cls) -> Optional[float]:
+        """Extract current BTC price from Polymarket's <number-flow-react> Shadow DOM.
+        The component is reactive — --current CSS vars update in real-time.
+        No page reload needed. Returns current BTC price or None."""
+        if cls._pw_page is None or cls._pw_navigating:
+            return None
+        try:
+            _, current = cls._extract_prices_from_page()
+            return current
+        except Exception:
+            return None
+
+    async def extract_current_price(self) -> Optional[float]:
+        """Async extraction of Polymarket's 'Current price' with page reload.
+        Returns the BTC price Polymarket displays, or None."""
+        if self._pw_page is None:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._get_executor(), self._extract_current_price_sync
+            )
+        except Exception:
+            return None
 
     async def _init_clob(self, *, force: bool = False):
         """Initialize authenticated CLOB client for trading."""
@@ -688,6 +870,8 @@ class PolymarketClient:
                 down_token_id=down_token,
                 up_price=up_price,
                 down_price=down_price,
+                gamma_up_price=up_price,
+                gamma_down_price=down_price,
                 active=market.get("active", True),
                 last_odds_update=time.time(),
                 price_to_beat=(

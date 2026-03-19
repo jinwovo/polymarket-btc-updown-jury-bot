@@ -100,7 +100,17 @@ def _get_ask_prices(ctx: MarketContext) -> tuple[float, float] | tuple[None, Non
     )
     if not (0.0 < up_px < 1.0 and 0.0 < down_px < 1.0):
         return (None, None)
-    return (float(up_px), float(down_px))
+    up_px = float(up_px)
+    down_px = float(down_px)
+    # Thin CLOB can show extreme asks (e.g. UP=0.93, DOWN=0.08) where
+    # up+down deviates wildly from 1.0.  This creates phantom "edge" that
+    # judges chase.  When overround is extreme, normalize to sum=1.0 so
+    # edge calculations compare model prob against fair implied prob.
+    total = up_px + down_px
+    if total > 0 and abs(total - 1.0) > 0.25:
+        up_px = up_px / total
+        down_px = down_px / total
+    return (up_px, down_px)
 
 
 def _estimate_diffusion_params(

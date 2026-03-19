@@ -137,6 +137,38 @@ def _recent_move_pct(
     return ((p1 - p0) / p0) * 100.0
 
 
+def _recent_move_pct_db(
+    conn, window_start: int, now_ts: float, lookback_sec: float,
+) -> float | None:
+    """DB-based recent move — identical to paper_trade_sim._recent_move_pct.
+
+    Using the same data source (btc_ticks table) ensures paper and live
+    see identical momentum/trend values for the same timestamp.
+    """
+    lo_ts = max(float(window_start), float(now_ts) - max(1.0, float(lookback_sec)))
+    hi_ts = float(now_ts)
+    first_row = fetch_one(
+        conn,
+        "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT 1",
+        (lo_ts, hi_ts),
+    )
+    last_row = fetch_one(
+        conn,
+        "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1",
+        (lo_ts, hi_ts),
+    )
+    if not first_row or not last_row:
+        return None
+    try:
+        p0 = float(first_row[0])
+        p1 = float(last_row[0])
+        if p0 <= 0.0:
+            return None
+        return ((p1 - p0) / p0) * 100.0
+    except Exception:
+        return None
+
+
 def _build_live_exit_policy_config() -> ExitPolicyConfig:
     return ExitPolicyConfig(
         enabled=bool(config.trading.live_enable_early_exit),
@@ -384,7 +416,8 @@ def _live_equity_snapshot(conn, initial_capital: float) -> tuple[float, float]:
 def _live_recent_risk_state(conn) -> tuple[int, float]:
     rows = fetch_all_dicts(
         conn,
-        """SELECT pnl
+        """SELECT pnl,
+                  COALESCE(closed_at, window_end) AS closed_ts
            FROM live_trades
            WHERE status='CLOSED'
            ORDER BY
@@ -405,8 +438,21 @@ def _live_recent_risk_state(conn) -> tuple[int, float]:
             loss_streak += 1
         else:
             break
-    losses = sum(1 for row in rows if float(row.get("pnl") or 0.0) < 0.0)
-    loss_rate = losses / float(len(rows))
+
+    # Time-decayed loss rate: trades older than 6h count less,
+    # trades older than 24h barely count — prevents stale losses
+    # from keeping the bot overly conservative.
+    now = time.time()
+    _HALF_LIFE_SEC = 6 * 3600  # 6 hours half-life
+    weighted_losses = 0.0
+    total_weight = 0.0
+    for row in rows:
+        age = max(0.0, now - float(row.get("closed_ts") or now))
+        weight = 2.0 ** (-age / _HALF_LIFE_SEC)  # exponential decay
+        total_weight += weight
+        if float(row.get("pnl") or 0.0) < 0.0:
+            weighted_losses += weight
+    loss_rate = (weighted_losses / total_weight) if total_weight > 0 else 0.0
     return loss_streak, loss_rate
 
 
@@ -668,6 +714,10 @@ class TradingBot:
         self._pending_settlement_exit: Optional[dict[str, Any]] = None
         self._bg_tasks: set[asyncio.Task] = set()
         self._telegram_warned_not_ready: bool = False
+        # Retry state: when an entry order is rejected by the API (not by gates),
+        # remember the signal so we can retry on subsequent ticks without waiting
+        # for a new signal.  Cleared on new window, successful fill, or kill-switch.
+        self._pending_entry_retry: Optional[dict[str, Any]] = None
 
     def _activate_maintenance_pause(
         self,
@@ -1950,6 +2000,135 @@ class TradingBot:
             signal_reason=signal_reason,
         )
 
+    def _save_entry_retry(
+        self,
+        *,
+        direction: str,
+        token_id: str,
+        price: float,
+        bet_size: float,
+        source: str,
+        signal_confidence: float,
+        signal_reason: str,
+    ):
+        """Save a rejected entry order for retry on subsequent ticks.
+        Retry expires after 30s or at window end (cutoff)."""
+        window_start = (
+            int(self.current_market.start_timestamp)
+            if self.current_market is not None
+            else None
+        )
+        self._pending_entry_retry = {
+            "direction": direction,
+            "token_id": token_id,
+            "price": price,
+            "bet_size": bet_size,
+            "source": source,
+            "signal_confidence": signal_confidence,
+            "signal_reason": signal_reason,
+            "window_start": window_start,
+            "created_ts": time.time(),
+            "attempts": 1,
+        }
+        logger.info(
+            "Entry retry saved: dir=%s price=%.4f size=$%.2f source=%s (expires in 30s)",
+            direction, price, bet_size, source,
+        )
+
+    async def _attempt_entry_retry(
+        self, now: float, seconds_remaining: float, current_start: int
+    ) -> bool:
+        """Try to re-place a previously rejected entry order.
+        Returns True if we should skip normal signal evaluation this tick."""
+        retry = self._pending_entry_retry
+        if retry is None:
+            return False
+
+        # Clear if window changed
+        if retry.get("window_start") != int(current_start):
+            logger.info("Entry retry expired: window changed")
+            self._pending_entry_retry = None
+            return False
+
+        # Clear if older than 30 seconds
+        age = now - float(retry["created_ts"])
+        if age > 30.0:
+            logger.info(
+                "Entry retry expired: %.1fs > 30s (dir=%s price=%.4f)",
+                age, retry["direction"], retry["price"],
+            )
+            self._pending_entry_retry = None
+            return False
+
+        # Don't retry too close to expiry
+        cutoff = float(config.trading.cutoff_before_close_seconds)
+        if seconds_remaining < cutoff:
+            logger.info("Entry retry expired: too close to expiry (%.1fs remaining)", seconds_remaining)
+            self._pending_entry_retry = None
+            return False
+
+        # Throttle: at least 2s between attempts
+        last_attempt = float(retry.get("last_attempt_ts", 0.0))
+        if (now - last_attempt) < 2.0:
+            return True  # skip signal eval but wait for next tick
+
+        retry["last_attempt_ts"] = now
+        retry["attempts"] = int(retry.get("attempts", 0)) + 1
+
+        # Check that the current ask price still matches (same direction, close price)
+        if self.current_market is not None:
+            if retry["direction"] == "UP":
+                current_ask = (
+                    _safe_prob(self.current_market.up_best_ask)
+                    or _safe_prob(self.current_market.up_price)
+                )
+            else:
+                current_ask = (
+                    _safe_prob(self.current_market.down_best_ask)
+                    or _safe_prob(self.current_market.down_price)
+                )
+            if current_ask is not None and abs(current_ask - retry["price"]) > 0.03:
+                logger.info(
+                    "Entry retry: price moved too far (saved=%.4f current=%.4f), cancelling",
+                    retry["price"], current_ask,
+                )
+                self._pending_entry_retry = None
+                return False
+
+        logger.info(
+            "Entry retry attempt #%d: dir=%s price=%.4f $%.2f (age=%.1fs)",
+            retry["attempts"], retry["direction"], retry["price"],
+            retry["bet_size"], age,
+        )
+
+        result = await self.poly_client.place_entry_order(
+            token_id=retry["token_id"],
+            side=retry["direction"],
+            amount=retry["bet_size"],
+            reference_ask=retry["price"],
+        )
+        handled = await self._handle_entry_order_result(
+            result,
+            direction=retry["direction"],
+            fallback_amount=retry["bet_size"],
+            fallback_price=retry["price"],
+            source=f"{retry['source']}-retry",
+            signal_confidence=retry["signal_confidence"],
+            signal_reason=retry["signal_reason"],
+        )
+        if handled:
+            logger.info("Entry retry FILLED on attempt #%d", retry["attempts"])
+            self._pending_entry_retry = None
+            await self._refresh_adaptive_balance_cap(force=True, reason="post_fill")
+            return True
+
+        if self._kill_switch_reason:
+            self._pending_entry_retry = None
+            return True
+
+        # Still rejected — will retry on next tick
+        return True
+
     async def _recover_uncertain_entry_result(
         self,
         *,
@@ -2893,6 +3072,9 @@ class TradingBot:
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
         await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
+        # Start continuous Polymarket price sync (calibrates Binance offset every 1s)
+        price_sync_task = asyncio.create_task(self._polymarket_price_sync_loop())
+
         try:
             await self._trading_loop()
         except KeyboardInterrupt:
@@ -2901,6 +3083,7 @@ class TradingBot:
             logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
             self._running = False
+            price_sync_task.cancel()
             self.price_feed.stop()
             self.poly_client.stop_odds_polling()
             self.poly_client.close_scraper()
@@ -3053,6 +3236,15 @@ class TradingBot:
             seconds_elapsed=float(seconds_elapsed),
         )
 
+        # ---- Retry previously rejected entry order ----
+        # Placed after odds refresh so price comparison uses fresh data.
+        if self._pending_entry_retry is not None:
+            retry_handled = await self._attempt_entry_retry(
+                now, seconds_remaining, current_start
+            )
+            if retry_handled:
+                return  # either filled or still waiting for retry
+
         # ---- Block entry until Price to Beat is confirmed ----
         if not self._market_start_official:
             return
@@ -3150,7 +3342,20 @@ class TradingBot:
                         signal_reason=str(fast_signal.get("reason") or "fast_lane"),
                     )
                     if handled:
+                        self._pending_entry_retry = None
                         await self._refresh_adaptive_balance_cap(force=True, reason="post_fill")
+                    elif not self._kill_switch_reason and not bool(
+                        (result or {}).get("uncertain_fill", False)
+                    ):
+                        self._save_entry_retry(
+                            direction=fast_direction,
+                            token_id=token_id,
+                            price=float(price),
+                            bet_size=float(bet_size),
+                            source="Fast-lane",
+                            signal_confidence=float(fast_conf),
+                            signal_reason=str(fast_signal.get("reason") or "fast_lane"),
+                        )
                     if handled or self._kill_switch_reason:
                         return
 
@@ -3213,29 +3418,38 @@ class TradingBot:
 
         if decision.direction == "UP":
             token_id = self.current_market.up_token_id
-            # Buy at the ask price (taker)
-            price = (
+        else:
+            token_id = self.current_market.down_token_id
+
+        if not token_id:
+            return
+
+        # ── Fresh CLOB fetch (parity mode) ─────────────────────────
+        # Use the same point-in-time CLOB snapshot as paper_trade_sim
+        # so both see identical ask prices at the moment of entry decision.
+        if LIVE_MIRROR_PAPER_GATES:
+            from polymarket_client import fetch_clob_book_sync
+            (_up_bid, _up_ask_clob, _), (_dn_bid, _dn_ask_clob, _) = await asyncio.gather(
+                asyncio.to_thread(fetch_clob_book_sync, str(self.current_market.up_token_id)),
+                asyncio.to_thread(fetch_clob_book_sync, str(self.current_market.down_token_id)),
+            )
+            up_ask = _safe_prob(_up_ask_clob) or _safe_prob(self.current_market.up_best_ask) or _safe_prob(self.current_market.up_price)
+            down_ask = _safe_prob(_dn_ask_clob) or _safe_prob(self.current_market.down_best_ask) or _safe_prob(self.current_market.down_price)
+        else:
+            up_ask = (
                 _safe_prob(self.current_market.up_best_ask)
                 or _safe_prob(self.current_market.up_price)
             )
-        else:
-            token_id = self.current_market.down_token_id
-            price = (
+            down_ask = (
                 _safe_prob(self.current_market.down_best_ask)
                 or _safe_prob(self.current_market.down_price)
             )
 
-        if price is None or price <= 0.01 or price >= 0.99 or not token_id:
+        price = up_ask if decision.direction == "UP" else down_ask
+
+        if price is None or price <= 0.01 or price >= 0.99:
             return
 
-        up_ask = (
-            _safe_prob(self.current_market.up_best_ask)
-            or _safe_prob(self.current_market.up_price)
-        )
-        down_ask = (
-            _safe_prob(self.current_market.down_best_ask)
-            or _safe_prob(self.current_market.down_price)
-        )
         side_ask = up_ask if decision.direction == "UP" else down_ask
         opposite_ask = down_ask if decision.direction == "UP" else up_ask
 
@@ -3255,11 +3469,29 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_max_opposite_implied)
         )
-        if side_ask is not None and side_ask < min_entry_side_implied:
+        # Use the best of: raw side_ask, complement of opposite_ask, or
+        # Gamma API initial mid-price (survives end-of-window CLOB collapse).
+        effective_side_implied = side_ask
+        if side_ask is not None and opposite_ask is not None:
+            implied_from_opposite = 1.0 - opposite_ask
+            effective_side_implied = max(side_ask, implied_from_opposite)
+        # Fallback: Gamma API initial price (never overwritten by refresh_odds).
+        # When CLOB is thin (e.g. UP ask=0.19 early in window), gamma_up_price
+        # still holds the discovery-time value (~0.50), preventing false blocks.
+        if self.current_market is not None:
+            gamma_mid = (
+                _safe_prob(getattr(self.current_market, "gamma_up_price", None))
+                if decision.direction == "UP"
+                else _safe_prob(getattr(self.current_market, "gamma_down_price", None))
+            )
+            if gamma_mid is not None and effective_side_implied is not None:
+                effective_side_implied = max(effective_side_implied, gamma_mid)
+        if effective_side_implied is not None and effective_side_implied < min_entry_side_implied:
             logger.info(
-                "Skip live implied-side guard: dir=%s side_ask=%.3f < %.3f",
+                "Skip live implied-side guard: dir=%s side_ask=%.3f eff=%.3f < %.3f",
                 decision.direction,
-                side_ask,
+                side_ask or 0.0,
+                effective_side_implied,
                 min_entry_side_implied,
             )
             return
@@ -3269,17 +3501,35 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(getattr(config.trading, "down_min_entry_price", 0.42))
         )
-        if decision.direction == "DOWN" and side_ask is not None and side_ask < down_min_price:
+        # Use gamma initial price as floor for cheap-token check (CLOB can
+        # temporarily show 0.22 while real market is ~0.50).
+        _cheap_check_price = side_ask
+        if decision.direction == "DOWN" and self.current_market is not None:
+            _gamma_dn = _safe_prob(getattr(self.current_market, "gamma_down_price", None))
+            if _gamma_dn is not None and _cheap_check_price is not None:
+                _cheap_check_price = max(_cheap_check_price, _gamma_dn)
+        if decision.direction == "DOWN" and _cheap_check_price is not None and _cheap_check_price < down_min_price:
             self._log_rejected_live(
                 decision, ctx, seconds_elapsed, "down_cheap_token",
-                f"cheap DOWN token: ask={side_ask:.3f} < {down_min_price:.3f}",
+                f"cheap DOWN token: ask={side_ask:.3f} gamma={_gamma_dn or 0:.3f} eff={_cheap_check_price:.3f} < {down_min_price:.3f}",
             )
             return
-        if opposite_ask is not None and opposite_ask > max_opposite_implied:
+        # Use gamma initial price as ceiling for opposite-implied check
+        _opp_check = opposite_ask
+        if self.current_market is not None and _opp_check is not None:
+            _gamma_opp = (
+                _safe_prob(getattr(self.current_market, "gamma_down_price", None))
+                if decision.direction == "UP"
+                else _safe_prob(getattr(self.current_market, "gamma_up_price", None))
+            )
+            if _gamma_opp is not None:
+                _opp_check = min(_opp_check, _gamma_opp)
+        if _opp_check is not None and _opp_check > max_opposite_implied:
             logger.info(
-                "Skip live opposite-implied guard: dir=%s opp_ask=%.3f > %.3f",
+                "Skip live opposite-implied guard: dir=%s opp_ask=%.3f eff=%.3f > %.3f",
                 decision.direction,
-                opposite_ask,
+                opposite_ask or 0.0,
+                _opp_check,
                 max_opposite_implied,
             )
             return
@@ -3314,12 +3564,18 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_recent_move_lookback_sec)
         )
-        recent_move = _recent_move_pct(
-            prices=list(ctx.recent_prices),
-            timestamps=list(ctx.recent_timestamps),
-            now_ts=now,
-            lookback_sec=recent_move_lookback_sec,
-        )
+        # Use DB ticks (same source as paper) when parity mode is on.
+        if LIVE_MIRROR_PAPER_GATES:
+            recent_move = _recent_move_pct_db(
+                conn, int(current_start), now, recent_move_lookback_sec,
+            )
+        else:
+            recent_move = _recent_move_pct(
+                prices=list(ctx.recent_prices),
+                timestamps=list(ctx.recent_timestamps),
+                now_ts=now,
+                lookback_sec=recent_move_lookback_sec,
+            )
         if recent_move is None:
             return
         base_move_thr = (
@@ -3327,11 +3583,19 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_min_recent_move_pct)
         )
-        if decision.direction == "UP" and recent_move < base_move_thr:
+        # If btc_vs_start strongly confirms direction, relax momentum threshold.
+        # e.g. btc_vs_start=-0.10% for DOWN = strong confirmation, allow micro-bounces.
+        _strong_start_factor = 1.0
+        _abs_start_move = abs(btc_move_from_start_pct)
+        if _abs_start_move >= 0.06:
+            # Scale down threshold: at 0.06% halve it, at 0.12%+ zero it
+            _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+        if decision.direction == "UP" and recent_move < base_move_thr * _strong_start_factor:
             logger.info(
-                "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%%",
+                "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%% (adj=%.4f%%)",
                 recent_move,
                 base_move_thr,
+                base_move_thr * _strong_start_factor,
             )
             return
         down_move_thr = base_move_thr
@@ -3342,11 +3606,13 @@ class TradingBot:
                 else float(config.trading.live_down_above_start_momentum_extra)
             )
             down_move_thr += down_move_extra
-        if decision.direction == "DOWN" and recent_move > -down_move_thr:
+        effective_down_thr = down_move_thr * _strong_start_factor
+        if decision.direction == "DOWN" and recent_move > -effective_down_thr:
             logger.info(
-                "Skip live momentum guard: dir=DOWN move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
+                "Skip live momentum guard: dir=DOWN move=%.4f%% > -%.4f%% (adj=-%.4f%%, btc_vs_start=%+.4f%%)",
                 recent_move,
                 down_move_thr,
+                effective_down_thr,
                 btc_move_from_start_pct,
             )
             return
@@ -3355,12 +3621,17 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_trend_align_lookback_sec)
         )
-        trend_move = _recent_move_pct(
-            prices=list(ctx.recent_prices),
-            timestamps=list(ctx.recent_timestamps),
-            now_ts=now,
-            lookback_sec=trend_lookback_sec,
-        )
+        if LIVE_MIRROR_PAPER_GATES:
+            trend_move = _recent_move_pct_db(
+                conn, int(current_start), now, trend_lookback_sec,
+            )
+        else:
+            trend_move = _recent_move_pct(
+                prices=list(ctx.recent_prices),
+                timestamps=list(ctx.recent_timestamps),
+                now_ts=now,
+                lookback_sec=trend_lookback_sec,
+            )
         if trend_move is None:
             return
         trend_opp_thr = abs(
@@ -3620,6 +3891,23 @@ class TradingBot:
                         adaptive_max_ask,
                     )
                     return
+                # Underdog guard: cheap tokens (ask < 0.40) have low win rate.
+                # Require higher confidence and EV to justify low base-rate.
+                if float(price) < 0.40:
+                    _underdog_min_conf = adaptive_min_conf + 0.10
+                    _underdog_min_ev = adaptive_min_ev * 2.0
+                    if float(decision.avg_confidence) < _underdog_min_conf:
+                        logger.info(
+                            "Skip live underdog(parity): ask=%.3f conf=%.3f < %.3f",
+                            float(price), float(decision.avg_confidence), _underdog_min_conf,
+                        )
+                        return
+                    if gate.expected_roi < _underdog_min_ev:
+                        logger.info(
+                            "Skip live underdog EV(parity): ask=%.3f ev=%.3f%% < %.3f%%",
+                            float(price), gate.expected_roi * 100, _underdog_min_ev * 100,
+                        )
+                        return
                 # Use real on-chain balance for drawdown stop (seed_capital may
                 # be stale if the user deposited/withdrew since setting it).
                 real_balance = self._current_live_cap()
@@ -3700,9 +3988,23 @@ class TradingBot:
             signal_reason=jury_reason,
         )
         if handled:
+            self._pending_entry_retry = None
             await self._refresh_adaptive_balance_cap(force=True, reason="post_fill")
+        elif not self._kill_switch_reason and not bool(
+            (result or {}).get("uncertain_fill", False)
+        ):
+            self._save_entry_retry(
+                direction=decision.direction,
+                token_id=token_id,
+                price=float(price),
+                bet_size=float(bet_size),
+                source="Jury",
+                signal_confidence=float(decision.avg_confidence),
+                signal_reason=jury_reason,
+            )
 
     async def _on_new_market(self, start_timestamp: int, seconds_elapsed: float):
+        self._pending_entry_retry = None  # clear retry on window change
         if self.current_trade and self.current_trade.result == "PENDING":
             await self._resolve_previous_trade()
         if self.current_trade and self.current_trade.result == "PENDING":
@@ -3850,6 +4152,47 @@ class TradingBot:
             "Market start corrected by scrape: %s | $%.2f -> $%.2f (delta=$%.2f, was %s)",
             self.current_market.slug, prev or 0, scraped_ptb, delta, prev_src,
         )
+
+    async def _polymarket_price_sync_loop(self):
+        """Continuously extract Polymarket's 'Current price' from Playwright page
+        every ~5s (page reload + extract). Keeps the Binance-Chainlink calibration
+        offset accurate, replacing unreliable Chainlink RPC."""
+        _last_log = 0.0
+        _consecutive_none = 0
+        # Wait for initial scrape to load the Playwright page
+        await asyncio.sleep(10.0)
+        while self._running:
+            try:
+                poly_price = await self.poly_client.extract_current_price()
+                if poly_price is not None and poly_price > 0:
+                    _consecutive_none = 0
+                    binance_now = self.price_feed.current_price
+                    if binance_now is not None and binance_now > 0 and self.price_feed.calibrator is not None:
+                        new_offset = binance_now - poly_price
+                        old_offset = self.price_feed.calibrator.offset
+                        self.price_feed.calibrator.offset = new_offset
+                        self.price_feed.calibrator.chainlink_price = poly_price
+                        self.price_feed.calibrator.binance_at_update = binance_now
+                        self.price_feed.calibrator.chainlink_updated_at = time.time()
+                        self.price_feed.calibrator.polymarket_sync_active = True
+
+                        # Log offset changes > $5 or every 60s
+                        now = time.time()
+                        offset_delta = abs(new_offset - old_offset)
+                        if offset_delta > 5.0 or (now - _last_log) > 60.0:
+                            logger.info(
+                                "Price sync: poly=$%.2f binance=$%.2f offset=$%.2f (delta=$%.2f)",
+                                poly_price, binance_now, new_offset, offset_delta,
+                            )
+                            _last_log = now
+                else:
+                    _consecutive_none += 1
+                    if _consecutive_none == 30:
+                        logger.warning("Price sync: no Polymarket price for 30s")
+                        _consecutive_none = 0
+            except Exception as e:
+                logger.debug("Price sync error: %s", e)
+            await asyncio.sleep(1.0)
 
     async def _verify_settlement_outcome(
         self, window_start: int, trade_direction: str, initial_outcome: str

@@ -1222,12 +1222,17 @@ def open_trade_if_signal(
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
-    if side_implied is not None and side_implied < PAPER_MIN_ENTRY_SIDE_IMPLIED:
+    # Use better of raw side_ask vs complement of opposite (thin CLOB fix)
+    effective_side_implied = side_implied
+    if side_implied is not None and opposite_implied is not None:
+        effective_side_implied = max(side_implied, 1.0 - opposite_implied)
+    if effective_side_implied is not None and effective_side_implied < PAPER_MIN_ENTRY_SIDE_IMPLIED:
         logger.warning(
-            "Skip weak implied side ws=%s dir=%s: side_ask=%.3f < %.3f",
+            "Skip weak implied side ws=%s dir=%s: side_ask=%.3f eff=%.3f < %.3f",
             window_start,
             direction,
-            side_implied,
+            side_implied or 0.0,
+            effective_side_implied,
             PAPER_MIN_ENTRY_SIDE_IMPLIED,
         )
         return False
@@ -1273,25 +1278,32 @@ def open_trade_if_signal(
     )
     if recent_move_pct is None:
         return False
-    if direction == "UP" and recent_move_pct < PAPER_MIN_RECENT_MOVE_PCT:
+    # If btc_vs_start strongly confirms direction, relax momentum threshold.
+    # e.g. btc_vs_start=-0.10% for DOWN = strong confirmation, allow micro-bounces.
+    _abs_start_move = abs(btc_move_from_start_pct)
+    _strong_start_factor = 1.0
+    if _abs_start_move >= 0.06:
+        _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+    if direction == "UP" and recent_move_pct < PAPER_MIN_RECENT_MOVE_PCT * _strong_start_factor:
         logger.warning(
             "Skip weak short momentum ws=%s dir=%s: move=%.4f%% < +%.4f%%",
             window_start,
             direction,
             recent_move_pct,
-            PAPER_MIN_RECENT_MOVE_PCT,
+            PAPER_MIN_RECENT_MOVE_PCT * _strong_start_factor,
         )
         return False
     down_move_threshold = PAPER_MIN_RECENT_MOVE_PCT
     if direction == "DOWN" and btc_move_from_start_pct > 0.0:
         down_move_threshold += PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA
-    if direction == "DOWN" and recent_move_pct > -down_move_threshold:
+    effective_down_thr = down_move_threshold * _strong_start_factor
+    if direction == "DOWN" and recent_move_pct > -effective_down_thr:
         logger.warning(
             "Skip weak short momentum ws=%s dir=%s: move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
             window_start,
             direction,
             recent_move_pct,
-            down_move_threshold,
+            effective_down_thr,
             btc_move_from_start_pct,
         )
         return False
@@ -1509,6 +1521,26 @@ def open_trade_if_signal(
             adaptive_max_ask,
         )
         return False
+
+    # Underdog guard: cheap tokens (ask < 0.40) have low win rate (~45%).
+    # EV_FIRST inflates net_ev for cheap asks, masking poor probability.
+    # Require higher confidence and EV to justify the low base-rate.
+    if entry_price < 0.40:
+        underdog_min_conf = adaptive_min_conf + 0.10
+        underdog_min_ev = adaptive_min_ev * 2.0
+        if confidence < underdog_min_conf:
+            logger.warning(
+                "Skip underdog entry ws=%s dir=%s: ask=%.3f conf=%.3f < %.3f (underdog)",
+                window_start, direction, entry_price, confidence, underdog_min_conf,
+            )
+            return False
+        if gate.expected_roi < underdog_min_ev:
+            logger.warning(
+                "Skip underdog EV ws=%s dir=%s: ask=%.3f ev=%.3f%% < %.3f%% (underdog)",
+                window_start, direction, entry_price,
+                gate.expected_roi * 100, underdog_min_ev * 100,
+            )
+            return False
 
     if realized_equity <= (initial_capital * (1.0 - PAPER_MAX_DRAWDOWN_STOP_PCT)):
         logger.warning(

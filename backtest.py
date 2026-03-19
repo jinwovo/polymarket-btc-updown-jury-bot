@@ -32,7 +32,7 @@ import pandas as pd
 from env_paths import PUBLIC_RUNTIME_ENV_PATH, SECRETS_ENV_PATH
 from dotenv import load_dotenv
 load_dotenv(SECRETS_ENV_PATH, override=True)
-load_dotenv(PUBLIC_RUNTIME_ENV_PATH, override=False)
+load_dotenv(PUBLIC_RUNTIME_ENV_PATH, override=True)
 
 from config import config
 from db_config import (
@@ -589,8 +589,8 @@ class Backtester:
                 continue
 
             # Build context with REAL data
-            lookback = self._get_btc_prices_range(check_time - 600, check_time)
-            lookback_ts = self._get_btc_timestamps_range(check_time - 600, check_time)
+            lookback = self._get_btc_prices_range(check_time - 1200, check_time)
+            lookback_ts = self._get_btc_timestamps_range(check_time - 1200, check_time)
 
             # Data quality: min tick samples for meaningful lookback
             # NOTE: Backtest data density varies — using a lower threshold than
@@ -648,15 +648,19 @@ class Backtester:
             if entry_price is None or entry_price <= 0.01 or entry_price >= 0.99:
                 check_time += self.check_interval
                 continue
-            _bt_min_side = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.38"))
-            if entry_price < _bt_min_side:
+            _bt_min_side = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+            # Use better of raw side_ask vs complement of opposite (same as paper/live)
+            effective_side = entry_price
+            if entry_price is not None and opposite_ask is not None:
+                effective_side = max(entry_price, 1.0 - opposite_ask)
+            if effective_side is not None and effective_side < _bt_min_side:
                 check_time += self.check_interval
                 continue
-            _bt_down_min_price = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.42"))
+            _bt_down_min_price = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.38"))
             if decision.direction == "DOWN" and entry_price < _bt_down_min_price:
                 check_time += self.check_interval
                 continue
-            _bt_max_opp = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.62"))
+            _bt_max_opp = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.78"))
             if opposite_ask is not None and opposite_ask > _bt_max_opp:
                 check_time += self.check_interval
                 continue
@@ -673,20 +677,28 @@ class Backtester:
                 check_time += self.check_interval
                 continue
             _bt_min_move = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
-            if decision.direction == "UP" and recent_move < _bt_min_move:
-                check_time += self.check_interval
-                continue
 
             btc_move_from_start_pct = (
                 ((float(btc_current) - float(btc_start)) / float(btc_start)) * 100.0
                 if float(btc_start) > 0.0
                 else 0.0
             )
+            # Strong start-move relaxation (same as paper/live)
+            _abs_start_move = abs(btc_move_from_start_pct)
+            _strong_start_factor = 1.0
+            if _abs_start_move >= 0.06:
+                _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+
+            if decision.direction == "UP" and recent_move < _bt_min_move * _strong_start_factor:
+                check_time += self.check_interval
+                continue
+
             _bt_down_extra = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
             down_move_thr = _bt_min_move
             if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
                 down_move_thr += _bt_down_extra
-            if decision.direction == "DOWN" and recent_move > -down_move_thr:
+            effective_down_thr = down_move_thr * _strong_start_factor
+            if decision.direction == "DOWN" and recent_move > -effective_down_thr:
                 check_time += self.check_interval
                 continue
 
@@ -709,11 +721,22 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
-            # --- Macro trend filter DISABLED for backtest ---
-            # In a 5-minute binary arbitrage market, BTC trending >0.040% over 15min
-            # is common and actually CREATES lag-arb opportunities (Polymarket lags behind).
-            # This filter creates dead zones where zero trades happen for hours.
-            # Paper/live keep it as an extra safety layer for real money.
+            # --- Macro trend filter (aligned with paper/live) ---
+            _bt_macro_lookback = float(os.getenv("PAPER_MACRO_TREND_LOOKBACK_SEC", "900"))
+            _bt_macro_block = float(os.getenv("PAPER_MACRO_TREND_BLOCK_PCT", "0.040"))
+            macro_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=_bt_macro_lookback,
+            )
+            if macro_move is not None:
+                if decision.direction == "DOWN" and macro_move > _bt_macro_block:
+                    check_time += self.check_interval
+                    continue
+                if decision.direction == "UP" and macro_move < -_bt_macro_block:
+                    check_time += self.check_interval
+                    continue
 
             # --- DOWN above-start block/penalty ---
             _bt_down_block = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
