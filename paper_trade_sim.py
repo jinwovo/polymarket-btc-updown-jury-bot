@@ -41,9 +41,16 @@ from telegram_notifier import send_telegram_message
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 
 logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S.%f",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_paper.log"),
+            encoding="utf-8",
+        ),
+    ],
 )
 logger = logging.getLogger("paper_sim")
 _PAPER_TELEGRAM_WARNED_NOT_READY = False
