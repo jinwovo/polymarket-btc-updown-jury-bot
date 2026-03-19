@@ -676,16 +676,18 @@ class DataCollector:
 
     async def _backfill_ptb(self, window_start: int):
         """After window resolution, fetch official PTB, actual settlement outcome,
-        and Final price from Polymarket. Corrects market_windows with oracle-based data."""
+        and Final price from Polymarket. Corrects market_windows with oracle-based data.
+        If outcome changes, also corrects paper_trades/live_trades and sends Telegram."""
         slug = f"{config.polymarket.market_slug_prefix}-{window_start}"
         final_price_scraped = False
-        for delay in (5, 15, 30, 60, 120):
+        for delay in (5, 15, 30, 60, 120, 300, 600, 900):
             await asyncio.sleep(delay)
             try:
                 ptb = await self.poly_client.fetch_price_to_beat(slug)
                 poly_outcome = await self.poly_client.fetch_settlement_outcome(window_start)
 
                 # At 60s+, also scrape Final price from the resolved page
+                fp = None
                 if delay >= 60 and not final_price_scraped:
                     fp = await self.poly_client.scrape_final_price(slug)
                     if fp is not None and fp > 10000:
@@ -701,25 +703,41 @@ class DataCollector:
                             slug, fp,
                         )
 
-                if ptb is not None and float(ptb) > 0.0:
-                    ptb_f = float(ptb)
-                    row = fetch_one(
-                        self.db,
-                        "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
-                        (window_start,),
-                    )
-                    if row is None:
-                        return
-                    old_start = float(row[0]) if row[0] else None
-                    end_price = float(row[1]) if row[1] else None
-                    old_outcome = str(row[2]) if row[2] else None
-                    # Prefer Polymarket's oracle-based outcome over Binance comparison
-                    if poly_outcome in ("UP", "DOWN"):
-                        outcome = poly_outcome
-                    elif end_price is not None:
-                        outcome = "UP" if end_price >= ptb_f else "DOWN"
-                    else:
-                        outcome = None
+                # ── Read current DB state ──
+                row = fetch_one(
+                    self.db,
+                    "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
+                    (window_start,),
+                )
+                if row is None:
+                    return
+                old_start = float(row[0]) if row[0] else None
+                end_price = float(row[1]) if row[1] else None
+                old_outcome = str(row[2]) if row[2] else None
+
+                # ── Determine PTB (start price) ──
+                ptb_f = float(ptb) if ptb is not None and float(ptb) > 0 else old_start
+
+                # ── Determine best outcome ──
+                # Priority: 1) Polymarket oracle API  2) Final price vs PTB  3) end_price vs PTB
+                outcome = None
+                outcome_source = "unknown"
+                if poly_outcome in ("UP", "DOWN"):
+                    outcome = poly_outcome
+                    outcome_source = "poly_api"
+                elif fp is not None and fp > 10000 and ptb_f is not None and ptb_f > 0:
+                    outcome = "UP" if fp >= ptb_f else "DOWN"
+                    outcome_source = f"final_price(${fp:.2f} vs ptb=${ptb_f:.2f})"
+                elif end_price is not None and ptb_f is not None and ptb_f > 0:
+                    outcome = "UP" if end_price >= ptb_f else "DOWN"
+                    outcome_source = "binance_vs_ptb"
+
+                if ptb_f is None and outcome is None:
+                    # No useful data yet, keep trying
+                    continue
+
+                # ── Update market_windows ──
+                if ptb_f is not None:
                     execute_write(
                         self.db,
                         """UPDATE market_windows
@@ -727,35 +745,150 @@ class DataCollector:
                            WHERE window_start = ?""",
                         (ptb_f, outcome, window_start),
                     )
-                    self.db.commit()
-                    delta = abs(ptb_f - old_start) if old_start else 0
-                    corrected = (
-                        f" [CORRECTED from {old_outcome}]"
-                        if old_outcome and outcome and old_outcome != outcome
-                        else ""
-                    )
-                    logger.info(
-                        "PTB backfill: %s | $%.2f (was $%.2f, delta=$%.2f) outcome=%s%s",
-                        slug, ptb_f, old_start or 0, delta, outcome, corrected,
-                    )
-                    return
-                elif poly_outcome in ("UP", "DOWN"):
+                elif outcome is not None:
                     execute_write(
                         self.db,
                         """UPDATE market_windows
                            SET actual_outcome = ?
                            WHERE window_start = ? AND actual_outcome != ?""",
-                        (poly_outcome, window_start, poly_outcome),
+                        (outcome, window_start, outcome),
                     )
-                    self.db.commit()
-                    logger.info(
-                        "Settlement outcome backfill: %s outcome=%s (no PTB yet)",
-                        slug, poly_outcome,
+                self.db.commit()
+
+                outcome_changed = (
+                    old_outcome is not None
+                    and outcome is not None
+                    and old_outcome != outcome
+                )
+
+                corrected_tag = (
+                    f" [CORRECTED {old_outcome}→{outcome} via {outcome_source}]"
+                    if outcome_changed else ""
+                )
+                logger.info(
+                    "PTB backfill: %s | ptb=$%.2f end=$%.2f outcome=%s%s",
+                    slug,
+                    ptb_f or 0,
+                    end_price or (fp or 0),
+                    outcome,
+                    corrected_tag,
+                )
+
+                # ── If outcome changed, correct trades ──
+                if outcome_changed:
+                    self._correct_trades_for_outcome_change(
+                        window_start, slug, old_outcome, outcome, outcome_source,
                     )
+
+                # Done if we have definitive outcome
+                if outcome is not None and (poly_outcome or final_price_scraped):
                     return
+
             except Exception as e:
                 logger.debug("PTB backfill attempt failed for %s: %s", slug, e)
         logger.warning("PTB backfill exhausted retries for %s", slug)
+
+    def _correct_trades_for_outcome_change(
+        self,
+        window_start: int,
+        slug: str,
+        old_outcome: str,
+        new_outcome: str,
+        source: str,
+    ):
+        """When actual_outcome changes, update paper_trades and live_trades,
+        recalculate PnL, and send Telegram alert."""
+        corrections = []
+
+        # ── Correct paper_trades ──
+        paper_rows = fetch_all_dicts(
+            self.db,
+            """SELECT id, direction, stake, entry_price, pnl, close_type
+               FROM paper_trades
+               WHERE window_start = ? AND archived_at IS NULL""",
+            (window_start,),
+        )
+        for pt in paper_rows:
+            direction = str(pt.get("direction", ""))
+            stake = float(pt.get("stake") or 0)
+            entry_price = float(pt.get("entry_price") or 0)
+            old_pnl = float(pt.get("pnl") or 0)
+            if not direction or stake <= 0 or entry_price <= 0:
+                continue
+            won = direction == new_outcome
+            shares = stake / entry_price
+            new_pnl = (shares * 1.0 - stake) if won else -stake
+            execute_write(
+                self.db,
+                """UPDATE paper_trades
+                   SET pnl = ?, exit_price = ?,
+                       close_type = CONCAT(COALESCE(close_type,''), ' [adj: ', ?, '→', ?, ']')
+                   WHERE id = ?""",
+                (new_pnl, 1.0 if won else 0.0, old_outcome, new_outcome, pt["id"]),
+            )
+            corrections.append(
+                f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+            )
+
+        # ── Correct live_trades (trades table) ──
+        for table in ("trades", "live_trades"):
+            try:
+                live_rows = fetch_all_dicts(
+                    self.db,
+                    f"""SELECT id, direction, amount, price, pnl
+                        FROM {table}
+                        WHERE window_start = ? AND status = 'CLOSED'""",
+                    (window_start,),
+                )
+            except Exception:
+                continue
+            for lt in live_rows:
+                direction = str(lt.get("direction", ""))
+                stake = float(lt.get("amount") or 0)
+                entry_price = float(lt.get("price") or 0)
+                old_pnl = float(lt.get("pnl") or 0)
+                if not direction or stake <= 0 or entry_price <= 0:
+                    continue
+                won = direction == new_outcome
+                shares = stake / entry_price
+                new_pnl = (shares * 1.0 - stake) if won else -stake
+                execute_write(
+                    self.db,
+                    f"""UPDATE {table}
+                        SET actual_outcome = ?, won = ?, pnl = ?,
+                            close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}→{new_outcome}]')
+                        WHERE id = ?""",
+                    (new_outcome, 1 if won else 0, new_pnl, lt["id"]),
+                )
+                corrections.append(
+                    f"  Live #{lt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+                )
+
+        self.db.commit()
+        logger.warning(
+            "OUTCOME ADJUSTED %s: %s→%s (via %s)\n%s",
+            slug, old_outcome, new_outcome, source,
+            "\n".join(corrections) if corrections else "  (no trades affected)",
+        )
+
+        # ── Telegram alert ──
+        if corrections:
+            try:
+                from telegram_notifier import send_telegram_message
+                tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+                tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+                if tg_token:
+                    msg = (
+                        f"⚠️ OUTCOME ADJUSTED\n"
+                        f"Window: {slug}\n"
+                        f"Change: {old_outcome} → {new_outcome}\n"
+                        f"Source: {source}\n"
+                        f"\n"
+                        + "\n".join(corrections)
+                    )
+                    send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
+            except Exception as e:
+                logger.debug("Telegram alert failed for outcome correction: %s", e)
 
     async def _flush_loop(self):
         """Periodically flush buffered data to the database."""
