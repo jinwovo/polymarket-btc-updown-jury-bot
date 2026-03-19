@@ -1285,12 +1285,15 @@ def open_trade_if_signal(
     )
     if recent_move_pct is None:
         return False
-    # If btc_vs_start strongly confirms direction, relax momentum threshold.
-    # e.g. btc_vs_start=-0.10% for DOWN = strong confirmation, allow micro-bounces.
-    _abs_start_move = abs(btc_move_from_start_pct)
+    # If btc_vs_start strongly confirms the SAME direction as the signal,
+    # relax momentum threshold.
+    _directional_start_move = (
+        btc_move_from_start_pct if direction == "UP"
+        else -btc_move_from_start_pct
+    )
     _strong_start_factor = 1.0
-    if _abs_start_move >= 0.06:
-        _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+    if _directional_start_move >= 0.06:
+        _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
     if direction == "UP" and recent_move_pct < PAPER_MIN_RECENT_MOVE_PCT * _strong_start_factor:
         logger.warning(
             "Skip weak short momentum ws=%s dir=%s: move=%.4f%% < +%.4f%%",
@@ -1323,7 +1326,9 @@ def open_trade_if_signal(
     if trend_move_pct is None:
         return False
     opposing_thr = abs(PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT)
-    if direction == "UP" and trend_move_pct < -opposing_thr:
+    # Relax trend guard when start-move strongly confirms direction
+    _effective_trend_thr = opposing_thr / max(_strong_start_factor, 0.05)
+    if direction == "UP" and trend_move_pct < -_effective_trend_thr:
         logger.warning(
             "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
             window_start,
@@ -1333,7 +1338,7 @@ def open_trade_if_signal(
             PAPER_TREND_ALIGN_LOOKBACK_SEC,
         )
         return False
-    if direction == "DOWN" and trend_move_pct > opposing_thr:
+    if direction == "DOWN" and trend_move_pct > _effective_trend_thr:
         logger.warning(
             "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
             window_start,

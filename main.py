@@ -3583,13 +3583,16 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_min_recent_move_pct)
         )
-        # If btc_vs_start strongly confirms direction, relax momentum threshold.
-        # e.g. btc_vs_start=-0.10% for DOWN = strong confirmation, allow micro-bounces.
+        # If btc_vs_start strongly confirms the SAME direction as the signal,
+        # relax momentum threshold.  Only applies when start-move agrees with
+        # signal direction (UP+positive or DOWN+negative).
         _strong_start_factor = 1.0
-        _abs_start_move = abs(btc_move_from_start_pct)
-        if _abs_start_move >= 0.06:
-            # Scale down threshold: at 0.06% halve it, at 0.12%+ zero it
-            _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+        _directional_start_move = (
+            btc_move_from_start_pct if decision.direction == "UP"
+            else -btc_move_from_start_pct
+        )
+        if _directional_start_move >= 0.06:
+            _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
         if decision.direction == "UP" and recent_move < base_move_thr * _strong_start_factor:
             logger.info(
                 "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%% (adj=%.4f%%)",
@@ -3639,19 +3642,21 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_trend_align_max_opposing_move_pct)
         )
-        if decision.direction == "UP" and trend_move < -trend_opp_thr:
+        # Also relax trend guard when start-move strongly confirms direction
+        _effective_trend_thr = trend_opp_thr / max(_strong_start_factor, 0.05)
+        if decision.direction == "UP" and trend_move < -_effective_trend_thr:
             logger.info(
                 "Skip live trend-align guard: dir=UP trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
                 trend_move,
-                trend_opp_thr,
+                _effective_trend_thr,
                 trend_lookback_sec,
             )
             return
-        if decision.direction == "DOWN" and trend_move > trend_opp_thr:
+        if decision.direction == "DOWN" and trend_move > _effective_trend_thr:
             logger.info(
                 "Skip live trend-align guard: dir=DOWN trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
                 trend_move,
-                trend_opp_thr,
+                _effective_trend_thr,
                 trend_lookback_sec,
             )
             return

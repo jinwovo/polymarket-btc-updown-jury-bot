@@ -684,10 +684,13 @@ class Backtester:
                 else 0.0
             )
             # Strong start-move relaxation (same as paper/live)
-            _abs_start_move = abs(btc_move_from_start_pct)
+            _directional_start_move = (
+                btc_move_from_start_pct if decision.direction == "UP"
+                else -btc_move_from_start_pct
+            )
             _strong_start_factor = 1.0
-            if _abs_start_move >= 0.06:
-                _strong_start_factor = max(0.0, 1.0 - (_abs_start_move - 0.06) / 0.06)
+            if _directional_start_move >= 0.06:
+                _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
 
             if decision.direction == "UP" and recent_move < _bt_min_move * _strong_start_factor:
                 check_time += self.check_interval
