@@ -3594,9 +3594,12 @@ class TradingBot:
             )
             return
 
+        # Use signal_cache prices for parity (same as Paper sees)
+        _btc_now = float(_sig_row.get("btc_price") or ctx.current_binance_price) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() else ctx.current_binance_price
+        _btc_start = float(_sig_row.get("start_price") or ctx.market_start_price) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() else ctx.market_start_price
         btc_move_from_start_pct = (
-            ((float(ctx.current_binance_price) - float(ctx.market_start_price)) / float(ctx.market_start_price)) * 100.0
-            if ctx.market_start_price > 0
+            ((_btc_now - _btc_start) / _btc_start) * 100.0
+            if _btc_start > 0
             else 0.0
         )
         # Divergence risk filter: Binance-Chainlink gap can flip settlement
