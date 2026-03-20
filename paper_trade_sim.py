@@ -44,15 +44,17 @@ from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 _log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
-# Stdout handler
+# Console: WARNING+ only (trades, errors)
 _sh = logging.StreamHandler(sys.stdout)
+_sh.setLevel(logging.WARNING)
 _sh.setFormatter(_log_fmt)
 _root.addHandler(_sh)
-# File handler — always write to bot_paper.log
+# File: all INFO+
 _fh = logging.FileHandler(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_paper.log"),
     encoding="utf-8",
 )
+_fh.setLevel(logging.INFO)
 _fh.setFormatter(_log_fmt)
 _root.addHandler(_fh)
 logger = logging.getLogger("paper_sim")

@@ -41,15 +41,19 @@ from telegram_notifier import send_telegram_message
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
-    ],
-)
+_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+# Console: WARNING+ only (trades, errors)
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setLevel(logging.WARNING)
+_sh.setFormatter(_log_fmt)
+_root.addHandler(_sh)
+# File: all INFO+
+_fh = logging.FileHandler("bot.log", encoding="utf-8")
+_fh.setLevel(logging.INFO)
+_fh.setFormatter(_log_fmt)
+_root.addHandler(_fh)
 logger = logging.getLogger("main")
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("httpcore").setLevel(logging.ERROR)

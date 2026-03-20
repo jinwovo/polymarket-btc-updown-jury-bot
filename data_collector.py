@@ -52,12 +52,22 @@ from polymarket_client import (
     market_slug_for_timestamp,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],
+_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+# Console: WARNING+ only (trades, errors, corrections)
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setLevel(logging.WARNING)
+_sh.setFormatter(_log_fmt)
+_root.addHandler(_sh)
+# File: all INFO+
+_fh = logging.FileHandler(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_collector.log"),
+    encoding="utf-8",
 )
+_fh.setLevel(logging.INFO)
+_fh.setFormatter(_log_fmt)
+_root.addHandler(_fh)
 logger = logging.getLogger("collector")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
