@@ -3594,9 +3594,17 @@ class TradingBot:
             )
             return
 
-        # Use signal_cache prices for parity (same as Paper sees)
-        _btc_now = float(_sig_row.get("btc_price") or ctx.current_binance_price) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() else ctx.current_binance_price
-        _btc_start = float(_sig_row.get("start_price") or ctx.market_start_price) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() else ctx.market_start_price
+        # Use signal_cache prices for entry guards (same as Paper).
+        # Live's own price_feed can have $50-200 offset from Chainlink.
+        # signal_cache has data_collector's Playwright-calibrated prices.
+        _btc_now = ctx.current_binance_price
+        _btc_start = ctx.market_start_price
+        if LIVE_MIRROR_PAPER_GATES:
+            try:
+                _btc_now = float(_sig_row.get("btc_price") or _btc_now)
+                _btc_start = float(_sig_row.get("start_price") or _btc_start)
+            except Exception:
+                pass
         btc_move_from_start_pct = (
             ((_btc_now - _btc_start) / _btc_start) * 100.0
             if _btc_start > 0
