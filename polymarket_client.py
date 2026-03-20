@@ -727,6 +727,26 @@ class PolymarketClient:
                     pass
                 setattr(cls, attr, None)
 
+    async def reload_scraper_page(self):
+        """Force reload the Playwright page (fixes frozen/stale Polymarket page)."""
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(self._get_executor(), self._reload_page_sync)
+        except Exception as e:
+            logger.debug("Reload scraper page failed: %s", e)
+
+    @classmethod
+    def _reload_page_sync(cls):
+        if cls._pw_page is not None:
+            try:
+                cls._pw_page.reload(wait_until="domcontentloaded", timeout=12000)
+                import time
+                time.sleep(2.0)
+                logger.info("Playwright page reloaded (stale price fix)")
+            except Exception as e:
+                logger.warning("Playwright reload failed, resetting browser: %s", e)
+                cls._reset_browser()
+
     @classmethod
     def close_scraper(cls):
         """Shut down persistent browser and executor (call on bot shutdown)."""

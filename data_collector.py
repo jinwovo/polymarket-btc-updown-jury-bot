@@ -550,18 +550,35 @@ class DataCollector:
         )
 
     async def _polymarket_price_sync_loop(self):
-        """Continuously extract Polymarket's 'Current price' from Playwright page
-        every ~5s (page reload + extract). Keeps Chainlink calibration offset
-        accurate, replacing unreliable RPC-based Chainlink polling."""
+        """Continuously extract Polymarket's 'Current price' from Playwright page.
+        Keeps Chainlink calibration offset accurate.
+        Auto-reloads page if price stale for 15s (Polymarket page freeze bug)."""
         _last_log = 0.0
         _consecutive_none = 0
-        # Wait for initial scrape to load the Playwright page
+        _last_price = 0.0
+        _last_price_change_ts = time.time()
         await asyncio.sleep(10.0)
         while self._running:
             try:
                 poly_price = await self.poly_client.extract_current_price()
                 if poly_price is not None and poly_price > 0:
                     _consecutive_none = 0
+                    now = time.time()
+
+                    # Detect stale page: same price for 15s = page frozen
+                    if abs(poly_price - _last_price) > 0.50:
+                        _last_price = poly_price
+                        _last_price_change_ts = now
+                    elif now - _last_price_change_ts > 15.0:
+                        logger.warning(
+                            "Price sync stale: $%.2f unchanged for %.0fs, forcing page reload",
+                            poly_price, now - _last_price_change_ts,
+                        )
+                        await self.poly_client.reload_scraper_page()
+                        _last_price_change_ts = now
+                        await asyncio.sleep(3.0)
+                        continue
+
                     binance_now = self.btc_price
                     if binance_now is not None and binance_now > 0:
                         new_offset = binance_now - poly_price
@@ -571,10 +588,8 @@ class DataCollector:
                         self._chainlink.binance_at_update = binance_now
                         self._chainlink.chainlink_updated_at = time.time()
                         self._chainlink.polymarket_sync_active = True
-                        self.btc_price_adjusted = binance_now - new_offset  # = poly_price
+                        self.btc_price_adjusted = binance_now - new_offset
 
-                        # Log offset changes > $5 or every 60s
-                        now = time.time()
                         offset_delta = abs(new_offset - old_offset)
                         if offset_delta > 5.0 or (now - _last_log) > 60.0:
                             logger.info(
@@ -584,9 +599,12 @@ class DataCollector:
                             _last_log = now
                 else:
                     _consecutive_none += 1
-                    if _consecutive_none == 30:
-                        logger.warning("Price sync: no Polymarket price for 30s")
+                    if _consecutive_none >= 15:
+                        logger.warning("Price sync: no price for %ds, reloading page", _consecutive_none)
+                        await self.poly_client.reload_scraper_page()
                         _consecutive_none = 0
+                        await asyncio.sleep(3.0)
+                        continue
             except Exception as e:
                 logger.debug("Price sync error: %s", e)
             await asyncio.sleep(1.0)
