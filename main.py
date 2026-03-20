@@ -3392,9 +3392,11 @@ class TradingBot:
                 "SELECT * FROM signal_cache WHERE id = 1",
             )
             if not _sig_row:
+                logger.warning("signal_cache: EMPTY")
                 return
             _sig_age = now - float(_sig_row.get("ts") or 0)
             if _sig_age > 2.0:
+                logger.info("signal_cache: stale (age=%.1fs)", _sig_age)
                 return  # stale
             _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
             if _sig_dir == "NO_TRADE":
