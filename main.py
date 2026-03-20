@@ -4398,6 +4398,60 @@ class TradingBot:
             resampled_prices = [float(t.price) for t in recent]
             resampled_ts = [float(t.timestamp) for t in recent]
 
+        # ── Use DB odds (same source as paper) for judge context ──
+        # CLOB-polled market.up_best_ask can be stale or extreme.
+        # DB poly_odds is written by data_collector from the same CLOB,
+        # ensuring paper and live judges see identical ask prices.
+        up_ask_ctx = None
+        down_ask_ctx = None
+        up_bid_ctx = None
+        down_bid_ctx = None
+        if LIVE_MIRROR_PAPER_GATES and self.current_market:
+            try:
+                conn = self._ensure_state_conn()
+                current_start = int(self.current_market.start_timestamp)
+                odds_row = fetch_one_dict(
+                    conn,
+                    """SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask,
+                              up_mid, down_mid
+                       FROM poly_odds
+                       WHERE window_start = ?
+                       ORDER BY ts DESC LIMIT 1""",
+                    (current_start,),
+                )
+                if odds_row:
+                    up_ask_ctx = _safe_prob(odds_row.get("up_best_ask")) or _safe_prob(odds_row.get("up_mid"))
+                    down_ask_ctx = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid"))
+                    up_bid_ctx = _safe_prob(odds_row.get("up_best_bid"))
+                    down_bid_ctx = _safe_prob(odds_row.get("down_best_bid"))
+            except Exception:
+                pass
+        # Fallback to CLOB-polled values if DB unavailable
+        if up_ask_ctx is None:
+            up_ask_ctx = (
+                self.current_market.up_best_ask
+                if 0.0 < self.current_market.up_best_ask < 1.0
+                else None
+            )
+        if down_ask_ctx is None:
+            down_ask_ctx = (
+                self.current_market.down_best_ask
+                if 0.0 < self.current_market.down_best_ask < 1.0
+                else None
+            )
+        if up_bid_ctx is None:
+            up_bid_ctx = (
+                self.current_market.up_best_bid
+                if 0.0 < self.current_market.up_best_bid < 1.0
+                else None
+            )
+        if down_bid_ctx is None:
+            down_bid_ctx = (
+                self.current_market.down_best_bid
+                if 0.0 < self.current_market.down_best_bid < 1.0
+                else None
+            )
+
         return MarketContext(
             current_binance_price=self.price_feed.adjusted_price or self.price_feed.current_price,
             market_start_price=self.market_start_price,
@@ -4407,26 +4461,10 @@ class TradingBot:
             poly_down_price=self.current_market.down_price,
             seconds_elapsed=seconds_elapsed,
             seconds_remaining=seconds_remaining,
-            poly_up_bid=(
-                self.current_market.up_best_bid
-                if 0.0 < self.current_market.up_best_bid < 1.0
-                else None
-            ),
-            poly_up_ask=(
-                self.current_market.up_best_ask
-                if 0.0 < self.current_market.up_best_ask < 1.0
-                else None
-            ),
-            poly_down_bid=(
-                self.current_market.down_best_bid
-                if 0.0 < self.current_market.down_best_bid < 1.0
-                else None
-            ),
-            poly_down_ask=(
-                self.current_market.down_best_ask
-                if 0.0 < self.current_market.down_best_ask < 1.0
-                else None
-            ),
+            poly_up_bid=up_bid_ctx,
+            poly_up_ask=up_ask_ctx,
+            poly_down_bid=down_bid_ctx,
+            poly_down_ask=down_ask_ctx,
             recent_results=self.recent_results[-20:],
         )
 

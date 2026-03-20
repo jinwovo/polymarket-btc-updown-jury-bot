@@ -1363,14 +1363,39 @@ class PolymarketClient:
             side_const = BUY if order_side == "BUY" else SELL
             client = self._clob_client
 
-            # Robust FOK submission with retry (same pattern as limit orders)
+            # Pre-fetch slow API calls ONCE (each can take 5-15s).
+            # Without caching, create_market_order makes 3 API calls internally
+            # (tick_size, neg_risk, calculate_market_price) which can total 20-45s,
+            # causing "order too old" when the signed timestamp expires.
+            _tick_size = await asyncio.to_thread(
+                client._ClobClient__resolve_tick_size, token_id, None
+            )
+            _neg_risk = await asyncio.to_thread(client.get_neg_risk, token_id)
+            _market_price = await asyncio.to_thread(
+                client.calculate_market_price, token_id, side_const, float(amount), None
+            )
+            _fee_rate = await asyncio.to_thread(
+                client._ClobClient__resolve_fee_rate, token_id, None
+            )
+
+            from py_clob_client.clob_types import PartialCreateOrderOptions, CreateOrderOptions
+
             max_attempts = 5
             resp = None
             _last_err = None
             for _attempt in range(max_attempts):
                 try:
-                    order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
-                    signed = await asyncio.to_thread(client.create_market_order, order_args)
+                    # Use cached values — only signing + post are in the hot path
+                    order_args = MarketOrderArgs(
+                        token_id=token_id, amount=float(amount),
+                        side=side_const, price=_market_price,
+                        fee_rate_bps=_fee_rate,
+                    )
+                    signed = await asyncio.to_thread(
+                        client.builder.create_market_order,
+                        order_args,
+                        CreateOrderOptions(tick_size=_tick_size, neg_risk=_neg_risk),
+                    )
                     resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
                     break
                 except Exception as _net_err:
