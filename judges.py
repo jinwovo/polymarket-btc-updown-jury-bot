@@ -987,16 +987,15 @@ class Jury:
     """
 
     def __init__(self, threshold: Optional[int] = None, min_score_margin: float = 0.04):
-        # Four judges with independent signal sources:
+        # Three judges (MomentumJudge tested but removed — 62.3% accuracy
+        # was not independent enough from other judges, slightly hurt ensemble).
         #   1. StatisticalJudge:    physics (bipower variance, jumps, trend)
         #   2. ArbitrageJudge:      lag freshness (is the mispricing exploitable?)
         #   3. OrderbookValueJudge: execution quality (can we profitably execute?)
-        #   4. MomentumJudge:       multi-timeframe trend persistence
         self.judges = [
             StatisticalJudge(),
             ArbitrageJudge(),
             OrderbookValueJudge(),
-            MomentumJudge(),
         ]
         jury_size = len(self.judges)
         if threshold is None:
@@ -1086,15 +1085,13 @@ class Jury:
         up_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in up_votes)
         down_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in down_votes)
 
-        # Require majority with limited opposition.
-        # With 4 judges: 2+ agree, at most 1 disagrees (rest ABSTAIN).
-        # More than 1 opposing vote = too much disagreement.
-        _max_opposing = 1 if self.size >= 4 else 0
-        if n_up >= self.threshold and n_down <= _max_opposing and up_score >= down_score + self.min_score_margin:
+        # Require majority with no opposing votes.
+        # UP UP ABSTAIN → OK.  UP UP DOWN → NO_TRADE.
+        if n_up >= self.threshold and n_down == 0 and up_score >= down_score + self.min_score_margin:
             direction = "UP"
             final_vote = Vote.UP
             winning = up_votes
-        elif n_down >= self.threshold and n_up <= _max_opposing and down_score >= up_score + self.min_score_margin:
+        elif n_down >= self.threshold and n_up == 0 and down_score >= up_score + self.min_score_margin:
             direction = "DOWN"
             final_vote = Vote.DOWN
             winning = down_votes
