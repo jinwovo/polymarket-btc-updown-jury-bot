@@ -101,7 +101,7 @@ class DataCollector:
         # Flush odds faster than ticks to reduce visible UI latency.
         self._flush_loop_interval = 0.25
         self._tick_flush_interval = 1.0
-        self._odds_flush_interval = 0.5
+        self._odds_flush_interval = 0.1
         self._feature1s_flush_interval = 1.0
         self._last_tick_flush = 0.0
         self._last_odds_flush = 0.0
