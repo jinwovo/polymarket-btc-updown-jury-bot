@@ -214,9 +214,12 @@ class DataCollector:
                         # Note: btc_start_price is only set from official Price to Beat (PTB).
                         # Binance fallback removed — wrong start price causes wrong direction.
 
-                        # Buffer ticks with Chainlink-calibrated price
+                        # Buffer ticks with Chainlink-calibrated price + buy/sell split
                         bucket = round(ts, 1)
-                        self._tick_buffer.append((bucket, self.btc_price_adjusted, volume))
+                        is_buyer_maker = bool(data.get("m", False))
+                        buy_vol = volume if not is_buyer_maker else 0.0
+                        sell_vol = volume if is_buyer_maker else 0.0
+                        self._tick_buffer.append((bucket, self.btc_price_adjusted, volume, buy_vol, sell_vol))
 
             except websockets.ConnectionClosed:
                 logger.warning("Binance WS disconnected, reconnecting...")

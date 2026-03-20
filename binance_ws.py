@@ -64,6 +64,7 @@ class PriceTick:
     price: float
     timestamp: float  # unix seconds
     volume: float = 0.0
+    is_buyer_maker: bool = False  # Binance "m" flag: True=sell aggressor, False=buy aggressor
 
 
 class ChainlinkCalibrator:
@@ -348,6 +349,7 @@ class BinancePriceFeed:
                             price=float(data["p"]),
                             timestamp=float(data["T"]) / 1000.0,
                             volume=float(data.get("q", 0)),
+                            is_buyer_maker=bool(data.get("m", False)),
                         )
                         self.ticks.append(tick)
                         self.current_price = tick.price

@@ -177,7 +177,9 @@ def init_market_schema(conn):
         CREATE TABLE IF NOT EXISTS btc_ticks (
             ts DOUBLE PRIMARY KEY,
             price DOUBLE NOT NULL,
-            volume DOUBLE DEFAULT 0
+            volume DOUBLE DEFAULT 0,
+            buy_volume DOUBLE DEFAULT 0,
+            sell_volume DOUBLE DEFAULT 0
         ) ENGINE=InnoDB
         """,
         """
@@ -346,6 +348,9 @@ def init_market_schema(conn):
         "ALTER TABLE feature_1s ADD COLUMN sigma_est DOUBLE NULL",
         "ALTER TABLE feature_1s ADD COLUMN p_up_diffusion DOUBLE NULL",
         "ALTER TABLE feature_1s ADD COLUMN lag_freshness DOUBLE NULL",
+        # Buy/sell volume split for momentum analysis
+        "ALTER TABLE btc_ticks ADD COLUMN buy_volume DOUBLE DEFAULT 0",
+        "ALTER TABLE btc_ticks ADD COLUMN sell_volume DOUBLE DEFAULT 0",
     ]:
         try:
             execute_write(conn, alter_sql)
@@ -355,8 +360,9 @@ def init_market_schema(conn):
 
 def upsert_btc_ticks_sql() -> str:
     return (
-        "INSERT INTO btc_ticks (ts, price, volume) VALUES (?, ?, ?) "
-        "ON DUPLICATE KEY UPDATE price=VALUES(price), volume=VALUES(volume)"
+        "INSERT INTO btc_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (?, ?, ?, ?, ?) "
+        "ON DUPLICATE KEY UPDATE price=VALUES(price), volume=VALUES(volume), "
+        "buy_volume=VALUES(buy_volume), sell_volume=VALUES(sell_volume)"
     )
 
 
