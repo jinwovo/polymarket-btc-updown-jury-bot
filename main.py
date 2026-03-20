@@ -3076,10 +3076,9 @@ class TradingBot:
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
         await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
-        # Polymarket price sync disabled — data_collector handles CLOB polling
-        # and Jury evaluation. Live only needs Chainlink calibration (already
-        # running in BinancePriceFeed). Saves 1 Chromium instance (~1GB RAM).
-        price_sync_task = None
+        # Polymarket price sync required — Chainlink RPC alone has $30-50 offset.
+        # Chromium scrapes Polymarket current price every ~1s for accurate calibration.
+        price_sync_task = asyncio.create_task(self._polymarket_price_sync_loop())
 
         try:
             await self._trading_loop()
