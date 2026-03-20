@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/workspace/space/futurePrediction/components -type f -name *.ts -o -name *.tsx)",
+      "Bash(ls -la /c/workspace/space/futurePrediction/sweep_best*)",
+      "Bash(grep -n \"from exit_policy\\\\|from entry_parity\\\\|import exit_policy\\\\|import entry_parity\" /c/workspace/space/futurePrediction/*.py)",
+      "Bash(python -c \"import main\")",
+      "Bash(python -c \"import paper_trade_sim\")",
+      "WebSearch",
+      "WebFetch(domain:docs.polymarket.com)",
+      "WebFetch(domain:docs.chain.link)",
+      "WebFetch(domain:data.chain.link)",
+      "WebFetch(domain:web3-ethereum-defi.readthedocs.io)",
+      "WebFetch(domain:web3-ethereum-defi.tradingstrategy.ai)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(grep -rn \"liveStatus\\\\|private_key_set\\\\|signature_type\\\\|creds_source\" c:/workspace/space/futurePrediction/app c:/workspace/space/futurePrediction/*.py)",
+      "Bash(grep -rn \"/api/control/live\\\\|@app.route\\\\|@app.get\\\\|private_key_set\\\\|signature_type\" c:/workspace/space/futurePrediction/*.py)"
+    ]
+  }
+}

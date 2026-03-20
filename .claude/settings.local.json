@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python replay_exit_analysis.py)",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import paper_trade_sim; print\\(''paper_trade_sim OK''\\)\")",
+      "Bash(python -c \"import main; print\\(''main OK''\\)\")",
+      "Bash(python -c \"import paper_trade_sim; print\\(''paper OK''\\)\")",
+      "Bash(python -c \"import main; print\\(''''main OK''''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''data_collector.py''\\).read\\(\\)\\); print\\(''data_collector.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''db_config.py''\\).read\\(\\)\\); print\\(''db_config.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''backtest.py''\\).read\\(\\)\\); print\\(''backtest.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''backtest.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''backtest.py OK''\\)\")",
+      "Bash(python -c \"from db_config import upsert_poly_odds_sql, upsert_feature_1s_sql; print\\(''poly_odds cols:'', upsert_poly_odds_sql\\(\\).count\\(''?''\\)\\); print\\(''feature_1s cols:'', upsert_feature_1s_sql\\(\\).count\\(''?''\\)\\)\")",
+      "Bash(python -c \"import data_collector; print\\(''data_collector imports OK''\\)\")",
+      "Bash(mysql -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)",
+      "Bash(mariadb -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)",
+      "Bash(\"C:/Program Files/MariaDB 11.7/bin/mariadb.exe\" -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)",
+      "Read(//c/Program Files/**)",
+      "Bash(ls -d \"C:/Program Files/MariaDB\"*/)",
+      "Bash(\"C:/Program Files/MariaDB 12.2/bin/mariadb.exe\" -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)"
+    ]
+  }
+}
