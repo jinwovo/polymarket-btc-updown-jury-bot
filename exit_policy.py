@@ -267,7 +267,7 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
         reason = (
             f"near_certain_win(opposite_ask={float(inp.opposite_ask):.3f}"
             f" <= {ncw_threshold:.3f},"
-            f" side≈{side_approx:.3f},"
+            f" side~{side_approx:.3f},"
             f" roi={mtm_roi_pct:+.2f}%, hold={hold_sec:.1f}s)"
         )
 
