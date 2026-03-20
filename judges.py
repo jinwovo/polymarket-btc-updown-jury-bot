@@ -920,11 +920,13 @@ class Jury:
         up_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in up_votes)
         down_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in down_votes)
 
-        if n_up >= self.threshold and up_score >= down_score + self.min_score_margin:
+        # Require majority WITH no opposing votes.
+        # UP UP ABSTAIN → OK.  UP UP DOWN → NO_TRADE (33% disagrees = risky).
+        if n_up >= self.threshold and n_down == 0 and up_score >= down_score + self.min_score_margin:
             direction = "UP"
             final_vote = Vote.UP
             winning = up_votes
-        elif n_down >= self.threshold and down_score >= up_score + self.min_score_margin:
+        elif n_down >= self.threshold and n_up == 0 and down_score >= up_score + self.min_score_margin:
             direction = "DOWN"
             final_vote = Vote.DOWN
             winning = down_votes
