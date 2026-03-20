@@ -3610,9 +3610,15 @@ class TradingBot:
             if _btc_start > 0
             else 0.0
         )
+        # In parity mode, skip momentum/trend/divergence guards.
+        # data_collector's Jury + Paper's entry guards already check these.
+        # Re-checking in Live with 1-3s timing difference causes Live to miss
+        # trades that Paper catches (BTC micro-bounce between checks).
+        _skip_price_guards = LIVE_MIRROR_PAPER_GATES
+
         # Divergence risk filter: Binance-Chainlink gap can flip settlement
         # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias
-        if decision.direction == "DOWN":
+        if not _skip_price_guards and decision.direction == "DOWN":
             min_boundary = (
                 float(MIRROR_DOWN_MIN_BOUNDARY_DIST_PCT)
                 if LIVE_MIRROR_PAPER_GATES
@@ -3624,7 +3630,7 @@ class TradingBot:
                 if LIVE_MIRROR_PAPER_GATES
                 else float(getattr(config.trading, "min_boundary_dist_pct", 0.040))
             )
-        if abs(btc_move_from_start_pct) < min_boundary:
+        if not _skip_price_guards and abs(btc_move_from_start_pct) < min_boundary:
             self._log_rejected_live(
                 decision, ctx, seconds_elapsed, "divergence_risk",
                 f"divergence risk: |btc_move|={abs(btc_move_from_start_pct):.4f}% < {min_boundary:.4f}%",
@@ -3647,7 +3653,7 @@ class TradingBot:
                 now_ts=now,
                 lookback_sec=recent_move_lookback_sec,
             )
-        if recent_move is None:
+        if not _skip_price_guards and recent_move is None:
             return
         base_move_thr = (
             float(MIRROR_MIN_RECENT_MOVE_PCT)
@@ -3664,7 +3670,7 @@ class TradingBot:
         )
         if _directional_start_move >= 0.06:
             _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
-        if decision.direction == "UP" and recent_move < base_move_thr * _strong_start_factor:
+        if not _skip_price_guards and decision.direction == "UP" and recent_move < base_move_thr * _strong_start_factor:
             logger.info(
                 "Skip live momentum guard: dir=UP move=%.4f%% < +%.4f%% (adj=%.4f%%)",
                 recent_move,
@@ -3681,7 +3687,7 @@ class TradingBot:
             )
             down_move_thr += down_move_extra
         effective_down_thr = down_move_thr * _strong_start_factor
-        if decision.direction == "DOWN" and recent_move > -effective_down_thr:
+        if not _skip_price_guards and decision.direction == "DOWN" and recent_move > -effective_down_thr:
             logger.info(
                 "Skip live momentum guard: dir=DOWN move=%.4f%% > -%.4f%% (adj=-%.4f%%, btc_vs_start=%+.4f%%)",
                 recent_move,
@@ -3706,7 +3712,7 @@ class TradingBot:
                 now_ts=now,
                 lookback_sec=trend_lookback_sec,
             )
-        if trend_move is None:
+        if not _skip_price_guards and trend_move is None:
             return
         trend_opp_thr = abs(
             float(MIRROR_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT)
@@ -3715,7 +3721,7 @@ class TradingBot:
         )
         # Also relax trend guard when start-move strongly confirms direction
         _effective_trend_thr = trend_opp_thr / max(_strong_start_factor, 0.05)
-        if decision.direction == "UP" and trend_move < -_effective_trend_thr:
+        if not _skip_price_guards and decision.direction == "UP" and trend_move < -_effective_trend_thr:
             logger.info(
                 "Skip live trend-align guard: dir=UP trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
                 trend_move,
@@ -3723,7 +3729,7 @@ class TradingBot:
                 trend_lookback_sec,
             )
             return
-        if decision.direction == "DOWN" and trend_move > _effective_trend_thr:
+        if not _skip_price_guards and decision.direction == "DOWN" and trend_move > _effective_trend_thr:
             logger.info(
                 "Skip live trend-align guard: dir=DOWN trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
                 trend_move,
@@ -3847,7 +3853,7 @@ class TradingBot:
                     )
                     return
         # ── Macro trend filter (mirrors paper_trade_sim) ──
-        if LIVE_MIRROR_PAPER_GATES:
+        if LIVE_MIRROR_PAPER_GATES and not _skip_price_guards:
             try:
                 _mt_conn = self._ensure_state_conn()
                 macro_move = _live_macro_trend_pct(
