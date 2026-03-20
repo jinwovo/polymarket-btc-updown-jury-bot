@@ -1648,14 +1648,7 @@ export function LiveDashboard() {
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   />
                 </label>
-                <label className="text-xs text-muted-foreground">
-                  Interval (sec)
-                  <input
-                    value={paperInterval}
-                    onChange={(e) => setPaperInterval(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
-                  />
-                </label>
+                {/* Interval removed — fixed at 0.1s in backend */}
                 <label className="text-xs text-muted-foreground col-span-2">
                   Sizing Mode
                   <select
