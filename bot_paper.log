@@ -14437,3 +14437,985 @@
 00:54:25 [WARNING] paper_sim:   BTC at exit: $69710.73
 00:55:00 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
 00:55:58 [WARNING] paper_sim: Paper simulator stopped by user
+01:04:39 [WARNING] paper_sim: Paper simulator running: initial=$1000.00 mode=adaptive risk_frac=0.20 base_ev=5.00% min_support=70% max_ask=0.58 entry=90~240s remain>=30s samples(t/o)=100/16 gap=120~600s unanim=False(at>=0.90) stale_relax(start=2400s full=9000s max=80% ask_floor=0.47) perf_pause=0s align(side>=0.22,opp<=0.78) contra_gap<=0.500(ovr p>=0.66 conf>=0.75) trend_align(lookback=75s opp<=0.0040%) macro_trend(lookback=900s block>=0.1000%) down_guard(block>=0.0500%,+mom=0.0060%,+ev=2.00%) profit_mode=aggressive(relax=20% gapx=0.65 maxBetFrac=0.12 kelly=0.50 deboost=0.82) early_exit=True(opp>=0.90,sl<=-85.0%@hold>=35s highConf>=0.75->20s lowConf<=0.60 relax=5.0%, btcAdv=True@0.090% maxHold=280s ts<=-40.0%)
+01:04:39 [WARNING] paper_sim: Paper Telegram: notify_open=True configured=True (token=True chat=True)
+01:04:39 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
+01:05:00 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0268% > -0.0000% (btc_vs_start=-0.2012%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0268% > -0.0000% (btc_vs_start=-0.2012%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0174% > -0.0000% (btc_vs_start=-0.2012%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0174% > -0.0000% (btc_vs_start=-0.2012%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:30 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2079%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0123% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0029% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:31 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0029% > -0.0000% (btc_vs_start=-0.2173%)
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0029% > -0.0000% (btc_vs_start=-0.2173%)
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0029% > -0.0000% (btc_vs_start=-0.2173%)
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0090% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0090% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0090% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:32 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.650 > 0.539
+01:06:32 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.650 > 0.539
+01:06:32 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.650 > 0.539
+01:06:32 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.650 > 0.539
+01:06:32 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0071% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:33 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0071% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:33 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0071% > -0.0000% (btc_vs_start=-0.2072%)
+01:06:33 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0002% > -0.0000% (btc_vs_start=-0.1931%)
+01:06:33 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0002% > -0.0000% (btc_vs_start=-0.1931%)
+01:06:33 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0002% > -0.0000% (btc_vs_start=-0.1931%)
+01:06:33 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:33 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:33 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:33 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:34 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:34 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:34 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:34 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0147% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:35 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0153% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:35 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0153% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:35 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0153% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:35 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0153% > -0.0000% (btc_vs_start=-0.1925%)
+01:06:45 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0002% > -0.0000% (btc_vs_start=-0.2314%)
+01:06:45 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0002% > -0.0000% (btc_vs_start=-0.2314%)
+01:06:45 [WARNING] paper_sim: Skip weak short momentum ws=1774022700 dir=DOWN: move=0.0072% > -0.0000% (btc_vs_start=-0.2314%)
+01:06:45 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.750 > 0.539
+01:06:45 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.750 > 0.539
+01:06:45 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.750 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.750 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.750 > 0.539
+01:06:46 [WARNING] paper_sim: Skip weak EV ws=1774022700 dir=DOWN: net_ev=+6.467% < 6.918% (loss_streak=2, recent_loss_rate=67%)
+01:06:46 [WARNING] paper_sim: Skip weak EV ws=1774022700 dir=DOWN: net_ev=+6.467% < 6.918% (loss_streak=2, recent_loss_rate=67%)
+01:06:46 [WARNING] paper_sim: Skip weak EV ws=1774022700 dir=DOWN: net_ev=+6.467% < 6.918% (loss_streak=2, recent_loss_rate=67%)
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:46 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.770 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:47 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.760 > 0.539
+01:06:48 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:48 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:48 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:49 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.439 < 0.490
+01:06:49 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.439 < 0.490
+01:06:49 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.439 < 0.490
+01:06:49 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.640 > 0.539
+01:06:49 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.640 > 0.539
+01:06:49 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.640 > 0.539
+01:06:49 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.640 > 0.539
+01:06:49 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:49 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip weak jury ws=1774022700 dir=DOWN: support=66.7% < 79.8%
+01:06:50 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:50 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:50 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:50 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:50 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:51 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:52 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:53 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:54 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:55 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:56 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:06:57 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:58 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.540 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:06:59 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:00 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.570 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.550 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:01 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.560 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.580 > 0.539
+01:07:02 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:03 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.610 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:04 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.600 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:05 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:06 [WARNING] paper_sim: Skip expensive entry ws=1774022700 dir=DOWN: ask=0.590 > 0.539
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.419 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.419 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.419 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.334 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.334 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.334 < 0.490
+01:07:06 [WARNING] paper_sim: Skip low confidence ws=1774022700 dir=DOWN: conf=0.334 < 0.490
+01:07:06 [WARNING] paper_sim: Entry gate blocked ws=1774022700 dir=DOWN: skip coinflip_guard(ask=0.540, conf=0.438 < 0.450) | net_ev=+54.538% (p=0.843, fair_up=0.170, disp=0.300, ask=0.540, conf=0.438, fee=1.00%+spread=0.005)
+01:07:07 [WARNING] paper_sim: Entry gate blocked ws=1774022700 dir=DOWN: skip coinflip_guard(ask=0.540, conf=0.438 < 0.450) | net_ev=+54.538% (p=0.843, fair_up=0.170, disp=0.300, ask=0.540, conf=0.438, fee=1.00%+spread=0.005)
+01:07:07 [WARNING] paper_sim: Entry gate blocked ws=1774022700 dir=DOWN: skip coinflip_guard(ask=0.540, conf=0.438 < 0.450) | net_ev=+54.538% (p=0.843, fair_up=0.170, disp=0.300, ask=0.540, conf=0.438, fee=1.00%+spread=0.005)
+01:07:07 [WARNING] paper_sim: OPEN  ws=1774022700 dir=DOWN stake=$264.93 ask=0.520 ev=+60.700% eq=$2626.76 avail=$2626.76 strict=0.59->0.59 stale=0.00 gap=262s mode=adaptive
+01:08:08 [INFO] polymarket_client: Patched py_clob_client HTTP: timeout=30s, retries=3, http1.1
+01:08:26 [WARNING] paper_sim: EARLY ws=1774022700 id=156 dir=DOWN reason=near_certain_win(opposite_ask=0.050 <= 0.050, side~0.950, roi=+79.77%, hold=78.5s) exit_px=0.940 pnl=$+211.33 roi=+79.77%
+01:08:26 [WARNING] paper_sim:   BTC at exit: $69850.91
+01:10:00 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
+01:13:44 [WARNING] paper_sim: Paper simulator running: initial=$1000.00 mode=adaptive risk_frac=0.20 base_ev=5.00% min_support=70% max_ask=0.58 entry=90~240s remain>=30s samples(t/o)=100/16 gap=120~600s unanim=False(at>=0.90) stale_relax(start=2400s full=9000s max=80% ask_floor=0.47) perf_pause=0s align(side>=0.22,opp<=0.78) contra_gap<=0.500(ovr p>=0.66 conf>=0.75) trend_align(lookback=75s opp<=0.0040%) macro_trend(lookback=900s block>=0.1000%) down_guard(block>=0.0500%,+mom=0.0060%,+ev=2.00%) profit_mode=aggressive(relax=20% gapx=0.65 maxBetFrac=0.12 kelly=0.50 deboost=0.82) early_exit=True(opp>=0.90,sl<=-85.0%@hold>=35s highConf>=0.75->20s lowConf<=0.60 relax=5.0%, btcAdv=True@0.090% maxHold=280s ts<=-40.0%)
+01:13:44 [WARNING] paper_sim: Paper Telegram: notify_open=True configured=True (token=True chat=True)
+01:15:00 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
+01:16:36 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.548 < floor=0.614 (mode=EV_FIRST, p_profit>=0.609, fair_up=0.449, disp=0.039, ask=0.600, fee=1.00%+spread=0.005)
+01:16:36 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.548 < floor=0.614 (mode=EV_FIRST, p_profit>=0.609, fair_up=0.449, disp=0.039, ask=0.600, fee=1.00%+spread=0.005)
+01:16:36 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.542 < floor=0.614 (mode=EV_FIRST, p_profit>=0.609, fair_up=0.455, disp=0.045, ask=0.600, fee=1.00%+spread=0.005)
+01:16:36 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.543 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.455, disp=0.035, ask=0.600, fee=1.00%+spread=0.010)
+01:16:36 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.543 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.455, disp=0.035, ask=0.600, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.544 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.454, disp=0.034, ask=0.600, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.544 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.454, disp=0.034, ask=0.600, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.545 < floor=0.586 (mode=EV_FIRST, p_profit>=0.581, fair_up=0.454, disp=0.004, ask=0.570, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.545 < floor=0.586 (mode=EV_FIRST, p_profit>=0.581, fair_up=0.454, disp=0.004, ask=0.570, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.545 < floor=0.586 (mode=EV_FIRST, p_profit>=0.581, fair_up=0.454, disp=0.004, ask=0.570, fee=1.00%+spread=0.010)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.544 < floor=0.589 (mode=EV_FIRST, p_profit>=0.584, fair_up=0.453, disp=0.007, ask=0.570, fee=1.00%+spread=0.015)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.544 < floor=0.589 (mode=EV_FIRST, p_profit>=0.584, fair_up=0.453, disp=0.007, ask=0.570, fee=1.00%+spread=0.015)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.544 < floor=0.589 (mode=EV_FIRST, p_profit>=0.584, fair_up=0.453, disp=0.007, ask=0.570, fee=1.00%+spread=0.015)
+01:16:37 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip coinflip_guard(ask=0.560 in [0.44,0.56], prob_margin=-0.0127 < 0.060) | net_ev=-3.764% (p=0.547, fair_up=0.453, disp=0.003, ask=0.560, conf=0.989, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip coinflip_guard(ask=0.560 in [0.44,0.56], prob_margin=-0.0127 < 0.060) | net_ev=-3.764% (p=0.547, fair_up=0.453, disp=0.003, ask=0.560, conf=0.989, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip coinflip_guard(ask=0.560 in [0.44,0.56], prob_margin=-0.0127 < 0.060) | net_ev=-3.764% (p=0.547, fair_up=0.453, disp=0.003, ask=0.560, conf=0.989, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.562 < floor=0.604 (mode=EV_FIRST, p_profit>=0.599, fair_up=0.439, disp=0.019, ask=0.590, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.567 < floor=0.604 (mode=EV_FIRST, p_profit>=0.599, fair_up=0.434, disp=0.014, ask=0.590, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.566 < floor=0.604 (mode=EV_FIRST, p_profit>=0.599, fair_up=0.435, disp=0.015, ask=0.590, fee=1.00%+spread=0.005)
+01:16:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0525% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0525% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0525% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0525% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0434% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0421% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0421% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0421% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:40 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0379% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0339% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0339% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0339% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0423% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0403% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0403% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0403% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0403% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0331% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0296% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0287% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0287% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0287% < +0.0040%
+01:16:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0287% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0153% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0153% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0153% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0153% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0171% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0171% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0171% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0171% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0171% < +0.0040%
+01:16:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0082% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0082% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:44 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0208% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0208% < +0.0040%
+01:16:45 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0208% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0093% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0093% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0093% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0093% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0092% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:46 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0136% < +0.0040%
+01:16:47 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0173% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0174% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0174% < +0.0040%
+01:16:48 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0183% < +0.0040%
+01:16:49 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0184% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0184% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0184% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0184% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0122% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0122% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0102% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0101% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0101% < +0.0040%
+01:16:50 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0101% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0101% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0101% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:51 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0192% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0172% < +0.0040%
+01:16:52 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0298% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0433% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0456% < +0.0040%
+01:16:53 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0456% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0456% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0456% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0456% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0113% < +0.0040%
+01:16:54 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0088% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0078% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0145% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0145% < +0.0040%
+01:16:55 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0070% < +0.0040%
+01:16:56 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0119% < +0.0040%
+01:16:56 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0019% < +0.0040%
+01:16:56 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0019% < +0.0040%
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.262% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.262% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.262% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.249% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.250% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.123 pass=False (vs_start=-0.0460%, m10=+0.0008%, m30=-0.0280%, m60=-0.0038%, jump=0.815)) | net_ev=+19.259% target=5.000% (p=0.350, fair_up=0.464, disp=0.174, align=-0.0460%, pen=0.130, ask=0.290, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.543% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.536% target=5.000% (p=0.367, fair_up=0.479, disp=0.209, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.376% target=5.000% (p=0.367, fair_up=0.478, disp=0.208, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.376% target=5.000% (p=0.367, fair_up=0.478, disp=0.208, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:58 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.288 pass=False (vs_start=-0.0361%, m10=+0.0107%, m30=-0.0067%, m60=-0.0030%, jump=0.815)) | net_ev=+34.376% target=5.000% (p=0.367, fair_up=0.478, disp=0.208, align=-0.0361%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:58 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.295 pass=False (vs_start=-0.0364%, m10=+0.0106%, m30=-0.0031%, m60=-0.0060%, jump=0.815)) | net_ev=+31.258% target=5.000% (p=0.358, fair_up=0.478, disp=0.208, align=-0.0364%, pen=0.137, ask=0.270, fee=1.00%+spread=0.005)
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0019% < +0.0040%
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0019% < +0.0040%
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0019% < +0.0040%
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0019% < +0.0040%
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0022% < +0.0040%
+01:16:58 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0022% < +0.0040%
+01:16:59 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.383 pass=False (vs_start=-0.0356%, m10=+0.0114%, m30=-0.0060%, m60=+0.0033%, jump=0.814)) | net_ev=+12.056% target=5.000% (p=0.375, fair_up=0.492, disp=0.162, align=-0.0356%, pen=0.135, ask=0.330, fee=1.00%+spread=0.005)
+01:16:59 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.383 pass=False (vs_start=-0.0356%, m10=+0.0114%, m30=-0.0060%, m60=+0.0033%, jump=0.814)) | net_ev=+12.056% target=5.000% (p=0.375, fair_up=0.492, disp=0.162, align=-0.0356%, pen=0.135, ask=0.330, fee=1.00%+spread=0.005)
+01:16:59 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.383 pass=False (vs_start=-0.0356%, m10=+0.0114%, m30=-0.0060%, m60=+0.0033%, jump=0.814)) | net_ev=+12.056% target=5.000% (p=0.375, fair_up=0.492, disp=0.162, align=-0.0356%, pen=0.135, ask=0.330, fee=1.00%+spread=0.005)
+01:17:01 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0133% > -0.0040% (btc_vs_start=-0.0382%)
+01:17:01 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0133% > -0.0040% (btc_vs_start=-0.0382%)
+01:17:01 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0133% > -0.0040% (btc_vs_start=-0.0382%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0151% > -0.0040% (btc_vs_start=-0.0324%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0151% > -0.0040% (btc_vs_start=-0.0324%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0151% > -0.0040% (btc_vs_start=-0.0324%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0151% > -0.0040% (btc_vs_start=-0.0324%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0003% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0371%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0017% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0026% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0026% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0026% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0026% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:04 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0414%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0055% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:05 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0401%)
+01:17:06 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0067% > -0.0040% (btc_vs_start=-0.0423%)
+01:17:06 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.551 < floor=0.604 (mode=EV_FIRST, p_profit>=0.599, fair_up=0.452, disp=0.032, ask=0.590, fee=1.00%+spread=0.005)
+01:17:06 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.551 < floor=0.604 (mode=EV_FIRST, p_profit>=0.599, fair_up=0.452, disp=0.032, ask=0.590, fee=1.00%+spread=0.005)
+01:17:06 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.574 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.434, disp=0.014, ask=0.600, fee=1.00%+spread=0.010)
+01:17:06 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.574 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.434, disp=0.014, ask=0.600, fee=1.00%+spread=0.010)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.581 < floor=0.617 (mode=EV_FIRST, p_profit>=0.612, fair_up=0.427, disp=0.007, ask=0.600, fee=1.00%+spread=0.010)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.581 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.426, disp=0.036, ask=0.630, fee=1.00%+spread=0.010)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.581 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.426, disp=0.036, ask=0.630, fee=1.00%+spread=0.010)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.581 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.426, disp=0.036, ask=0.630, fee=1.00%+spread=0.010)
+01:17:07 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.644 (mode=EV_FIRST, p_profit>=0.639, fair_up=0.426, disp=0.046, ask=0.630, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.644 (mode=EV_FIRST, p_profit>=0.639, fair_up=0.426, disp=0.046, ask=0.630, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.644 (mode=EV_FIRST, p_profit>=0.639, fair_up=0.426, disp=0.046, ask=0.630, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.425, disp=0.035, ask=0.630, fee=1.00%+spread=0.010)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.425, disp=0.035, ask=0.630, fee=1.00%+spread=0.010)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.648 (mode=EV_FIRST, p_profit>=0.643, fair_up=0.425, disp=0.035, ask=0.630, fee=1.00%+spread=0.010)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:08 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.584 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.425, disp=0.025, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.584 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.425, disp=0.025, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=DOWN: trend_move=0.0078% > +0.0040% (lookback=75s)
+01:17:09 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=DOWN: trend_move=0.0078% > +0.0040% (lookback=75s)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.582 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.427, disp=0.027, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.584 < floor=0.624 (mode=EV_FIRST, p_profit>=0.619, fair_up=0.425, disp=0.025, ask=0.610, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:09 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:10 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.583 < floor=0.634 (mode=EV_FIRST, p_profit>=0.629, fair_up=0.425, disp=0.035, ask=0.620, fee=1.00%+spread=0.005)
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:10 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:11 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:12 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0129% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0154% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0154% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0154% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:13 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0255% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:14 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0330% < +0.0040%
+01:17:15 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0207% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0207% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0207% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0178% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:16 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0277% < +0.0040%
+01:17:17 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0338% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0331% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0331% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0331% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0359% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0415% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0521% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0525% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0337% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0337% < +0.0040%
+01:17:18 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0337% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0337% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:19 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0275% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0250% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0250% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0250% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0340% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0388% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0388% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0388% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0388% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:20 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:21 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0282% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0235% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0240% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0240% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0240% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0240% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0240% < +0.0040%
+01:17:22 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:23 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0197% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0209% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:24 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0211% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0216% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0216% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0216% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0216% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0216% < +0.0040%
+01:17:25 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0166% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0166% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0166% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0166% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0166% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0103% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0088% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0065% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:26 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0081% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0080% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0080% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0080% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0080% < +0.0040%
+01:17:27 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0080% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0089% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:28 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0108% < +0.0040%
+01:17:29 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:29 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:29 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:29 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:29 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:30 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0580% < -0.0040% (lookback=75s)
+01:17:30 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0581% < -0.0040% (lookback=75s)
+01:17:30 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.643 < floor=0.685 (mode=EV_FIRST, p_profit>=0.680, fair_up=0.382, disp=0.042, ask=0.670, fee=1.00%+spread=0.005)
+01:17:30 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.643 < floor=0.685 (mode=EV_FIRST, p_profit>=0.680, fair_up=0.382, disp=0.042, ask=0.670, fee=1.00%+spread=0.005)
+01:17:30 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=DOWN: skip low win_prob=0.643 < floor=0.685 (mode=EV_FIRST, p_profit>=0.680, fair_up=0.382, disp=0.042, ask=0.670, fee=1.00%+spread=0.005)
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0059% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0058% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0058% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0026% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0026% < +0.0040%
+01:17:32 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0026% < +0.0040%
+01:17:33 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0026% < +0.0040%
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0753% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0768% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0768% < -0.0040% (lookback=75s)
+01:17:33 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0693% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0697% < -0.0040% (lookback=75s)
+01:17:34 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0697% < -0.0040% (lookback=75s)
+01:17:35 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0684% < -0.0040% (lookback=75s)
+01:17:35 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0684% < -0.0040% (lookback=75s)
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0005% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0005% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:35 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0000% < +0.0040%
+01:17:36 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0001% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0001% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0007% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:37 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0006% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:38 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0003% < +0.0040%
+01:17:39 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0450% < -0.0040% (lookback=75s)
+01:17:39 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0297% < -0.0040% (lookback=75s)
+01:17:39 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=0.0023% < +0.0040%
+01:17:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:41 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:42 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0004% > -0.0039% (btc_vs_start=-0.0615%)
+01:17:43 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=UP: move=-0.0004% < +0.0040%
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0113% < -0.0040% (lookback=75s)
+01:17:43 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0122% < -0.0040% (lookback=75s)
+01:17:44 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0123% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0123% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0123% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0123% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0061% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0061% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0040% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0040% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0040% < -0.0040% (lookback=75s)
+01:17:45 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.806 pass=False (vs_start=-0.0202%, m10=+0.0435%, m30=+0.0436%, m60=+0.0185%, jump=0.806)) | net_ev=+21.372% target=5.000% (p=0.405, fair_up=0.521, disp=0.191, align=-0.0202%, pen=0.143, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.806 pass=False (vs_start=-0.0202%, m10=+0.0435%, m30=+0.0436%, m60=+0.0185%, jump=0.809)) | net_ev=+20.668% target=5.000% (p=0.403, fair_up=0.518, disp=0.188, align=-0.0202%, pen=0.142, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.972% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.972% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.972% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.962% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.962% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.962% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:46 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.765 pass=False (vs_start=-0.0254%, m10=+0.0384%, m30=+0.0384%, m60=+0.0134%, jump=0.809)) | net_ev=+18.962% target=5.000% (p=0.398, fair_up=0.509, disp=0.179, align=-0.0254%, pen=0.138, ask=0.330, fee=1.00%+spread=0.005)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+2.874% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.136, ask=0.380, fee=1.00%+spread=0.010)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+2.874% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.136, ask=0.380, fee=1.00%+spread=0.010)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+2.874% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.136, ask=0.380, fee=1.00%+spread=0.010)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+3.547% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+3.547% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+3.547% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:47 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.773 pass=False (vs_start=-0.0254%, m10=+0.0383%, m30=+0.0384%, m60=+0.0214%, jump=0.808)) | net_ev=+3.547% target=5.000% (p=0.399, fair_up=0.509, disp=0.129, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:47 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0083% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0218% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0241% < -0.0040% (lookback=75s)
+01:17:48 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0241% < -0.0040% (lookback=75s)
+01:17:49 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0241% < -0.0040% (lookback=75s)
+01:17:49 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0241% < -0.0040% (lookback=75s)
+01:17:49 [WARNING] paper_sim: Skip trend misalign ws=1774023300 dir=UP: trend_move=-0.0241% < -0.0040% (lookback=75s)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+2.150% target=5.000% (p=0.394, fair_up=0.503, disp=0.123, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+2.196% target=5.000% (p=0.394, fair_up=0.503, disp=0.123, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+2.201% target=5.000% (p=0.394, fair_up=0.503, disp=0.123, align=-0.0254%, pen=0.135, ask=0.380, fee=1.00%+spread=0.005)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+4.928% target=5.000% (p=0.394, fair_up=0.503, disp=0.133, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+4.928% target=5.000% (p=0.394, fair_up=0.503, disp=0.133, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:49 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.714 pass=False (vs_start=-0.0254%, m10=+0.0206%, m30=+0.0377%, m60=+0.0216%, jump=0.809)) | net_ev=+4.928% target=5.000% (p=0.394, fair_up=0.503, disp=0.133, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.763 pass=False (vs_start=-0.0254%, m10=+0.0329%, m30=+0.0352%, m60=+0.0215%, jump=0.808)) | net_ev=+5.499% target=5.000% (p=0.396, fair_up=0.505, disp=0.135, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.763 pass=False (vs_start=-0.0254%, m10=+0.0329%, m30=+0.0352%, m60=+0.0215%, jump=0.808)) | net_ev=+5.499% target=5.000% (p=0.396, fair_up=0.505, disp=0.135, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.763 pass=False (vs_start=-0.0254%, m10=+0.0329%, m30=+0.0352%, m60=+0.0215%, jump=0.808)) | net_ev=+5.499% target=5.000% (p=0.396, fair_up=0.505, disp=0.135, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.763 pass=False (vs_start=-0.0254%, m10=+0.0329%, m30=+0.0352%, m60=+0.0215%, jump=0.808)) | net_ev=+5.499% target=5.000% (p=0.396, fair_up=0.505, disp=0.135, align=-0.0254%, pen=0.136, ask=0.370, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0265%, m10=+0.0319%, m30=+0.0341%, m60=+0.0205%, jump=0.808)) | net_ev=+4.317% target=5.000% (p=0.393, fair_up=0.503, disp=0.133, align=-0.0265%, pen=0.135, ask=0.370, fee=1.00%+spread=0.010)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0265%, m10=+0.0319%, m30=+0.0341%, m60=+0.0205%, jump=0.808)) | net_ev=+4.323% target=5.000% (p=0.393, fair_up=0.503, disp=0.133, align=-0.0265%, pen=0.135, ask=0.370, fee=1.00%+spread=0.010)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0265%, m10=+0.0319%, m30=+0.0341%, m60=+0.0205%, jump=0.808)) | net_ev=+4.323% target=5.000% (p=0.393, fair_up=0.503, disp=0.133, align=-0.0265%, pen=0.135, ask=0.370, fee=1.00%+spread=0.010)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+7.895% target=5.000% (p=0.394, fair_up=0.503, disp=0.143, align=-0.0264%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:50 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+7.898% target=5.000% (p=0.394, fair_up=0.503, disp=0.143, align=-0.0264%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+7.898% target=5.000% (p=0.394, fair_up=0.503, disp=0.143, align=-0.0264%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+10.744% target=5.000% (p=0.393, fair_up=0.502, disp=0.152, align=-0.0264%, pen=0.136, ask=0.350, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+10.744% target=5.000% (p=0.393, fair_up=0.502, disp=0.152, align=-0.0264%, pen=0.136, ask=0.350, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+10.053% target=5.000% (p=0.390, fair_up=0.499, disp=0.149, align=-0.0264%, pen=0.135, ask=0.350, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+9.951% target=5.000% (p=0.390, fair_up=0.499, disp=0.149, align=-0.0264%, pen=0.135, ask=0.350, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.755 pass=False (vs_start=-0.0264%, m10=+0.0319%, m30=+0.0342%, m60=+0.0205%, jump=0.808)) | net_ev=+9.955% target=5.000% (p=0.390, fair_up=0.499, disp=0.149, align=-0.0264%, pen=0.135, ask=0.350, fee=1.00%+spread=0.005)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0272%, m10=+0.0312%, m30=+0.0334%, m60=+0.0198%, jump=0.808)) | net_ev=+20.320% target=5.000% (p=0.388, fair_up=0.497, disp=0.177, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.000)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0272%, m10=+0.0312%, m30=+0.0334%, m60=+0.0198%, jump=0.808)) | net_ev=+19.971% target=5.000% (p=0.387, fair_up=0.496, disp=0.176, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.000)
+01:17:51 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0272%, m10=+0.0312%, m30=+0.0334%, m60=+0.0198%, jump=0.808)) | net_ev=+19.971% target=5.000% (p=0.387, fair_up=0.496, disp=0.176, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.000)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.748 pass=False (vs_start=-0.0272%, m10=+0.0312%, m30=+0.0334%, m60=+0.0198%, jump=0.811)) | net_ev=+18.746% target=5.000% (p=0.385, fair_up=0.494, disp=0.174, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0272%, m10=+0.0343%, m30=+0.0334%, m60=+0.0198%, jump=0.810)) | net_ev=+21.096% target=5.000% (p=0.392, fair_up=0.502, disp=0.182, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0272%, m10=+0.0343%, m30=+0.0334%, m60=+0.0198%, jump=0.810)) | net_ev=+21.096% target=5.000% (p=0.392, fair_up=0.502, disp=0.182, align=-0.0272%, pen=0.136, ask=0.320, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.468% target=5.000% (p=0.393, fair_up=0.502, disp=0.172, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.468% target=5.000% (p=0.393, fair_up=0.502, disp=0.172, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.468% target=5.000% (p=0.393, fair_up=0.502, disp=0.172, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.455% target=5.000% (p=0.393, fair_up=0.502, disp=0.172, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.796% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:52 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.796% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.749 pass=False (vs_start=-0.0271%, m10=+0.0344%, m30=+0.0335%, m60=+0.0198%, jump=0.810)) | net_ev=+17.796% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.750 pass=False (vs_start=-0.0271%, m10=+0.0343%, m30=+0.0339%, m60=+0.0198%, jump=0.810)) | net_ev=+17.757% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.750 pass=False (vs_start=-0.0271%, m10=+0.0343%, m30=+0.0339%, m60=+0.0198%, jump=0.810)) | net_ev=+17.757% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.750 pass=False (vs_start=-0.0271%, m10=+0.0343%, m30=+0.0339%, m60=+0.0198%, jump=0.810)) | net_ev=+17.757% target=5.000% (p=0.394, fair_up=0.503, disp=0.173, align=-0.0271%, pen=0.136, ask=0.330, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.810)) | net_ev=+8.181% target=5.000% (p=0.395, fair_up=0.503, disp=0.143, align=-0.0268%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.810)) | net_ev=+8.181% target=5.000% (p=0.395, fair_up=0.503, disp=0.143, align=-0.0268%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.810)) | net_ev=+8.181% target=5.000% (p=0.395, fair_up=0.503, disp=0.143, align=-0.0268%, pen=0.135, ask=0.360, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.810)) | net_ev=+5.038% target=5.000% (p=0.394, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:53 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.812)) | net_ev=+4.874% target=5.000% (p=0.394, fair_up=0.502, disp=0.132, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.753 pass=False (vs_start=-0.0268%, m10=+0.0347%, m30=+0.0343%, m60=+0.0202%, jump=0.809)) | net_ev=+7.563% target=5.000% (p=0.404, fair_up=0.512, disp=0.142, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.659 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.149% target=5.000% (p=0.395, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.659 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.149% target=5.000% (p=0.395, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.659 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.149% target=5.000% (p=0.395, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.248% target=5.000% (p=0.395, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.248% target=5.000% (p=0.395, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.248% target=5.000% (p=0.395, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.248% target=5.000% (p=0.395, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:54 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.248% target=5.000% (p=0.395, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.659 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.404% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.659 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0345%, m60=+0.0202%, jump=0.809)) | net_ev=+5.404% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.809)) | net_ev=+5.393% target=5.000% (p=0.396, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.658 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.809)) | net_ev=+5.376% target=5.000% (p=0.395, fair_up=0.503, disp=0.133, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.554% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.554% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.554% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.540% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:55 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.540% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.657 pass=False (vs_start=-0.0268%, m10=+0.0141%, m30=+0.0350%, m60=+0.0177%, jump=0.810)) | net_ev=+5.540% target=5.000% (p=0.396, fair_up=0.504, disp=0.134, align=-0.0268%, pen=0.134, ask=0.370, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=+2.786% target=5.000% (p=0.386, fair_up=0.507, disp=0.137, align=-0.0214%, pen=0.138, ask=0.370, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=+2.786% target=5.000% (p=0.386, fair_up=0.507, disp=0.137, align=-0.0214%, pen=0.138, ask=0.370, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=+2.786% target=5.000% (p=0.386, fair_up=0.507, disp=0.137, align=-0.0214%, pen=0.138, ask=0.370, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.146% target=5.000% (p=0.384, fair_up=0.507, disp=0.117, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.146% target=5.000% (p=0.384, fair_up=0.507, disp=0.117, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:56 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.146% target=5.000% (p=0.384, fair_up=0.507, disp=0.117, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.146% target=5.000% (p=0.384, fair_up=0.507, disp=0.117, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.174% target=5.000% (p=0.383, fair_up=0.507, disp=0.117, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.312% target=5.000% (p=0.383, fair_up=0.506, disp=0.116, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:17:57 [WARNING] paper_sim: Entry gate blocked ws=1774023300 dir=UP: skip up_regime_filter (score=0.520 pass=False (vs_start=-0.0214%, m10=-0.0012%, m30=+0.0403%, m60=+0.0155%, jump=0.809)) | net_ev=-3.312% target=5.000% (p=0.383, fair_up=0.506, disp=0.116, align=-0.0214%, pen=0.137, ask=0.390, fee=1.00%+spread=0.005)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0799% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0799% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0195% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=0.0195% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:02 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0420%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0484%)
+01:18:03 [WARNING] paper_sim: Skip weak short momentum ws=1774023300 dir=DOWN: move=-0.0011% > -0.0040% (btc_vs_start=-0.0484%)
+01:18:03 [WARNING] paper_sim: OPEN  ws=1774023300 dir=DOWN stake=$425.71 ask=0.400 ev=+42.625% eq=$2838.10 avail=$2838.10 strict=0.33->0.33 stale=0.00 gap=181s mode=adaptive
+01:19:04 [INFO] polymarket_client: Patched py_clob_client HTTP: timeout=30s, retries=3, http1.1
+01:19:08 [WARNING] paper_sim: EARLY ws=1774023300 id=157 dir=DOWN reason=hard_adverse_flush(opposite_ask=0.950 >= 0.930, roi=-88.50% <= -70.00%, rem=52.4s, adverse=False) exit_px=0.050 pnl=$-376.75 roi=-88.50%
+01:19:08 [WARNING] paper_sim:   BTC at exit: $69905.99
+01:20:00 [WARNING] paper_sim: Backfilled 1 unresolved window outcomes from btc_ticks
