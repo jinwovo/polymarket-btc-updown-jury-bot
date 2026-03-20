@@ -1361,10 +1361,34 @@ class PolymarketClient:
 
             order_side = _normalize_order_side(side, default="BUY")
             side_const = BUY if order_side == "BUY" else SELL
-            order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
             client = self._clob_client
-            signed = await asyncio.to_thread(client.create_market_order, order_args)
-            resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
+
+            # Robust FOK submission with retry (same pattern as limit orders)
+            max_attempts = 5
+            resp = None
+            _last_err = None
+            for _attempt in range(max_attempts):
+                try:
+                    order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
+                    signed = await asyncio.to_thread(client.create_market_order, order_args)
+                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
+                    break
+                except Exception as _net_err:
+                    _last_err = _net_err
+                    err_str = str(_net_err).lower()
+                    if "duplicated" in err_str or "duplicate" in err_str:
+                        logger.info("FOK duplicate on attempt %d — accepted: %s", _attempt + 1, _net_err)
+                        resp = {"orderID": "duplicate-accepted", "status": "MATCHED", "transactionsHashes": []}
+                        break
+                    if _attempt < max_attempts - 1:
+                        is_server_err = any(s in err_str for s in ("425", "429", "500", "502", "503", "not ready"))
+                        wait = (2.0 if is_server_err else 0.5) * (_attempt + 1)
+                        logger.warning("FOK order error (attempt %d/%d), retry in %.1fs: %s", _attempt + 1, max_attempts, wait, _net_err)
+                        await asyncio.sleep(wait)
+                        continue
+                    raise
+            if resp is None:
+                raise RuntimeError(f"FOK post_order failed after {max_attempts} attempts: {_last_err}")
             result = self._normalize_execution_result(
                 mode="MARKET",
                 side=order_side,
