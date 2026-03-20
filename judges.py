@@ -773,30 +773,48 @@ class MomentumJudge:
             else:
                 acceleration = 0.5  # divergent = weakening
 
-        # Composite momentum score
-        # Weight: 15s=0.3, 60s=0.4, 180s=0.2, EMA=0.1
+        # Key insight from data analysis:
+        # - Pure momentum (follow trend) = 38% accuracy in 5min BTC
+        # - Pure position (where is price vs start) = already done by StatisticalJudge
+        # - Unique value of MomentumJudge: VELOCITY + ACCELERATION
+        #   Speed of recent move predicts continuation vs reversal.
+        #   Fast moves tend to continue. Slow drift tends to reverse.
         mom_180_safe = mom_180 if mom_180 is not None else 0.0
-        composite = (
-            0.30 * _clamp(mom_15 / 0.03, -1.0, 1.0)
-            + 0.40 * _clamp(mom_60 / 0.06, -1.0, 1.0)
-            + 0.20 * _clamp(mom_180_safe / 0.10, -1.0, 1.0)
-            + 0.10 * _clamp(ema_signal / 0.01, -1.0, 1.0)
-        ) * acceleration
 
-        # Position factor: momentum TOWARD start price is stronger
-        # (mean-reversion + momentum aligned = high confidence)
-        if ctx.market_start_price > 0 and ctx.current_binance_price > 0:
-            above_start = ctx.current_binance_price > ctx.market_start_price
-            if above_start and composite > 0:
-                # Price above start AND momentum UP = will stay UP
-                composite *= 1.2
-            elif not above_start and composite < 0:
-                # Price below start AND momentum DOWN = will stay DOWN
-                composite *= 1.2
+        # Velocity: how fast is price moving RIGHT NOW (15s) vs recently (60s)?
+        # If 15s momentum > 60s momentum → accelerating → likely continues
+        # If 15s momentum < 60s momentum → decelerating → may reverse
+        if abs(mom_60) > 0.001:
+            velocity_ratio = mom_15 / mom_60  # >1 = accelerating, <1 = decelerating
+        else:
+            velocity_ratio = 0.0
 
-        # Convert composite to p_up
-        # composite > 0 = UP momentum, < 0 = DOWN momentum
-        p_up = _clamp01(0.5 + composite * 0.25)
+        # Direction: use 60s momentum as primary direction indicator
+        # (15s too noisy, 180s too slow for 5-min window)
+        direction_signal = _clamp(mom_60 / 0.04, -1.0, 1.0)
+
+        # Acceleration boost: accelerating trend = higher confidence
+        accel_factor = 1.0
+        if velocity_ratio > 1.2:
+            accel_factor = 1.4  # accelerating strongly
+        elif velocity_ratio > 0.8:
+            accel_factor = 1.0  # steady
+        elif velocity_ratio > 0.0:
+            accel_factor = 0.6  # decelerating
+        else:
+            accel_factor = 0.3  # reversing
+
+        # EMA confirmation: when EMA agrees with direction, boost
+        ema_confirms = (ema_signal > 0 and direction_signal > 0) or (ema_signal < 0 and direction_signal < 0)
+        ema_boost = 1.2 if ema_confirms else 0.8
+
+        # Time factor: later in window = momentum more reliable
+        # (more data, trend more established)
+        time_factor = 0.7 + 0.6 * _clamp01(ctx.seconds_elapsed / 240.0)
+
+        composite = direction_signal * accel_factor * ema_boost * time_factor
+
+        p_up = _clamp01(0.5 + composite * 0.15)
 
         up_px, down_px = _get_ask_prices(ctx)
         if up_px is None or down_px is None:
