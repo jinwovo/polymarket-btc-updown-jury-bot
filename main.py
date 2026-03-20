@@ -4398,59 +4398,41 @@ class TradingBot:
             resampled_prices = [float(t.price) for t in recent]
             resampled_ts = [float(t.timestamp) for t in recent]
 
-        # ── Use DB odds (same source as paper) for judge context ──
-        # CLOB-polled market.up_best_ask can be stale or extreme.
-        # DB poly_odds is written by data_collector from the same CLOB,
-        # ensuring paper and live judges see identical ask prices.
-        up_ask_ctx = None
-        down_ask_ctx = None
-        up_bid_ctx = None
-        down_bid_ctx = None
-        if LIVE_MIRROR_PAPER_GATES and self.current_market:
-            try:
-                conn = self._ensure_state_conn()
-                current_start = int(self.current_market.start_timestamp)
-                odds_row = fetch_one_dict(
-                    conn,
-                    """SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask,
-                              up_mid, down_mid
-                       FROM poly_odds
-                       WHERE window_start = ?
-                       ORDER BY ts DESC LIMIT 1""",
-                    (current_start,),
-                )
-                if odds_row:
-                    up_ask_ctx = _safe_prob(odds_row.get("up_best_ask")) or _safe_prob(odds_row.get("up_mid"))
-                    down_ask_ctx = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid"))
-                    up_bid_ctx = _safe_prob(odds_row.get("up_best_bid"))
-                    down_bid_ctx = _safe_prob(odds_row.get("down_best_bid"))
-            except Exception:
-                pass
-        # Fallback to CLOB-polled values if DB unavailable
-        if up_ask_ctx is None:
-            up_ask_ctx = (
-                self.current_market.up_best_ask
-                if 0.0 < self.current_market.up_best_ask < 1.0
-                else None
-            )
-        if down_ask_ctx is None:
-            down_ask_ctx = (
-                self.current_market.down_best_ask
-                if 0.0 < self.current_market.down_best_ask < 1.0
-                else None
-            )
-        if up_bid_ctx is None:
-            up_bid_ctx = (
-                self.current_market.up_best_bid
-                if 0.0 < self.current_market.up_best_bid < 1.0
-                else None
-            )
-        if down_bid_ctx is None:
-            down_bid_ctx = (
-                self.current_market.down_best_bid
-                if 0.0 < self.current_market.down_best_bid < 1.0
-                else None
-            )
+        # ── Real-time CLOB odds for judges, with sanity check ──
+        # Use live CLOB-polled values (real-time). But thin CLOB can show
+        # extreme asks (0.10-0.35) while mid-market is ~0.50. When CLOB
+        # sum deviates from 1.0, use Gamma initial prices as floor.
+        up_ask_raw = (
+            self.current_market.up_best_ask
+            if 0.0 < self.current_market.up_best_ask < 1.0
+            else None
+        )
+        down_ask_raw = (
+            self.current_market.down_best_ask
+            if 0.0 < self.current_market.down_best_ask < 1.0
+            else None
+        )
+        up_bid_ctx = (
+            self.current_market.up_best_bid
+            if 0.0 < self.current_market.up_best_bid < 1.0
+            else None
+        )
+        down_bid_ctx = (
+            self.current_market.down_best_bid
+            if 0.0 < self.current_market.down_best_bid < 1.0
+            else None
+        )
+        # Sanity: if CLOB asks are extreme, blend with Gamma initial prices
+        up_ask_ctx = up_ask_raw
+        down_ask_ctx = down_ask_raw
+        if up_ask_raw is not None and down_ask_raw is not None:
+            total = up_ask_raw + down_ask_raw
+            if abs(total - 1.0) > 0.15:
+                # CLOB is thin — use Gamma initial prices (stable ~0.50)
+                gamma_up = getattr(self.current_market, "gamma_up_price", None) or 0.5
+                gamma_dn = getattr(self.current_market, "gamma_down_price", None) or 0.5
+                up_ask_ctx = max(up_ask_raw, float(gamma_up))
+                down_ask_ctx = max(down_ask_raw, float(gamma_dn))
 
         return MarketContext(
             current_binance_price=self.price_feed.adjusted_price or self.price_feed.current_price,
