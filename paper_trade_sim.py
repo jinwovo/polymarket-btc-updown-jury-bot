@@ -1223,37 +1223,10 @@ def open_trade_if_signal(
     if exists:
         return False
 
-    # ── Fetch REAL-TIME CLOB ask prices (same source as live trading) ──
-    # This ensures paper and live see identical orderbook state.
-    up_token_id = window.get("up_token_id")
-    down_token_id = window.get("down_token_id")
-
-    up_ask_val = _safe_prob(market.get("up_ask"))     # DB fallback
-    down_ask_val = _safe_prob(market.get("down_ask"))  # DB fallback
-
-    if up_token_id and down_token_id:
-        from polymarket_client import fetch_clob_book_sync
-        _up_bid, _up_ask, _ = fetch_clob_book_sync(up_token_id)
-        _dn_bid, _dn_ask, _ = fetch_clob_book_sync(down_token_id)
-        clob_up = _up_ask if 0 < _up_ask < 1 else None
-        clob_dn = _dn_ask if 0 < _dn_ask < 1 else None
-        if clob_up is not None or clob_dn is not None:
-            db_up = up_ask_val
-            db_dn = down_ask_val
-            up_ask_val = clob_up if clob_up is not None else up_ask_val
-            down_ask_val = clob_dn if clob_dn is not None else down_ask_val
-            if db_up is not None and clob_up is not None and abs(db_up - clob_up) > 0.03:
-                logger.warning(
-                    "Paper CLOB vs DB divergence ws=%s: UP db=%.3f clob=%.3f",
-                    window_start, db_up, clob_up,
-                )
-            if db_dn is not None and clob_dn is not None and abs(db_dn - clob_dn) > 0.03:
-                logger.warning(
-                    "Paper CLOB vs DB divergence ws=%s: DOWN db=%.3f clob=%.3f",
-                    window_start, db_dn, clob_dn,
-                )
-    else:
-        logger.debug("No token IDs in snapshot; using DB odds (ws=%s)", window_start)
+    # Ask prices come from signal_cache (data_collector's CLOB snapshot).
+    # No separate CLOB fetch needed — saves 2 API calls per tick.
+    up_ask_val = _safe_prob(market.get("up_ask"))
+    down_ask_val = _safe_prob(market.get("down_ask"))
 
     entry_price = up_ask_val if direction == "UP" else down_ask_val
     if entry_price is None:
