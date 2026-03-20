@@ -3249,6 +3249,11 @@ class TradingBot:
         if not self._market_start_official:
             return
 
+        # ---- Fresh CLOB before judge evaluation ----
+        # Ensures judges see the same real-time asks as paper's fetch_clob_book_sync.
+        if self.current_market and self.current_market.up_token_id:
+            await self.poly_client.refresh_odds(self.current_market)
+
         # ---- Build context ----
         ctx = self._build_context(seconds_elapsed, seconds_remaining)
         if ctx is None:
@@ -4398,41 +4403,41 @@ class TradingBot:
             resampled_prices = [float(t.price) for t in recent]
             resampled_ts = [float(t.timestamp) for t in recent]
 
-        # ── Real-time CLOB odds for judges, with sanity check ──
-        # Use live CLOB-polled values (real-time). But thin CLOB can show
-        # extreme asks (0.10-0.35) while mid-market is ~0.50. When CLOB
-        # sum deviates from 1.0, use Gamma initial prices as floor.
-        up_ask_raw = (
-            self.current_market.up_best_ask
-            if 0.0 < self.current_market.up_best_ask < 1.0
-            else None
-        )
-        down_ask_raw = (
-            self.current_market.down_best_ask
-            if 0.0 < self.current_market.down_best_ask < 1.0
-            else None
-        )
-        up_bid_ctx = (
-            self.current_market.up_best_bid
-            if 0.0 < self.current_market.up_best_bid < 1.0
-            else None
-        )
-        down_bid_ctx = (
-            self.current_market.down_best_bid
-            if 0.0 < self.current_market.down_best_bid < 1.0
-            else None
-        )
-        # Sanity: if CLOB asks are extreme, blend with Gamma initial prices
-        up_ask_ctx = up_ask_raw
-        down_ask_ctx = down_ask_raw
-        if up_ask_raw is not None and down_ask_raw is not None:
-            total = up_ask_raw + down_ask_raw
-            if abs(total - 1.0) > 0.15:
-                # CLOB is thin — use Gamma initial prices (stable ~0.50)
-                gamma_up = getattr(self.current_market, "gamma_up_price", None) or 0.5
-                gamma_dn = getattr(self.current_market, "gamma_down_price", None) or 0.5
-                up_ask_ctx = max(up_ask_raw, float(gamma_up))
-                down_ask_ctx = max(down_ask_raw, float(gamma_dn))
+        # ── Fresh CLOB fetch for judges (same as paper's fetch_clob_book_sync) ──
+        # refresh_odds() cache can be stale by 0.5-2s. Paper fetches fresh
+        # CLOB at evaluation time, so Live must do the same to get identical
+        # ask prices. This is the #1 cause of paper-only trades.
+        up_ask_ctx = None
+        down_ask_ctx = None
+        up_bid_ctx = None
+        down_bid_ctx = None
+        # CLOB values are from the most recent refresh_odds() call
+        # (called in _tick before _build_context).
+        # Fallback to CLOB-polled cache
+        if up_ask_ctx is None:
+            up_ask_ctx = (
+                self.current_market.up_best_ask
+                if 0.0 < self.current_market.up_best_ask < 1.0
+                else None
+            )
+        if down_ask_ctx is None:
+            down_ask_ctx = (
+                self.current_market.down_best_ask
+                if 0.0 < self.current_market.down_best_ask < 1.0
+                else None
+            )
+        if up_bid_ctx is None:
+            up_bid_ctx = (
+                self.current_market.up_best_bid
+                if 0.0 < self.current_market.up_best_bid < 1.0
+                else None
+            )
+        if down_bid_ctx is None:
+            down_bid_ctx = (
+                self.current_market.down_best_bid
+                if 0.0 < self.current_market.down_best_bid < 1.0
+                else None
+            )
 
         return MarketContext(
             current_binance_price=self.price_feed.adjusted_price or self.price_feed.current_price,
