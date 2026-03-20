@@ -3384,6 +3384,7 @@ class TradingBot:
         # ---- Jury deliberation (shared signal from data_collector) ----
         if LIVE_MIRROR_PAPER_GATES:
             # Read from shared signal_cache (data_collector runs the Jury)
+            conn = self._ensure_state_conn()
             _sig_row = fetch_one_dict(
                 conn,
                 "SELECT * FROM signal_cache WHERE id = 1",
