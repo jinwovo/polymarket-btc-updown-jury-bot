@@ -3076,9 +3076,9 @@ class TradingBot:
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
         await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
-        # Polymarket price sync required — Chainlink RPC alone has $30-50 offset.
-        # Chromium scrapes Polymarket current price every ~1s for accurate calibration.
-        price_sync_task = asyncio.create_task(self._polymarket_price_sync_loop())
+        # Price sync disabled — data_collector handles Chromium scraping and
+        # writes calibrated prices to DB. Live reads signal_cache, not own prices.
+        price_sync_task = None
 
         try:
             await self._trading_loop()
