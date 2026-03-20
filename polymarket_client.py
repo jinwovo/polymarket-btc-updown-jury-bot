@@ -1371,7 +1371,7 @@ class PolymarketClient:
                 try:
                     order_args = MarketOrderArgs(token_id=token_id, amount=float(amount), side=side_const)
                     signed = await asyncio.to_thread(client.create_market_order, order_args)
-                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
+                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FAK)
                     break
                 except Exception as _net_err:
                     _last_err = _net_err
