@@ -1200,7 +1200,7 @@ def open_trade_if_signal(
 
     tick_samples, odds_samples = _window_sample_counts(conn, int(window_start), now_ts)
     if tick_samples < PAPER_MIN_TICK_SAMPLES or odds_samples < PAPER_MIN_ODDS_SAMPLES:
-        logger.warning(
+        logger.info(
             "Skip low sample window ws=%s: ticks=%s/%s odds=%s/%s elapsed=%.1fs",
             window_start,
             tick_samples,
