@@ -37,6 +37,7 @@ from entry_parity import (
     compute_parity_thresholds,
 )
 from exit_policy import ExitPolicyConfig, ExitPolicyInput, evaluate_exit_policy
+from judges import Jury, MarketContext
 from telegram_notifier import send_telegram_message
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 
@@ -1115,45 +1116,149 @@ def _backfill_unresolved_windows(conn) -> int:
     return updated
 
 
+# Module-level Jury instance (same config as Live)
+_paper_jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
+
+
+def _build_paper_context(conn, window_start: int, now_ts: float) -> MarketContext | None:
+    """Build MarketContext from DB ticks + fresh CLOB — identical to Live's _build_context."""
+    from polymarket_client import fetch_clob_book_sync
+    from config import config as _cfg
+
+    row = fetch_one_dict(
+        conn,
+        "SELECT btc_start_price, slug, up_token_id, down_token_id FROM market_windows WHERE window_start = ?",
+        (window_start,),
+    )
+    if not row or not row.get("btc_start_price"):
+        return None
+    start_price = float(row["btc_start_price"])
+    up_token = str(row.get("up_token_id") or "")
+    down_token = str(row.get("down_token_id") or "")
+
+    # BTC prices from DB (same source as Live's DB-based momentum)
+    interval = int(getattr(_cfg.polymarket, "interval_seconds", 300))
+    window_end = window_start + interval
+    elapsed = max(0.0, now_ts - float(window_start))
+    remaining = max(0.0, float(window_end) - now_ts)
+
+    # Recent ticks for judges
+    lookback_sec = float(getattr(_cfg.trading, "feature_lookback_seconds", 600))
+    lo_ts = max(float(window_start) - lookback_sec, now_ts - lookback_sec)
+    tick_rows = fetch_all_dicts(
+        conn,
+        "SELECT ts, price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
+        (lo_ts, now_ts),
+    )
+    if len(tick_rows) < 20:
+        return None
+    prices = [float(r["price"]) for r in tick_rows]
+    timestamps = [float(r["ts"]) for r in tick_rows]
+    btc_now = prices[-1] if prices else None
+    if btc_now is None or btc_now <= 0:
+        return None
+
+    # Fresh CLOB (same API call as Live's refresh_odds)
+    up_bid, up_ask, up_mid = (None, None, 0.5)
+    dn_bid, dn_ask, dn_mid = (None, None, 0.5)
+    if up_token and down_token:
+        _ub, _ua, _um = fetch_clob_book_sync(up_token)
+        _db, _da, _dm = fetch_clob_book_sync(down_token)
+        up_bid = _safe_prob(_ub)
+        up_ask = _safe_prob(_ua)
+        up_mid = _um if 0 < _um < 1 else 0.5
+        dn_bid = _safe_prob(_db)
+        dn_ask = _safe_prob(_da)
+        dn_mid = _dm if 0 < _dm < 1 else 0.5
+
+    return MarketContext(
+        current_binance_price=btc_now,
+        market_start_price=start_price,
+        recent_prices=prices,
+        recent_timestamps=timestamps,
+        poly_up_price=up_mid,
+        poly_down_price=dn_mid,
+        seconds_elapsed=elapsed,
+        seconds_remaining=remaining,
+        poly_up_bid=up_bid,
+        poly_up_ask=up_ask,
+        poly_down_bid=dn_bid,
+        poly_down_ask=dn_ask,
+    )
+
+
 def open_trade_if_signal(
     conn,
     initial_capital: float,
     risk_fraction: float,
     sizing_mode: str,
 ) -> bool:
-    snap = build_snapshot()
-    if not snap.get("ok"):
-        logger.warning("Snapshot unavailable: %s", snap.get("error", "unknown"))
-        return False
-
-    signal = snap.get("signal") or {}
-    window = snap.get("window") or {}
-    market = snap.get("market") or {}
-
-    actionable = bool(signal.get("actionable"))
-    direction = str(signal.get("direction", "NO_TRADE"))
-    window_start = window.get("window_start")
-    window_end = window.get("window_end")
-    window_slug = str(window.get("slug") or "--")
-
-    if not actionable or direction not in ("UP", "DOWN"):
-        return False
-    if window_start is None or window_end is None:
-        return False
+    # ── Get current window from DB ──
     now_ts = time.time()
-    seconds_elapsed = window.get("seconds_elapsed")
-    if seconds_elapsed is None:
-        return False
-    seconds_elapsed = float(seconds_elapsed)
+    interval = int(getattr(config.polymarket, "interval_seconds", 300))
+    window_start = int(now_ts // interval) * interval
+    window_end = window_start + interval
+    window_slug = f"{config.polymarket.market_slug_prefix}-{window_start}"
+
+    seconds_elapsed = now_ts - float(window_start)
     seconds_remaining = max(0.0, float(window_end) - now_ts)
+
     if seconds_elapsed < PAPER_ENTRY_START_SEC or seconds_elapsed > PAPER_ENTRY_END_SEC:
-        return False
-    # DOWN-specific entry time cutoff (late DOWN entries lose money)
-    if direction == "DOWN" and seconds_elapsed > PAPER_DOWN_ENTRY_END_SEC:
-        logger.debug("Skip late DOWN entry ws=%s: elapsed=%.1fs > %.1fs", window_start, seconds_elapsed, PAPER_DOWN_ENTRY_END_SEC)
         return False
     if seconds_remaining < PAPER_MIN_SECONDS_REMAINING:
         return False
+
+    # ── Run own Jury (same as Live) ──
+    ctx = _build_paper_context(conn, window_start, now_ts)
+    if ctx is None:
+        return False
+    decision = _paper_jury.deliberate(ctx)
+    if decision.direction == "NO_TRADE":
+        return False
+
+    direction = decision.direction
+    # DOWN-specific entry time cutoff
+    if direction == "DOWN" and seconds_elapsed > PAPER_DOWN_ENTRY_END_SEC:
+        logger.debug("Skip late DOWN entry ws=%s: elapsed=%.1fs > %.1fs", window_start, seconds_elapsed, PAPER_DOWN_ENTRY_END_SEC)
+        return False
+
+    # Build signal/window/market dicts for compatibility with rest of function
+    judges_list = [
+        {"judge": v.judge_name, "vote": v.vote.value, "confidence": v.confidence, "reason": v.reason}
+        for v in decision.verdicts
+    ]
+    signal = {
+        "direction": direction,
+        "actionable": True,
+        "avg_confidence": float(decision.avg_confidence),
+        "judges": judges_list,
+    }
+    window = {
+        "window_start": window_start,
+        "window_end": window_end,
+        "slug": window_slug,
+        "seconds_elapsed": seconds_elapsed,
+        "up_token_id": None,
+        "down_token_id": None,
+    }
+    # Get token IDs
+    win_row = fetch_one_dict(
+        conn,
+        "SELECT up_token_id, down_token_id FROM market_windows WHERE window_start = ?",
+        (window_start,),
+    )
+    if win_row:
+        window["up_token_id"] = win_row.get("up_token_id")
+        window["down_token_id"] = win_row.get("down_token_id")
+
+    btc_price = ctx.current_binance_price
+    start_price = ctx.market_start_price
+    market = {
+        "btc_price": btc_price,
+        "btc_start_price": start_price,
+        "up_ask": ctx.poly_up_ask,
+        "down_ask": ctx.poly_down_ask,
+    }
 
     tick_samples, odds_samples = _window_sample_counts(conn, int(window_start), now_ts)
     if tick_samples < PAPER_MIN_TICK_SAMPLES or odds_samples < PAPER_MIN_ODDS_SAMPLES:
