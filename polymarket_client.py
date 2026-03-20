@@ -30,7 +30,7 @@ try:
     )
     _clob_http._http_client = httpx.Client(
         http2=False,
-        timeout=httpx.Timeout(30.0, connect=15.0),
+        timeout=httpx.Timeout(45.0, connect=15.0),
         transport=_patched_transport,
     )
     logger.info("Patched py_clob_client HTTP: timeout=30s, retries=3, http1.1")
