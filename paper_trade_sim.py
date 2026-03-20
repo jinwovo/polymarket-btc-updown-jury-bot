@@ -1151,6 +1151,10 @@ def open_trade_if_signal(
     if window_start <= 0:
         return False
     interval = int(getattr(config.polymarket, "interval_seconds", 300))
+    # Verify signal is for the CURRENT window (not stale from previous)
+    current_ws = int(now_ts // interval) * interval
+    if window_start != current_ws:
+        return False
     window_end = window_start + interval
     window_slug = f"{config.polymarket.market_slug_prefix}-{window_start}"
 
