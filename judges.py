@@ -176,17 +176,7 @@ def _close_prob_from_diffusion(ctx: MarketContext, mu: float, sigma: float) -> f
     progress = _clamp01(1.0 - t / 300.0)
     shrinkage = 0.75 + 0.17 * progress
     p = _clamp01(0.5 + shrinkage * (raw_p - 0.5))
-    # Apply long-term trend bias from price history (cross-window persistence)
-    n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
-    if n >= 60:
-        # 5-min trend from price history
-        _long_prices = ctx.recent_prices[-300:] if n > 300 else ctx.recent_prices
-        _p_first = float(_long_prices[0])
-        _p_last = float(_long_prices[-1])
-        if _p_first > 0:
-            _long_trend = (_p_last - _p_first) / _p_first * 100.0
-            _long_bias = _clamp(_long_trend / 0.08, -1.0, 1.0) * 0.04
-            p = _clamp01(p + _long_bias)
+    # Long-term trend handled by MomentumJudge (separate independent signal)
     return p
 
 
@@ -345,12 +335,9 @@ class StatisticalJudge:
         )
         streak_dir, streak_len = self._recent_streak(ctx.recent_results or [])
 
-        # Short-term bias: ±0.035 (as before)
-        short_bias = _clamp(trend_short / 0.010, -1.0, 1.0) * 0.035
-        # Long-term bias: ±0.04 — nudge direction with multi-window trend
-        # Not too strong (kills all signals) but enough to avoid counter-trend entries
-        long_bias = _clamp(trend_long / 0.008, -1.0, 1.0) * 0.04
-        p_up = _clamp01(p_up + short_bias + long_bias)
+        # Short-term trend bias only (long-term handled by MomentumJudge)
+        trend_bias = _clamp(trend_short / 0.010, -1.0, 1.0) * 0.035
+        p_up = _clamp01(p_up + trend_bias)
 
         jumpy = jump_ratio > 0.35
         if jumpy:
@@ -701,6 +688,144 @@ class OrderbookValueJudge:
 
 
 # ---------------------------------------------------------------------------
+# Judge 4: Momentum / Trend Persistence
+# ---------------------------------------------------------------------------
+class MomentumJudge:
+    """
+    Predicts direction based on multi-timeframe price momentum.
+
+    Key insight: BTC has short-term momentum persistence. If price has been
+    rising for the last 60s, it's more likely to continue than reverse.
+    This is the missing signal — other judges look at position (where price IS)
+    but not direction (where price is GOING).
+
+    Features:
+    - Multi-timeframe momentum (15s, 60s, 180s)
+    - EMA crossover (fast EMA vs slow EMA)
+    - Momentum acceleration (is trend strengthening or weakening?)
+    - Position-adjusted: momentum toward start price = stronger signal
+    """
+    name = "MomentumJudge"
+
+    def __init__(self, min_edge: float = 0.020):
+        self.min_edge = max(0.0, float(min_edge))
+
+    def _compute_momentum(
+        self, prices: list[float], timestamps: list[float], lookback_sec: float,
+    ) -> float | None:
+        """Price change % over last lookback_sec seconds."""
+        n = min(len(prices), len(timestamps))
+        if n < 5:
+            return None
+        latest_ts = float(timestamps[n - 1])
+        target_ts = latest_ts - lookback_sec
+        p_old = None
+        for i in range(n - 1, -1, -1):
+            if float(timestamps[i]) <= target_ts:
+                p_old = float(prices[i])
+                break
+        if p_old is None:
+            p_old = float(prices[0])
+        if p_old <= 0:
+            return None
+        p_now = float(prices[n - 1])
+        return ((p_now - p_old) / p_old) * 100.0
+
+    def _compute_ema(self, prices: list[float], span: int) -> float | None:
+        """Exponential moving average of last `span` prices."""
+        if len(prices) < span:
+            return None
+        alpha = 2.0 / (span + 1)
+        ema = float(prices[-span])
+        for p in prices[-span + 1:]:
+            ema = alpha * float(p) + (1 - alpha) * ema
+        return ema
+
+    def judge(self, ctx: MarketContext) -> JudgeVerdict:
+        n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+        if n < 60:
+            return JudgeVerdict(Vote.ABSTAIN, 0.0, "Insufficient momentum data", self.name)
+
+        prices = ctx.recent_prices[:n]
+        timestamps = ctx.recent_timestamps[:n]
+
+        # Multi-timeframe momentum
+        mom_15 = self._compute_momentum(prices, timestamps, 15.0)
+        mom_60 = self._compute_momentum(prices, timestamps, 60.0)
+        mom_180 = self._compute_momentum(prices, timestamps, 180.0)
+
+        if mom_15 is None or mom_60 is None:
+            return JudgeVerdict(Vote.ABSTAIN, 0.0, "Cannot compute momentum", self.name)
+
+        # EMA crossover: fast(10) vs slow(50)
+        ema_fast = self._compute_ema(prices, 10)
+        ema_slow = self._compute_ema(prices, 50)
+        ema_signal = 0.0
+        if ema_fast is not None and ema_slow is not None and ema_slow > 0:
+            ema_signal = (ema_fast - ema_slow) / ema_slow * 100.0  # % difference
+
+        # Momentum acceleration: is 15s momentum aligned with 60s?
+        # Same direction = trend strengthening
+        acceleration = 1.0
+        if mom_60 != 0 and mom_15 != 0:
+            if (mom_15 > 0) == (mom_60 > 0):
+                acceleration = 1.3  # aligned = stronger
+            else:
+                acceleration = 0.5  # divergent = weakening
+
+        # Composite momentum score
+        # Weight: 15s=0.3, 60s=0.4, 180s=0.2, EMA=0.1
+        mom_180_safe = mom_180 if mom_180 is not None else 0.0
+        composite = (
+            0.30 * _clamp(mom_15 / 0.03, -1.0, 1.0)
+            + 0.40 * _clamp(mom_60 / 0.06, -1.0, 1.0)
+            + 0.20 * _clamp(mom_180_safe / 0.10, -1.0, 1.0)
+            + 0.10 * _clamp(ema_signal / 0.01, -1.0, 1.0)
+        ) * acceleration
+
+        # Position factor: momentum TOWARD start price is stronger
+        # (mean-reversion + momentum aligned = high confidence)
+        if ctx.market_start_price > 0 and ctx.current_binance_price > 0:
+            above_start = ctx.current_binance_price > ctx.market_start_price
+            if above_start and composite > 0:
+                # Price above start AND momentum UP = will stay UP
+                composite *= 1.2
+            elif not above_start and composite < 0:
+                # Price below start AND momentum DOWN = will stay DOWN
+                composite *= 1.2
+
+        # Convert composite to p_up
+        # composite > 0 = UP momentum, < 0 = DOWN momentum
+        p_up = _clamp01(0.5 + composite * 0.25)
+
+        up_px, down_px = _get_ask_prices(ctx)
+        if up_px is None or down_px is None:
+            return JudgeVerdict(Vote.ABSTAIN, 0.0, "Invalid market prices", self.name)
+
+        vote, edge, up_edge, down_edge = _edge_vote(
+            p_up, up_px, down_px, min_edge=self.min_edge, tie_margin=0.003,
+        )
+        if vote == Vote.ABSTAIN:
+            return JudgeVerdict(
+                Vote.ABSTAIN, 0.0,
+                f"p_up={p_up:.3f}, no edge: up={up_edge:+.3f} down={down_edge:+.3f}, "
+                f"mom15={mom_15:+.4f}% mom60={mom_60:+.4f}% ema={ema_signal:+.4f}%",
+                self.name,
+            )
+
+        confidence = _edge_confidence(p_up, edge, scale=4.5, certainty_boost=1.5)
+        # Boost confidence when acceleration is aligned
+        confidence = _clamp01(confidence * (0.8 + 0.4 * min(acceleration, 1.5)))
+
+        reason = (
+            f"p_up={p_up:.3f}, edge={edge:+.3f}, "
+            f"mom15={mom_15:+.4f}% mom60={mom_60:+.4f}% mom180={mom_180_safe:+.4f}% "
+            f"ema={ema_signal:+.4f}% accel={acceleration:.1f} composite={composite:+.3f}"
+        )
+        return JudgeVerdict(vote, confidence, reason, self.name)
+
+
+# ---------------------------------------------------------------------------
 # Ensemble Close Probability (physics-first, used by trade_gate.py)
 # ---------------------------------------------------------------------------
 def estimate_ensemble_close_probability(
@@ -844,14 +969,16 @@ class Jury:
     """
 
     def __init__(self, threshold: Optional[int] = None, min_score_margin: float = 0.04):
-        # Three genuinely independent judges:
+        # Four judges with independent signal sources:
         #   1. StatisticalJudge:    physics (bipower variance, jumps, trend)
         #   2. ArbitrageJudge:      lag freshness (is the mispricing exploitable?)
         #   3. OrderbookValueJudge: execution quality (can we profitably execute?)
+        #   4. MomentumJudge:       multi-timeframe trend persistence
         self.judges = [
             StatisticalJudge(),
             ArbitrageJudge(),
             OrderbookValueJudge(),
+            MomentumJudge(),
         ]
         jury_size = len(self.judges)
         if threshold is None:
@@ -941,13 +1068,15 @@ class Jury:
         up_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in up_votes)
         down_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in down_votes)
 
-        # Require majority WITH no opposing votes.
-        # UP UP ABSTAIN → OK.  UP UP DOWN → NO_TRADE (33% disagrees = risky).
-        if n_up >= self.threshold and n_down == 0 and up_score >= down_score + self.min_score_margin:
+        # Require majority with limited opposition.
+        # With 4 judges: 2+ agree, at most 1 disagrees (rest ABSTAIN).
+        # More than 1 opposing vote = too much disagreement.
+        _max_opposing = 1 if self.size >= 4 else 0
+        if n_up >= self.threshold and n_down <= _max_opposing and up_score >= down_score + self.min_score_margin:
             direction = "UP"
             final_vote = Vote.UP
             winning = up_votes
-        elif n_down >= self.threshold and n_up == 0 and down_score >= up_score + self.min_score_margin:
+        elif n_down >= self.threshold and n_up <= _max_opposing and down_score >= up_score + self.min_score_margin:
             direction = "DOWN"
             final_vote = Vote.DOWN
             winning = down_votes
