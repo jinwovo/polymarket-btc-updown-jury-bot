@@ -376,7 +376,7 @@ class DataCollector:
             )
             self.db.commit()
         except Exception as e:
-            logger.debug("Signal cache update failed: %s", e)
+            logger.warning("Signal cache update failed: %s", e)
 
     async def _window_tracker_loop(self):
         """Track 5-minute windows and record start/end prices."""
