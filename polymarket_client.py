@@ -1449,19 +1449,42 @@ class PolymarketClient:
             client = self._clob_client
             signed = await asyncio.to_thread(client.create_order, order_args)
 
-            # Retry once on transient network errors (Request exception!)
-            max_post_attempts = 2
+            # Retry on transient network errors.
+            # IMPORTANT: If retry gets "Duplicated" error, the FIRST attempt
+            # was actually accepted by the server — treat as success.
+            max_post_attempts = 3
             resp = None
+            _order_likely_accepted = False
             for _attempt in range(max_post_attempts):
                 try:
                     resp = await asyncio.to_thread(client.post_order, signed, orderType=order_type_value)
                     break
                 except Exception as _net_err:
-                    if "request exception" in str(_net_err).lower() and _attempt < max_post_attempts - 1:
+                    err_str = str(_net_err).lower()
+                    # "Duplicated" = server already accepted this exact order
+                    if "duplicated" in err_str or "duplicate" in err_str:
+                        logger.info(
+                            "Limit order duplicate detected (attempt %d) — first attempt was accepted: %s",
+                            _attempt + 1, _net_err,
+                        )
+                        _order_likely_accepted = True
+                        break
+                    if "request exception" in err_str and _attempt < max_post_attempts - 1:
                         logger.warning("Limit order network error (attempt %d), retrying in 0.5s: %s", _attempt + 1, _net_err)
                         await asyncio.sleep(0.5)
                         continue
                     raise
+
+            # If duplicate detected, we know the order went through.
+            # Build a synthetic success response so upstream treats it as filled.
+            if _order_likely_accepted and resp is None:
+                logger.info("Treating duplicated order as accepted (will verify via exposure check)")
+                resp = {
+                    "orderID": "duplicate-accepted",
+                    "status": "LIVE",
+                    "transactionsHashes": [],
+                }
+
             if resp is None:
                 raise RuntimeError("post_order returned None after retries")
 
