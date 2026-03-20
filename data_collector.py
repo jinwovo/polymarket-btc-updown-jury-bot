@@ -218,7 +218,7 @@ class DataCollector:
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)  # rate limit: 150 req/s, we use ~20
 
     async def _window_tracker_loop(self):
         """Track 5-minute windows and record start/end prices."""
