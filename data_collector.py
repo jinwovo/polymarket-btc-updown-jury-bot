@@ -99,6 +99,11 @@ class DataCollector:
         self._running = False
         # Shared Jury — evaluates signal for both paper and live
         self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
+        # Trade event tracking (for server console display)
+        self._last_paper_trade_id: int = 0
+        self._last_live_trade_id: int = 0
+        self._last_paper_close_id: int = 0
+        self._last_live_close_id: int = 0
 
         # Ring buffer for recent prices (for diffusion/lag_freshness computation)
         self._recent_prices: list[float] = []
@@ -130,6 +135,21 @@ class DataCollector:
         logger.info(f"DB: {db_label()}")
         logger.info("Recording: BTC ticks + Polymarket odds")
         logger.info("=" * 50)
+        # Init trade tracking to avoid replaying old trades on startup
+        try:
+            r = fetch_one(self.db, "SELECT COALESCE(MAX(id),0) FROM paper_trades WHERE archived_at IS NULL")
+            self._last_paper_trade_id = int(r[0]) if r else 0
+            self._last_paper_close_id = self._last_paper_trade_id
+            for t in ("live_trades", "trades"):
+                try:
+                    r = fetch_one(self.db, f"SELECT COALESCE(MAX(id),0) FROM {t}")
+                    self._last_live_trade_id = int(r[0]) if r else 0
+                    self._last_live_close_id = self._last_live_trade_id
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
         # Run in parallel: Binance WS + Polymarket polling + flush loop + Chainlink + price sync
         await asyncio.gather(
@@ -231,10 +251,70 @@ class DataCollector:
                         ))
                         # ── Shared Jury evaluation ──
                         self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
+                # ── Check for new trades (display on server console) ──
+                self._check_new_trades()
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
 
             await asyncio.sleep(0.1)  # rate limit: 150 req/s, we use ~20
+
+    def _check_new_trades(self):
+        """Poll paper_trades and live_trades for new entries, log to server console."""
+        try:
+            # Paper opens
+            rows = fetch_all_dicts(
+                self.db,
+                "SELECT id, window_start, direction, stake, entry_price FROM paper_trades WHERE id > ? AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
+                (self._last_paper_trade_id,),
+            )
+            for r in rows:
+                self._last_paper_trade_id = max(self._last_paper_trade_id, int(r["id"]))
+                logger.warning(
+                    "[PAPER OPEN] %s $%.2f @ %.3f (ws=%s)",
+                    r["direction"], float(r["stake"] or 0), float(r["entry_price"] or 0), r["window_start"],
+                )
+            # Paper closes
+            rows = fetch_all_dicts(
+                self.db,
+                "SELECT id, window_start, direction, pnl, close_type FROM paper_trades WHERE id > ? AND pnl IS NOT NULL AND closed_at IS NOT NULL AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
+                (self._last_paper_close_id,),
+            )
+            for r in rows:
+                self._last_paper_close_id = max(self._last_paper_close_id, int(r["id"]))
+                pnl = float(r["pnl"] or 0)
+                tag = "WIN" if pnl > 0 else "LOSS"
+                logger.warning(
+                    "[PAPER %s] %s $%+.2f (%s) ws=%s",
+                    tag, r["direction"], pnl, r.get("close_type", ""), r["window_start"],
+                )
+            # Live opens/closes
+            for table in ("live_trades", "trades"):
+                try:
+                    rows = fetch_all_dicts(
+                        self.db,
+                        f"SELECT id, window_start, direction, stake, entry_price, pnl, status FROM {table} WHERE id > ? ORDER BY id ASC LIMIT 5",
+                        (self._last_live_trade_id,),
+                    )
+                except Exception:
+                    continue
+                for r in rows:
+                    self._last_live_trade_id = max(self._last_live_trade_id, int(r["id"]))
+                    status = str(r.get("status", ""))
+                    pnl = float(r.get("pnl") or 0)
+                    if status == "CLOSED":
+                        tag = "WIN" if pnl > 0 else "LOSS"
+                        logger.warning(
+                            "[LIVE %s] %s $%+.2f ws=%s",
+                            tag, r["direction"], pnl, r["window_start"],
+                        )
+                    else:
+                        logger.warning(
+                            "[LIVE OPEN] %s $%.2f @ %.3f ws=%s",
+                            r["direction"], float(r.get("stake") or 0), float(r.get("entry_price") or 0), r["window_start"],
+                        )
+                break  # only check first existing table
+        except Exception as e:
+            logger.debug("Trade check error: %s", e)
 
     def _evaluate_and_cache_signal(self, now: float, ua, da, ub, db):
         """Run Jury with current data, write signal to DB for paper/live to read."""
