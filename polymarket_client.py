@@ -16,6 +16,25 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
+# ── Patch py_clob_client HTTP: increase timeout, add retry ──
+# Default is httpx.Client(http2=True) with 5s timeout — too tight for
+# Polymarket API which often takes 3-8s under load. Also add transport-
+# level retries for connection errors.
+try:
+    import py_clob_client.http_helpers.helpers as _clob_http
+    _patched_transport = httpx.HTTPTransport(
+        retries=3,           # retry on connection errors
+        http2=True,
+    )
+    _clob_http._http_client = httpx.Client(
+        http2=True,
+        timeout=httpx.Timeout(15.0, connect=10.0),  # was 5s
+        transport=_patched_transport,
+    )
+    logger.info("Patched py_clob_client HTTP: timeout=15s, retries=3, http2=True")
+except Exception as _patch_err:
+    logger.warning("Failed to patch py_clob_client HTTP: %s", _patch_err)
+
 
 def _as_list(value: Any) -> list:
     """Normalize API fields that may arrive as list or JSON-encoded string."""
@@ -1445,48 +1464,43 @@ class PolymarketClient:
             order_type_value = getattr(OrderType, ot, OrderType.GTC)
             order_side = _normalize_order_side(side, default="BUY")
             side_const = BUY if order_side == "BUY" else SELL
-            order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
             client = self._clob_client
-            signed = await asyncio.to_thread(client.create_order, order_args)
 
-            # Retry on transient network errors.
-            # IMPORTANT: If retry gets "Duplicated" error, the FIRST attempt
-            # was actually accepted by the server — treat as success.
-            max_post_attempts = 3
+            # Robust order submission with fresh-nonce retry.
+            # Each attempt creates a NEW signed order (new nonce) to avoid
+            # "Duplicated" errors that confused the old code.
+            max_attempts = 3
             resp = None
-            _order_likely_accepted = False
-            for _attempt in range(max_post_attempts):
+            _last_err = None
+            for _attempt in range(max_attempts):
                 try:
+                    order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
+                    signed = await asyncio.to_thread(client.create_order, order_args)
                     resp = await asyncio.to_thread(client.post_order, signed, orderType=order_type_value)
                     break
                 except Exception as _net_err:
+                    _last_err = _net_err
                     err_str = str(_net_err).lower()
-                    # "Duplicated" = server already accepted this exact order
+                    # "Duplicated" = previous attempt with same nonce was accepted
                     if "duplicated" in err_str or "duplicate" in err_str:
                         logger.info(
-                            "Limit order duplicate detected (attempt %d) — first attempt was accepted: %s",
+                            "Order duplicate on attempt %d — prior attempt was accepted: %s",
                             _attempt + 1, _net_err,
                         )
-                        _order_likely_accepted = True
+                        resp = {"orderID": "duplicate-accepted", "status": "LIVE", "transactionsHashes": []}
                         break
-                    if "request exception" in err_str and _attempt < max_post_attempts - 1:
-                        logger.warning("Limit order network error (attempt %d), retrying in 0.5s: %s", _attempt + 1, _net_err)
-                        await asyncio.sleep(0.5)
+                    if _attempt < max_attempts - 1:
+                        wait = 0.5 * (_attempt + 1)
+                        logger.warning(
+                            "Order network error (attempt %d/%d), retry in %.1fs: %s",
+                            _attempt + 1, max_attempts, wait, _net_err,
+                        )
+                        await asyncio.sleep(wait)
                         continue
                     raise
 
-            # If duplicate detected, we know the order went through.
-            # Build a synthetic success response so upstream treats it as filled.
-            if _order_likely_accepted and resp is None:
-                logger.info("Treating duplicated order as accepted (will verify via exposure check)")
-                resp = {
-                    "orderID": "duplicate-accepted",
-                    "status": "LIVE",
-                    "transactionsHashes": [],
-                }
-
             if resp is None:
-                raise RuntimeError("post_order returned None after retries")
+                raise RuntimeError(f"post_order failed after {max_attempts} attempts: {_last_err}")
 
             result = self._normalize_execution_result(
                 mode=mode,
@@ -1540,11 +1554,16 @@ class PolymarketClient:
                         break
                 else:
                     cancel_ok = False
-                    try:
-                        self._clob_client.cancel(order_id)
-                        cancel_ok = True
-                    except Exception as e:
-                        logger.warning(f"Cancel order failed ({order_id}): {e}")
+                    for _cancel_try in range(3):
+                        try:
+                            self._clob_client.cancel(order_id)
+                            cancel_ok = True
+                            break
+                        except Exception as e:
+                            if _cancel_try < 2:
+                                await asyncio.sleep(0.5)
+                            else:
+                                logger.warning(f"Cancel order failed ({order_id}) after 3 tries: {e}")
                     try:
                         latest_payload = self._clob_client.get_order(order_id)
                     except Exception:
