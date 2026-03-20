@@ -3076,8 +3076,10 @@ class TradingBot:
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
         await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
-        # Start continuous Polymarket price sync (calibrates Binance offset every 1s)
-        price_sync_task = asyncio.create_task(self._polymarket_price_sync_loop())
+        # Polymarket price sync disabled — data_collector handles CLOB polling
+        # and Jury evaluation. Live only needs Chainlink calibration (already
+        # running in BinancePriceFeed). Saves 1 Chromium instance (~1GB RAM).
+        price_sync_task = None
 
         try:
             await self._trading_loop()
@@ -3087,7 +3089,8 @@ class TradingBot:
             logger.error(f"Fatal error: {e}", exc_info=True)
         finally:
             self._running = False
-            price_sync_task.cancel()
+            if price_sync_task is not None:
+                price_sync_task.cancel()
             self.price_feed.stop()
             self.poly_client.stop_odds_polling()
             self.poly_client.close_scraper()
