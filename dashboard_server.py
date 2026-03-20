@@ -2099,7 +2099,7 @@ def control_paper_start(stake: float, interval: float, sizing_mode: str = "adapt
     ok, msg = PAPER_SIM_PROC.start(
         _python_command(
             "paper_trade_sim.py",
-            ["--stake", str(stake), "--interval", str(interval), "--sizing-mode", mode],
+            ["--stake", str(stake), "--interval", "0.1", "--sizing-mode", mode],
         ),
         meta={"stake": stake, "interval": interval, "sizing_mode": mode},
     )
