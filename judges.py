@@ -501,8 +501,11 @@ class ArbitrageJudge:
         # HARD GATE: if the lag is stale, there is NO arbitrage opportunity.
         # The entire strategy premise is exploiting fresh Binance→Poly lag.
         # A stale lag means Polymarket already priced it in → no edge.
-        min_freshness = 0.20
-        min_30s_move = 0.00005  # need at least 0.005% move in 30s
+        # Raised from 0.20 → 0.35: only trade on genuinely fresh lag.
+        # ArbitrageJudge is most accurate at 68.2% — tighter freshness
+        # filters stale signals where Polymarket already caught up.
+        min_freshness = 0.35
+        min_30s_move = 0.00008  # need at least 0.008% move in 30s
         if freshness < min_freshness or move_30s < min_30s_move:
             return JudgeVerdict(
                 Vote.ABSTAIN,

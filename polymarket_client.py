@@ -1688,9 +1688,9 @@ class PolymarketClient:
         reference_ask: Optional[float] = None,
     ) -> Optional[dict]:
         mode = str(config.trading.entry_order_mode or "LIMIT_GTC").strip().upper()
-        if mode not in {"LIMIT_GTC", "LIMIT_FAK", "MARKET"}:
-            logger.warning("Invalid ENTRY_ORDER_MODE=%s, fallback to LIMIT_GTC", mode)
-            mode = "LIMIT_GTC"
+        if mode not in {"LIMIT_GTC", "LIMIT_FAK", "MARKET", "MAKER_FIRST"}:
+            logger.warning("Invalid ENTRY_ORDER_MODE=%s, fallback to MARKET", mode)
+            mode = "MARKET"
 
         # Dry-run should not be blocked by live drift checks.
         if config.trading.dry_run:
@@ -1752,6 +1752,46 @@ class PolymarketClient:
                 amount=float(amount),
                 reference_price=working_ask,
             )
+
+        if mode == "MAKER_FIRST":
+            # Try maker order first (0% fee), fallback to FOK if not filled.
+            # Maker: place GTC at best_ask (will rest on book as maker if
+            # no immediate match). Wait up to 5s for fill.
+            maker_price = working_ask
+            if maker_price is not None and 0.0 < maker_price < 1.0:
+                maker_size = float(amount / maker_price)
+                logger.info(
+                    "MAKER_FIRST: trying GTC @ %.3f x %.1f shares (0%% fee)",
+                    maker_price, maker_size,
+                )
+                maker_result = await self.place_limit_order(
+                    token_id=token_id,
+                    side=side,
+                    price=maker_price,
+                    size=maker_size,
+                    order_type="GTC",
+                    timeout_seconds=5.0,
+                    poll_interval_seconds=0.5,
+                )
+                if maker_result and maker_result.get("filled"):
+                    maker_result["mode"] = "MAKER_FIRST(maker)"
+                    logger.info(
+                        "MAKER_FIRST: filled as maker! $%.2f @ %.3f (0%% fee)",
+                        maker_result.get("executed_notional", 0),
+                        maker_result.get("executed_price", 0),
+                    )
+                    return maker_result
+                # Maker didn't fill — fallback to FOK (taker)
+                logger.info("MAKER_FIRST: maker not filled, falling back to FOK")
+            fok_result = await self.place_market_order(
+                token_id=token_id,
+                side=side,
+                amount=float(amount),
+                reference_price=working_ask,
+            )
+            if fok_result:
+                fok_result["mode"] = "MAKER_FIRST(taker_fallback)"
+            return fok_result
 
         if working_ask is None or not (0.0 < working_ask < 1.0):
             return {
