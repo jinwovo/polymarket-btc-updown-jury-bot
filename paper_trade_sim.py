@@ -2120,7 +2120,7 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
 def main():
     parser = argparse.ArgumentParser(description="Live paper-trading simulator")
     parser.add_argument("--stake", type=float, default=1000.0, help="Paper seed capital in USD (default: 1000)")
-    parser.add_argument("--interval", type=float, default=0.5, help="Polling interval seconds (default: 0.5, matches live)")
+    parser.add_argument("--interval", type=float, default=0.1, help="Polling interval seconds (default: 0.1, max speed within rate limits)")
     parser.add_argument(
         "--sizing-mode",
         type=str,

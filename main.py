@@ -688,7 +688,7 @@ class TradingBot:
         self._kill_switch_reason: Optional[str] = None
 
         self._running = False
-        self._check_interval = 0.5  # 500ms - fast enough to catch odds lag
+        self._check_interval = 0.1  # 100ms - rate limit allows 150 req/s, we use ~20
         self._odds_task: Optional[asyncio.Task] = None
         self._last_odds_fetch: float = 0.0
         self._state_conn = None
