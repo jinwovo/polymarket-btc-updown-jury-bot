@@ -22,16 +22,18 @@ logger = logging.getLogger(__name__)
 # level retries for connection errors.
 try:
     import py_clob_client.http_helpers.helpers as _clob_http
+    # HTTP/2 causes ReadTimeout on POST /order — Polymarket's server
+    # doesn't reliably close HTTP/2 streams. Switch to HTTP/1.1.
     _patched_transport = httpx.HTTPTransport(
-        retries=3,           # retry on connection errors
-        http2=True,
+        retries=3,
+        http2=False,  # HTTP/1.1 — fixes ReadTimeout on POST /order
     )
     _clob_http._http_client = httpx.Client(
-        http2=True,
-        timeout=httpx.Timeout(15.0, connect=10.0),  # was 5s
+        http2=False,
+        timeout=httpx.Timeout(30.0, connect=15.0),
         transport=_patched_transport,
     )
-    logger.info("Patched py_clob_client HTTP: timeout=15s, retries=3, http2=True")
+    logger.info("Patched py_clob_client HTTP: timeout=30s, retries=3, http1.1")
 except Exception as _patch_err:
     logger.warning("Failed to patch py_clob_client HTTP: %s", _patch_err)
 
