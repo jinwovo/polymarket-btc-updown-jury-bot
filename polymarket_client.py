@@ -1469,7 +1469,7 @@ class PolymarketClient:
             # Robust order submission with fresh-nonce retry.
             # Each attempt creates a NEW signed order (new nonce) to avoid
             # "Duplicated" errors that confused the old code.
-            max_attempts = 3
+            max_attempts = 5
             resp = None
             _last_err = None
             for _attempt in range(max_attempts):
@@ -1490,9 +1490,11 @@ class PolymarketClient:
                         resp = {"orderID": "duplicate-accepted", "status": "LIVE", "transactionsHashes": []}
                         break
                     if _attempt < max_attempts - 1:
-                        wait = 0.5 * (_attempt + 1)
+                        # Server errors (425, 429, 5xx) need longer backoff
+                        is_server_err = any(s in err_str for s in ("425", "429", "500", "502", "503", "not ready"))
+                        wait = (2.0 if is_server_err else 0.5) * (_attempt + 1)
                         logger.warning(
-                            "Order network error (attempt %d/%d), retry in %.1fs: %s",
+                            "Order error (attempt %d/%d), retry in %.1fs: %s",
                             _attempt + 1, max_attempts, wait, _net_err,
                         )
                         await asyncio.sleep(wait)
