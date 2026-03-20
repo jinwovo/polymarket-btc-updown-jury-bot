@@ -175,7 +175,19 @@ def _close_prob_from_diffusion(ctx: MarketContext, mu: float, sigma: float) -> f
     # Cautious calibration: shrink toward 0.5 (more at start, less near expiry)
     progress = _clamp01(1.0 - t / 300.0)
     shrinkage = 0.75 + 0.17 * progress
-    return _clamp01(0.5 + shrinkage * (raw_p - 0.5))
+    p = _clamp01(0.5 + shrinkage * (raw_p - 0.5))
+    # Apply long-term trend bias from price history (cross-window persistence)
+    n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
+    if n >= 60:
+        # 5-min trend from price history
+        _long_prices = ctx.recent_prices[-300:] if n > 300 else ctx.recent_prices
+        _p_first = float(_long_prices[0])
+        _p_last = float(_long_prices[-1])
+        if _p_first > 0:
+            _long_trend = (_p_last - _p_first) / _p_first * 100.0
+            _long_bias = _clamp(_long_trend / 0.08, -1.0, 1.0) * 0.04
+            p = _clamp01(p + _long_bias)
+    return p
 
 
 def _edge_vote(
@@ -323,13 +335,22 @@ class StatisticalJudge:
         z = (x / denom) if denom > 1e-10 else (8.0 if x > 0 else -8.0 if x < 0 else 0.0)
         p_up = _clamp01(_norm_cdf(z))
 
-        trend = self._compute_trend_strength(
+        # Short-term trend (40 ticks ~ 40s) — within-window micro-trend
+        trend_short = self._compute_trend_strength(
             look_prices[-40:] if len(look_prices) > 40 else look_prices
+        )
+        # Long-term trend (300 ticks ~ 5min) — cross-window macro-trend
+        trend_long = self._compute_trend_strength(
+            look_prices[-300:] if len(look_prices) > 300 else look_prices
         )
         streak_dir, streak_len = self._recent_streak(ctx.recent_results or [])
 
-        trend_bias = _clamp(trend / 0.010, -1.0, 1.0) * 0.035
-        p_up = _clamp01(p_up + trend_bias)
+        # Short-term bias: ±0.035 (as before)
+        short_bias = _clamp(trend_short / 0.010, -1.0, 1.0) * 0.035
+        # Long-term bias: ±0.04 — nudge direction with multi-window trend
+        # Not too strong (kills all signals) but enough to avoid counter-trend entries
+        long_bias = _clamp(trend_long / 0.008, -1.0, 1.0) * 0.04
+        p_up = _clamp01(p_up + short_bias + long_bias)
 
         jumpy = jump_ratio > 0.35
         if jumpy:
@@ -348,7 +369,7 @@ class StatisticalJudge:
                 "bv": bv,
                 "jump_ratio": jump_ratio,
                 "z": z,
-                "trend": trend,
+                "trend": trend_short,
                 "jumpy": jumpy,
             },
         )
