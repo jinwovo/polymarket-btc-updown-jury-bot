@@ -1063,8 +1063,8 @@ class DataCollector:
         if self._tick_buffer and (force or (now - self._last_tick_flush) >= self._tick_flush_interval):
             # Deduplicate ticks (keep latest per timestamp bucket)
             seen = {}
-            for ts, price, vol in self._tick_buffer:
-                seen[ts] = (ts, price, vol)
+            for row in self._tick_buffer:
+                seen[row[0]] = row  # dedupe by timestamp bucket
             ticks = list(seen.values())
 
             try:
