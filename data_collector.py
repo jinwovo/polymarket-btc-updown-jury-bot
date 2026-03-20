@@ -29,6 +29,7 @@ import websockets
 
 from binance_ws import ChainlinkCalibrator
 from config import config
+from judges import Jury, MarketContext
 from db_config import (
     connect_db,
     db_label,
@@ -85,6 +86,8 @@ class DataCollector:
         self._window_start_official: bool = False
         self._ptb_scrape_done: bool = False
         self._running = False
+        # Shared Jury — evaluates signal for both paper and live
+        self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
 
         # Ring buffer for recent prices (for diffusion/lag_freshness computation)
         self._recent_prices: list[float] = []
@@ -192,7 +195,7 @@ class DataCollector:
                 await asyncio.sleep(5)
 
     async def _polymarket_poll_loop(self):
-        """Poll Polymarket orderbook every second."""
+        """Poll Polymarket orderbook + run Jury every tick."""
         while self._running:
             try:
                 if self.current_market and self.current_market.up_token_id:
@@ -215,10 +218,74 @@ class DataCollector:
                             _ub, _ua, _db, _da,
                             _spread_up, _spread_down, _overround,
                         ))
+                        # ── Shared Jury evaluation ──
+                        self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
 
             await asyncio.sleep(0.1)  # rate limit: 150 req/s, we use ~20
+
+    def _evaluate_and_cache_signal(self, now: float, ua, da, ub, db):
+        """Run Jury with current data, write signal to DB for paper/live to read."""
+        try:
+            if not self.window_start_price or self.window_start_price <= 0:
+                return
+            if not self.btc_price_adjusted or self.btc_price_adjusted <= 0:
+                return
+            if len(self._recent_prices) < 20:
+                return
+
+            interval = int(config.polymarket.interval_seconds)
+            elapsed = max(0.0, now - float(self.current_window_start))
+            remaining = max(0.0, float(self.current_window_start + interval) - now)
+
+            up_ask = float(ua) if ua and 0 < float(ua) < 1 else None
+            dn_ask = float(da) if da and 0 < float(da) < 1 else None
+            up_bid = float(ub) if ub and 0 < float(ub) < 1 else None
+            dn_bid = float(db) if db and 0 < float(db) < 1 else None
+
+            ctx = MarketContext(
+                current_binance_price=self.btc_price_adjusted,
+                market_start_price=self.window_start_price,
+                recent_prices=list(self._recent_prices[-600:]),
+                recent_timestamps=list(self._recent_timestamps[-600:]),
+                poly_up_price=self.current_market.up_price if self.current_market else 0.5,
+                poly_down_price=self.current_market.down_price if self.current_market else 0.5,
+                seconds_elapsed=elapsed,
+                seconds_remaining=remaining,
+                poly_up_bid=up_bid,
+                poly_up_ask=up_ask,
+                poly_down_bid=dn_bid,
+                poly_down_ask=dn_ask,
+            )
+
+            decision = self._jury.deliberate(ctx)
+
+            # Write to signal_cache table (single row, always overwritten)
+            import json as _json
+            judges_json = _json.dumps([
+                {"judge": v.judge_name, "vote": v.vote.value,
+                 "confidence": v.confidence, "reason": v.reason}
+                for v in decision.verdicts
+            ])
+            execute_write(
+                self.db,
+                """REPLACE INTO signal_cache
+                   (id, ts, window_start, direction, avg_confidence, max_edge,
+                    unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
+                    seconds_elapsed, seconds_remaining)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now, self.current_window_start, decision.direction,
+                    float(decision.avg_confidence), float(decision.max_edge),
+                    1 if decision.unanimous else 0, judges_json,
+                    up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
+                    elapsed, remaining,
+                ),
+            )
+            self.db.commit()
+        except Exception as e:
+            logger.debug("Signal cache update failed: %s", e)
 
     async def _window_tracker_loop(self):
         """Track 5-minute windows and record start/end prices."""

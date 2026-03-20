@@ -3377,8 +3377,54 @@ class TradingBot:
         if seconds_remaining < min_seconds_remaining:
             return
 
-        # ---- Jury deliberation ----
-        decision = self.jury.deliberate(ctx)
+        # ---- Jury deliberation (shared signal from data_collector) ----
+        if LIVE_MIRROR_PAPER_GATES:
+            # Read from shared signal_cache (data_collector runs the Jury)
+            _sig_row = fetch_one_dict(
+                conn,
+                "SELECT * FROM signal_cache WHERE id = 1",
+            )
+            if not _sig_row:
+                return
+            _sig_age = now - float(_sig_row.get("ts") or 0)
+            if _sig_age > 2.0:
+                return  # stale
+            _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
+            if _sig_dir == "NO_TRADE":
+                return
+            _sig_ws = int(_sig_row.get("window_start") or 0)
+            if _sig_ws != int(current_start):
+                return  # different window
+            # Build a lightweight decision object
+            import json as _json
+            _sig_judges = _json.loads(_sig_row.get("judges_json") or "[]")
+            from judges import JuryDecision, Vote, JudgeVerdict
+            _verdicts = [
+                JudgeVerdict(
+                    vote=Vote.UP if j.get("vote") == "UP" else Vote.DOWN if j.get("vote") == "DOWN" else Vote.ABSTAIN,
+                    confidence=float(j.get("confidence", 0)),
+                    reason=str(j.get("reason", "")),
+                    judge_name=str(j.get("judge", "")),
+                )
+                for j in _sig_judges
+            ]
+            decision = JuryDecision(
+                final_vote=Vote.UP if _sig_dir == "UP" else Vote.DOWN,
+                direction=_sig_dir,
+                avg_confidence=float(_sig_row.get("avg_confidence") or 0),
+                max_edge=float(_sig_row.get("max_edge") or 0),
+                verdicts=_verdicts,
+                unanimous=bool(_sig_row.get("unanimous")),
+            )
+            # Override ctx asks with signal's asks (same CLOB snapshot)
+            _sig_up_ask = _sig_row.get("up_ask")
+            _sig_dn_ask = _sig_row.get("down_ask")
+            if _sig_up_ask is not None:
+                up_ask = _safe_prob(float(_sig_up_ask))
+            if _sig_dn_ask is not None:
+                down_ask = _safe_prob(float(_sig_dn_ask))
+        else:
+            decision = self.jury.deliberate(ctx)
 
         if decision.direction == "NO_TRADE":
             return
