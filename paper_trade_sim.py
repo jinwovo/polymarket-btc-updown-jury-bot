@@ -1285,110 +1285,16 @@ def open_trade_if_signal(
     support_votes = sum(1 for j in judges if str(j.get("vote")) == direction)
     support_ratio = (support_votes / float(len(judges))) if judges else 0.0
     confidence = float(signal.get("avg_confidence") or 0.0)
-    btc_move_from_start_pct = ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
-    # Divergence risk filter: Binance-Chainlink price gap can flip settlement
-    # outcome when BTC is too close to window start price.
-    # DOWN needs a wider boundary distance due to higher mean-reversion + Chainlink UP bias
-    effective_boundary = (
-        PAPER_DOWN_MIN_BOUNDARY_DIST_PCT if direction == "DOWN"
-        else PAPER_MIN_BOUNDARY_DIST_PCT
+    # Divergence/momentum/trend guards are checked by data_collector and
+    # stored in signal_cache.guards_passed. Read result instead of re-checking
+    # (eliminates timing divergence between Paper and Live).
+    btc_move_from_start_pct = float(cached.get("btc_move_pct") or 0) if cached else (
+        ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
     )
-    if abs(btc_move_from_start_pct) < effective_boundary:
-        logger.debug(
-            "Skip divergence risk ws=%s dir=%s: |btc_move|=%.4f%% < %.4f%%",
-            window_start, direction, abs(btc_move_from_start_pct), effective_boundary,
-        )
+    if not int(cached.get("guards_passed") or 0) if cached else True:
+        logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
         return False
-    recent_move_pct = _recent_move_pct(
-        conn,
-        int(window_start),
-        now_ts=now_ts,
-        lookback_sec=PAPER_RECENT_MOVE_LOOKBACK_SEC,
-    )
-    if recent_move_pct is None:
-        return False
-    # If btc_vs_start strongly confirms the SAME direction as the signal,
-    # relax momentum threshold.
-    _directional_start_move = (
-        btc_move_from_start_pct if direction == "UP"
-        else -btc_move_from_start_pct
-    )
-    _strong_start_factor = 1.0
-    if _directional_start_move >= 0.06:
-        _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
-    if direction == "UP" and recent_move_pct < PAPER_MIN_RECENT_MOVE_PCT * _strong_start_factor:
-        logger.warning(
-            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% < +%.4f%%",
-            window_start,
-            direction,
-            recent_move_pct,
-            PAPER_MIN_RECENT_MOVE_PCT * _strong_start_factor,
-        )
-        return False
-    down_move_threshold = PAPER_MIN_RECENT_MOVE_PCT
-    if direction == "DOWN" and btc_move_from_start_pct > 0.0:
-        down_move_threshold += PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA
-    effective_down_thr = down_move_threshold * _strong_start_factor
-    if direction == "DOWN" and recent_move_pct > -effective_down_thr:
-        logger.warning(
-            "Skip weak short momentum ws=%s dir=%s: move=%.4f%% > -%.4f%% (btc_vs_start=%+.4f%%)",
-            window_start,
-            direction,
-            recent_move_pct,
-            effective_down_thr,
-            btc_move_from_start_pct,
-        )
-        return False
-    trend_move_pct = _recent_move_pct(
-        conn,
-        int(window_start),
-        now_ts=now_ts,
-        lookback_sec=PAPER_TREND_ALIGN_LOOKBACK_SEC,
-    )
-    if trend_move_pct is None:
-        return False
-    opposing_thr = abs(PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT)
-    # Relax trend guard when start-move strongly confirms direction
-    _effective_trend_thr = opposing_thr / max(_strong_start_factor, 0.05)
-    if direction == "UP" and trend_move_pct < -_effective_trend_thr:
-        logger.warning(
-            "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% < -%.4f%% (lookback=%.0fs)",
-            window_start,
-            direction,
-            trend_move_pct,
-            opposing_thr,
-            PAPER_TREND_ALIGN_LOOKBACK_SEC,
-        )
-        return False
-    if direction == "DOWN" and trend_move_pct > _effective_trend_thr:
-        logger.warning(
-            "Skip trend misalign ws=%s dir=%s: trend_move=%.4f%% > +%.4f%% (lookback=%.0fs)",
-            window_start,
-            direction,
-            trend_move_pct,
-            opposing_thr,
-            PAPER_TREND_ALIGN_LOOKBACK_SEC,
-        )
-        return False
-
-    # ── Macro trend filter (crosses window boundaries) ──
-    macro_move = _macro_trend_pct(conn, now_ts, PAPER_MACRO_TREND_LOOKBACK_SEC)
-    if macro_move is not None:
-        macro_opposing = (
-            (direction == "DOWN" and macro_move > PAPER_MACRO_TREND_BLOCK_PCT)
-            or (direction == "UP" and macro_move < -PAPER_MACRO_TREND_BLOCK_PCT)
-        )
-        if macro_opposing:
-            logger.warning(
-                "Skip macro-trend misalign ws=%s dir=%s: macro_move=%+.4f%% "
-                "(threshold=%.4f%%, lookback=%.0fs)",
-                window_start,
-                direction,
-                macro_move,
-                PAPER_MACRO_TREND_BLOCK_PCT,
-                PAPER_MACRO_TREND_LOOKBACK_SEC,
-            )
-            return False
+    # Trend/macro guards handled by signal_cache.guards_passed (above)
 
     recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
 

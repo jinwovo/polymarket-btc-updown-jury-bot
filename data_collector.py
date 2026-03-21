@@ -355,6 +355,58 @@ class DataCollector:
 
             decision = self._jury.deliberate(ctx)
 
+            # ── Price guards (same as paper_trade_sim) ──
+            btc_move_pct = 0.0
+            recent_move = None
+            trend_move = None
+            guards_passed = 0
+
+            if decision.direction in ("UP", "DOWN") and self.window_start_price and self.window_start_price > 0:
+                btc_move_pct = ((self.btc_price_adjusted - self.window_start_price) / self.window_start_price) * 100.0
+
+                # Divergence check
+                _down_boundary = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.030"))
+                _up_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.020"))
+                _boundary = _down_boundary if decision.direction == "DOWN" else _up_boundary
+                divergence_ok = abs(btc_move_pct) >= _boundary
+
+                # Momentum check (from DB ticks, same as paper)
+                from paper_trade_sim import _recent_move_pct as _paper_move
+                _move_lookback = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
+                recent_move = _paper_move(self.db, self.current_window_start, now, _move_lookback)
+                _min_move = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.004"))
+
+                # Strong start factor
+                _dir_start = btc_move_pct if decision.direction == "UP" else -btc_move_pct
+                _factor = 1.0
+                if _dir_start >= 0.06:
+                    _factor = max(0.0, 1.0 - (_dir_start - 0.06) / 0.06)
+
+                momentum_ok = True
+                if recent_move is not None:
+                    if decision.direction == "UP" and recent_move < _min_move * _factor:
+                        momentum_ok = False
+                    _down_thr = _min_move
+                    if decision.direction == "DOWN" and btc_move_pct > 0:
+                        _down_thr += float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
+                    _eff_down = _down_thr * _factor
+                    if decision.direction == "DOWN" and recent_move > -_eff_down:
+                        momentum_ok = False
+
+                # Trend check
+                _trend_lookback = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
+                trend_move = _paper_move(self.db, self.current_window_start, now, _trend_lookback)
+                _trend_thr = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
+                _eff_trend = _trend_thr / max(_factor, 0.05)
+                trend_ok = True
+                if trend_move is not None:
+                    if decision.direction == "UP" and trend_move < -_eff_trend:
+                        trend_ok = False
+                    if decision.direction == "DOWN" and trend_move > _eff_trend:
+                        trend_ok = False
+
+                guards_passed = 1 if (divergence_ok and momentum_ok and trend_ok) else 0
+
             # Write to signal_cache table (single row, always overwritten)
             import json as _json
             judges_json = _json.dumps([
@@ -367,14 +419,16 @@ class DataCollector:
                 """REPLACE INTO signal_cache
                    (id, ts, window_start, direction, avg_confidence, max_edge,
                     unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
-                    seconds_elapsed, seconds_remaining)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    seconds_elapsed, seconds_remaining,
+                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     now, self.current_window_start, decision.direction,
                     float(decision.avg_confidence), float(decision.max_edge),
                     1 if decision.unanimous else 0, judges_json,
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
+                    btc_move_pct, recent_move, trend_move, guards_passed,
                 ),
             )
             self.db.commit()

@@ -3614,9 +3614,13 @@ class TradingBot:
         # data_collector's Jury + Paper's entry guards already check these.
         # Re-checking in Live with 1-3s timing difference causes Live to miss
         # trades that Paper catches (BTC micro-bounce between checks).
-        # Price guards ON. Uses signal_cache btc prices (same as Paper) to
-        # minimize timing divergence. 51% WR with guards off vs 61% with on.
-        _skip_price_guards = False
+        # Price guards checked by data_collector → signal_cache.guards_passed.
+        # Paper and Live both read the SAME result. No timing divergence.
+        if LIVE_MIRROR_PAPER_GATES:
+            _guards_ok = bool(int(_sig_row.get("guards_passed") or 0))
+            if not _guards_ok:
+                return
+        _skip_price_guards = LIVE_MIRROR_PAPER_GATES  # skip inline guards, already checked
 
         # Divergence risk filter: Binance-Chainlink gap can flip settlement
         # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias
