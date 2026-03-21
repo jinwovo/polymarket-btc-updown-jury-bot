@@ -814,6 +814,10 @@ class Backtester:
                 decision.avg_confidence,
                 decision.max_edge,
             )
+            # Time-graduated sizing: closer to expiry = more certain = bigger bet
+            # 150s: 1.0x, 200s: 1.25x, 240s: 1.5x
+            _time_mult = 1.0 + _clamp((seconds_elapsed - 150) / 180, 0.0, 0.5)
+            bet_size = bet_size * _time_mult
             if bet_size < config.trading.min_bet_size:
                 check_time += self.check_interval
                 continue

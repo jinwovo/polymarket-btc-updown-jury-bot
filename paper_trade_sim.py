@@ -637,6 +637,7 @@ def _compute_bet_size(
     entry_price: float | None = None,
     model_prob: float | None = None,
     confidence: float | None = None,
+    seconds_elapsed: float | None = None,
     max_edge: float | None = None,
 ) -> float:
     """Adaptive bet sizing: 5-15% of equity based on conviction.
@@ -658,6 +659,11 @@ def _compute_bet_size(
     bet_pct = BET_PCT_MIN + conv_norm * (BET_PCT_MAX - BET_PCT_MIN)
     sized = available_equity * bet_pct
 
+    # Time-graduated sizing: closer to expiry = more certain = bigger bet
+    # 150s: 1.0x, 200s: 1.25x, 240s: 1.5x
+    if seconds_elapsed is not None:
+        _time_mult = 1.0 + _clamp((float(seconds_elapsed) - 150) / 180, 0.0, 0.5)
+        sized *= _time_mult
     # Cap at 20% of equity (matched to backtest ceiling)
     max_bet = available_equity * 0.20
     return round(max(PAPER_MIN_BET, min(sized, max_bet)), 2)
@@ -1555,6 +1561,7 @@ def open_trade_if_signal(
             model_prob=gate.model_prob,
             confidence=confidence,
             max_edge=_max_edge,
+            seconds_elapsed=float(sec_elapsed) if sec_elapsed is not None else None,
         )
         if loss_streak > 0:
             # Adaptive de-risking after losses.
