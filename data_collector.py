@@ -738,44 +738,66 @@ class DataCollector:
                 _reconnect_delay = min(_reconnect_delay * 2, 30.0)
 
     async def _polymarket_price_sync_loop(self):
-        """Playwright fallback: only active when RTDS is down.
-        Also logs comparison between RTDS and Playwright for monitoring."""
+        """Playwright: fallback when RTDS down + periodic price comparison.
+        Also handles Playwright crash recovery."""
         _last_log = 0.0
+        _last_compare = 0.0
+        _pw_consecutive_fail = 0
         await asyncio.sleep(15.0)  # let RTDS connect first
         while self._running:
             try:
-                # If RTDS is alive and recent (<5s), skip Playwright
-                rtds_age = time.time() - getattr(self, '_rtds_updated_at', 0)
-                if rtds_age < 5.0:
-                    await asyncio.sleep(5.0)
-                    continue
+                now = time.time()
+                rtds_age = now - self._rtds_updated_at
+                rtds_ok = rtds_age < 5.0
 
-                # RTDS down — use Playwright as fallback
+                # Always try to extract Playwright price (for comparison + fallback)
                 poly_price = await self.poly_client.extract_current_price()
-                if poly_price is not None and poly_price > 0:
-                    now = time.time()
-                    binance_now = self.btc_price
-                    if binance_now is not None and binance_now > 0:
-                        new_offset = binance_now - poly_price
-                        self._chainlink.offset = new_offset
-                        self._chainlink.chainlink_price = poly_price
-                        self._chainlink.binance_at_update = binance_now
-                        self._chainlink.chainlink_updated_at = now
-                        self._chainlink.polymarket_sync_active = True
-                        self.btc_price_adjusted = poly_price
 
-                        if (now - _last_log) > 30.0:
-                            # Log comparison if RTDS was recently alive
-                            rtds_px = getattr(self, '_rtds_price', None)
-                            diff_str = f" (RTDS diff=${abs(poly_price - rtds_px):.2f})" if rtds_px else ""
+                if poly_price is not None and poly_price > 0:
+                    _pw_consecutive_fail = 0
+
+                    if rtds_ok:
+                        # RTDS alive — just compare every 30s on terminal
+                        if (now - _last_compare) > 30.0:
+                            diff = abs(self._rtds_price - poly_price)
                             logger.warning(
-                                "Playwright fallback: $%.2f%s (RTDS age=%.0fs)",
-                                poly_price, diff_str, rtds_age,
+                                "Price check: RTDS=$%.2f Playwright=$%.2f diff=$%.2f",
+                                self._rtds_price, poly_price, diff,
+                            )
+                            _last_compare = now
+                    else:
+                        # RTDS down — use Playwright as primary
+                        binance_now = self.btc_price
+                        if binance_now is not None and binance_now > 0:
+                            new_offset = binance_now - poly_price
+                            self._chainlink.offset = new_offset
+                            self._chainlink.chainlink_price = poly_price
+                            self._chainlink.binance_at_update = binance_now
+                            self._chainlink.chainlink_updated_at = now
+                            self._chainlink.polymarket_sync_active = True
+                            self.btc_price_adjusted = poly_price
+
+                        if (now - _last_log) > 15.0:
+                            logger.warning(
+                                "Playwright active (RTDS down %.0fs): $%.2f",
+                                rtds_age, poly_price,
                             )
                             _last_log = now
+                else:
+                    _pw_consecutive_fail += 1
+                    # Auto-recover Playwright after 10 consecutive failures
+                    if _pw_consecutive_fail >= 10:
+                        logger.warning("Playwright: %d fails, restarting browser", _pw_consecutive_fail)
+                        _pw_consecutive_fail = 0
+                        try:
+                            self.poly_client.close_scraper()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(3.0)
+
             except Exception as e:
-                logger.debug("Playwright fallback error: %s", e)
-            await asyncio.sleep(3.0)
+                logger.debug("Playwright sync error: %s", e)
+            await asyncio.sleep(3.0 if rtds_ok else 1.0)  # slower when RTDS is fine
 
     # ------------------------------------------------------------------
     # Inline diffusion / lag helpers (mirror judges.py logic)
