@@ -281,7 +281,8 @@ def init_market_schema(conn):
             buy_sell_ratio DOUBLE NULL,
             gate_allow TINYINT NOT NULL DEFAULT 0,
             gate_ev DOUBLE NULL,
-            gate_reason TEXT NULL
+            gate_reason TEXT NULL,
+            binance_rtds_gap DOUBLE NULL
         ) ENGINE=InnoDB
         """,
         """
@@ -367,6 +368,7 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache ADD COLUMN gate_allow TINYINT NOT NULL DEFAULT 0",
         "ALTER TABLE signal_cache ADD COLUMN gate_ev DOUBLE NULL",
         "ALTER TABLE signal_cache ADD COLUMN gate_reason TEXT NULL",
+        "ALTER TABLE signal_cache ADD COLUMN binance_rtds_gap DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

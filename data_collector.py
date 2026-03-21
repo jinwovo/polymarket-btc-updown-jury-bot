@@ -464,6 +464,11 @@ class DataCollector:
                     logger.debug("Entry gate check failed: %s", _ge)
 
             # Write to signal_cache table (single row, always overwritten)
+            # Binance-RTDS gap: positive = Binance above Chainlink = BTC rising
+            binance_rtds_gap = None
+            if self.btc_price and self._rtds_price and self._rtds_price > 0:
+                binance_rtds_gap = float(self.btc_price) - float(self._rtds_price)
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -477,8 +482,8 @@ class DataCollector:
                     unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
                     seconds_elapsed, seconds_remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                    buy_sell_ratio, gate_allow, gate_ev, gate_reason)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     now, self.current_window_start, decision.direction,
                     float(decision.avg_confidence), float(decision.max_edge),
@@ -486,7 +491,7 @@ class DataCollector:
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
                     btc_move_pct, recent_move, trend_move, guards_passed,
-                    buy_sell_ratio, gate_allow, gate_ev, gate_reason,
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                 ),
             )
             self.db.commit()
