@@ -3791,8 +3791,8 @@ class TradingBot:
         gate = evaluate_entry_gate(
             direction=decision.direction,
             entry_price=float(price),
-            current_price=float(ctx.current_binance_price),
-            start_price=float(ctx.market_start_price),
+            current_price=float(_btc_now),
+            start_price=float(_btc_start),
             seconds_elapsed=float(seconds_elapsed),
             jury_confidence=float(decision.avg_confidence),
             support_ratio=float(support_ratio),
