@@ -761,14 +761,13 @@ class DataCollector:
                     _pw_consecutive_fail = 0
 
                     if rtds_ok:
-                        # RTDS alive — just compare every 30s on terminal
-                        if (now - _last_compare) > 30.0:
-                            diff = abs(self._rtds_price - poly_price)
+                        # RTDS alive — only log if diff > $10 (something wrong)
+                        diff = abs(self._rtds_price - poly_price)
+                        if diff > 10.0:
                             logger.warning(
-                                "Price check: RTDS=$%.2f Playwright=$%.2f diff=$%.2f",
+                                "Price MISMATCH: RTDS=$%.2f Playwright=$%.2f diff=$%.2f",
                                 self._rtds_price, poly_price, diff,
                             )
-                            _last_compare = now
                     else:
                         # RTDS down — use Playwright as primary
                         binance_now = self.btc_price
