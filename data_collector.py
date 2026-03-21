@@ -671,7 +671,7 @@ class DataCollector:
         while self._running:
             try:
                 uri = "wss://ws-live-data.polymarket.com"
-                async with _ws.connect(uri, ping_interval=5, ping_timeout=10) as ws:
+                async with _ws.connect(uri, ping_interval=None) as ws:  # disable auto-ping, use manual PING
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [{
@@ -683,11 +683,25 @@ class DataCollector:
                     logger.warning("RTDS Chainlink price feed connected")
                     _reconnect_delay = 1.0
                     self._rtds_alive = True
+                    _last_ping = time.time()
 
-                    async for msg in ws:
-                        if not self._running:
+                    while self._running:
+                        # Manual PING every 5s (RTDS requires text "PING", not WebSocket ping frame)
+                        if time.time() - _last_ping > 5:
+                            try:
+                                await ws.send("PING")
+                            except Exception:
+                                break
+                            _last_ping = time.time()
+
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=3)
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception:
                             break
-                        if not msg:
+
+                        if not msg or msg == "PONG":
                             continue
                         try:
                             data = json.loads(msg)
