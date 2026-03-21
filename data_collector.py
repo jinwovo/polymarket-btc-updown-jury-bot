@@ -662,16 +662,14 @@ class DataCollector:
         )
 
     async def _rtds_price_loop(self):
-        """Stream Chainlink BTC/USD from Polymarket RTDS WebSocket (primary).
-        Updates btc_price_adjusted every ~1s. Auto-reconnect on failure."""
+        """Poll Chainlink BTC/USD from RTDS every 1s (connect, get snapshot, close).
+        RTDS streams don't persist — initial snapshot is reliable."""
         import websockets as _ws
         _last_log = 0.0
-        _reconnect_delay = 1.0
 
         while self._running:
             try:
-                uri = "wss://ws-live-data.polymarket.com"
-                async with _ws.connect(uri, ping_interval=None) as ws:  # disable auto-ping, use manual PING
+                async with _ws.connect("wss://ws-live-data.polymarket.com", ping_interval=None, close_timeout=3) as ws:
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [{
@@ -680,76 +678,53 @@ class DataCollector:
                             "filters": json.dumps({"symbol": "btc/usd"})
                         }]
                     }))
-                    logger.warning("RTDS Chainlink price feed connected")
-                    _reconnect_delay = 1.0
-                    self._rtds_alive = True
-                    _last_ping = time.time()
-
-                    while self._running:
-                        # Manual PING every 5s (RTDS requires text "PING", not WebSocket ping frame)
-                        if time.time() - _last_ping > 5:
-                            try:
-                                await ws.send("PING")
-                            except Exception:
-                                break
-                            _last_ping = time.time()
-
-                        try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=3)
-                        except asyncio.TimeoutError:
-                            continue
-                        except Exception:
-                            break
-
-                        if not msg or msg == "PONG":
-                            continue
+                    # Read first message (snapshot)
+                    msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                    if msg:
                         try:
                             data = json.loads(msg)
+                            payload = data.get("payload", {})
+                            chainlink_price = None
+                            if isinstance(payload, dict):
+                                if "value" in payload:
+                                    chainlink_price = float(payload["value"])
+                                elif "data" in payload and isinstance(payload["data"], list):
+                                    for d in payload["data"]:
+                                        if "value" in d:
+                                            chainlink_price = float(d["value"])
+
+                            if chainlink_price and chainlink_price > 10000:
+                                now = time.time()
+                                self._rtds_price = chainlink_price
+                                self._rtds_updated_at = now
+                                self._rtds_alive = True
+
+                                binance_now = self.btc_price
+                                if binance_now and binance_now > 0:
+                                    new_offset = binance_now - chainlink_price
+                                    old_offset = self._chainlink.offset
+                                    self._chainlink.offset = new_offset
+                                    self._chainlink.chainlink_price = chainlink_price
+                                    self._chainlink.binance_at_update = binance_now
+                                    self._chainlink.chainlink_updated_at = now
+                                    self._chainlink.polymarket_sync_active = True
+                                    self.btc_price_adjusted = chainlink_price
+
+                                    offset_delta = abs(new_offset - old_offset)
+                                    if offset_delta > 5.0 or (now - _last_log) > 60.0:
+                                        logger.info(
+                                            "RTDS: $%.2f (binance=$%.2f offset=$%.2f)",
+                                            chainlink_price, binance_now, new_offset,
+                                        )
+                                        _last_log = now
                         except Exception:
-                            continue
-
-                        payload = data.get("payload", {})
-                        chainlink_price = None
-                        if isinstance(payload, dict):
-                            if "value" in payload:
-                                chainlink_price = float(payload["value"])
-                            elif "data" in payload and isinstance(payload["data"], list):
-                                for d in payload["data"]:
-                                    if "value" in d:
-                                        chainlink_price = float(d["value"])
-
-                        if chainlink_price is None or chainlink_price < 10000:
-                            continue
-
-                        now = time.time()
-                        self._rtds_price = chainlink_price
-                        self._rtds_updated_at = now
-
-                        # Update calibration
-                        binance_now = self.btc_price
-                        if binance_now is not None and binance_now > 0:
-                            new_offset = binance_now - chainlink_price
-                            old_offset = self._chainlink.offset
-                            self._chainlink.offset = new_offset
-                            self._chainlink.chainlink_price = chainlink_price
-                            self._chainlink.binance_at_update = binance_now
-                            self._chainlink.chainlink_updated_at = now
-                            self._chainlink.polymarket_sync_active = True
-                            self.btc_price_adjusted = chainlink_price
-
-                            offset_delta = abs(new_offset - old_offset)
-                            if offset_delta > 5.0 or (now - _last_log) > 60.0:
-                                logger.info(
-                                    "RTDS: $%.2f (binance=$%.2f offset=$%.2f)",
-                                    chainlink_price, binance_now, new_offset,
-                                )
-                                _last_log = now
+                            pass
 
             except Exception as e:
                 self._rtds_alive = False
-                logger.warning("RTDS error: %s (reconnect in %.0fs)", e, _reconnect_delay)
-                await asyncio.sleep(_reconnect_delay)
-                _reconnect_delay = min(_reconnect_delay * 2, 30.0)
+                logger.debug("RTDS poll error: %s", e)
+
+            await asyncio.sleep(1.0)  # poll every 1s
 
     async def _polymarket_price_sync_loop(self):
         """Playwright: fallback when RTDS down + periodic price comparison.
