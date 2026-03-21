@@ -4212,8 +4212,26 @@ class TradingBot:
         if self.current_market is None:
             return
 
-        # --- Phase 1: if no price at all, set chainlink_adj immediately ---
+        # --- Phase 1: if no price at all, try signal_cache first, then chainlink ---
         if not self._market_start_official or self.market_start_price is None:
+            # Try signal_cache (data_collector's calibrated price)
+            try:
+                conn = self._ensure_state_conn()
+                _sc = fetch_one_dict(conn, "SELECT start_price, btc_price FROM signal_cache WHERE id = 1")
+                if _sc:
+                    _sp = float(_sc.get("start_price") or 0)
+                    if _sp > 10000:
+                        self.market_start_price = _sp
+                        self._market_start_official = True
+                        self._market_start_source = "signal_cache"
+                        logger.info(
+                            "Market start set from signal_cache: %s | $%.2f",
+                            self.current_market.slug, _sp,
+                        )
+                        return
+            except Exception:
+                pass
+            # Fallback: Chainlink-calibrated Binance
             if (
                 self.price_feed.calibrator is not None
                 and self.price_feed.calibrator.is_calibrated
