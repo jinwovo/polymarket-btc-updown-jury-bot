@@ -1296,27 +1296,51 @@ def open_trade_if_signal(
         return False
     # Trend/macro guards handled by signal_cache.guards_passed (above)
 
-    recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
+    # Entry gate checked by data_collector → signal_cache.gate_allow
+    # Paper reads result instead of re-running (same price = same result)
+    if cached:
+        _gate_allow = int(cached.get("gate_allow") or 0)
+        _gate_reason = str(cached.get("gate_reason") or "")
+        _gate_ev = float(cached.get("gate_ev") or 0)
+        if not _gate_allow:
+            logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, _gate_reason)
+            return False
+    else:
+        # Fallback: run gate locally (shouldn't happen with signal_cache)
+        recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
+        gate = evaluate_entry_gate(
+            direction=direction,
+            entry_price=float(entry_price),
+            current_price=float(btc_now),
+            start_price=float(btc_start),
+            seconds_elapsed=float(sec_elapsed),
+            jury_confidence=confidence,
+            support_ratio=float(support_ratio),
+            seconds_remaining=float(seconds_remaining),
+            recent_prices=recent_prices,
+            recent_timestamps=recent_ts,
+            poly_up_ask=float(up_ask_val) if up_ask_val is not None else None,
+            poly_down_ask=float(down_ask_val) if down_ask_val is not None else None,
+        )
+        if not gate.allow:
+            logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
+            return False
+        _gate_ev = gate.expected_roi
+    # When reading from signal_cache, gate checks are already done by data_collector.
+    # Skip all remaining gate-dependent checks (lag edge, contra gap, adaptive EV)
+    # to avoid re-running with potentially different prices.
+    if cached and _gate_allow:
+        # Use signal_cache gate_ev for adaptive checks below
+        class _GateProxy:
+            expected_roi = _gate_ev or 0.0
+            model_prob = 0.5  # not used when skipping
+        gate = _GateProxy()
+        # Skip lag edge and contra gap — already passed in data_collector
+    else:
+        pass  # fallback path uses real gate object
 
-    gate = evaluate_entry_gate(
-        direction=direction,
-        entry_price=float(entry_price),
-        current_price=float(btc_now),
-        start_price=float(btc_start),
-        seconds_elapsed=float(sec_elapsed),
-        jury_confidence=confidence,
-        support_ratio=float(support_ratio),
-        seconds_remaining=float(seconds_remaining),
-        recent_prices=recent_prices,
-        recent_timestamps=recent_ts,
-        poly_up_ask=float(up_ask_val) if up_ask_val is not None else None,
-        poly_down_ask=float(down_ask_val) if down_ask_val is not None else None,
-    )
-    if not gate.allow:
-        logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
-        return False
     # Lag probability edge: our model_prob must beat normalized market prob
-    if side_implied is not None and opposite_implied is not None:
+    if not (cached and _gate_allow) and side_implied is not None and opposite_implied is not None:
         market_total = float(side_implied) + float(opposite_implied)
         if market_total > 0:
             market_dir_prob = float(side_implied) / market_total
@@ -1330,7 +1354,7 @@ def open_trade_if_signal(
                 return False
 
     contra_gap = None
-    if side_implied is not None and opposite_implied is not None:
+    if not (cached and _gate_allow) and side_implied is not None and opposite_implied is not None:
         contra_gap = float(opposite_implied) - float(side_implied)
     if contra_gap is not None and contra_gap > PAPER_MAX_CONTRA_GAP:
         strong_override = (

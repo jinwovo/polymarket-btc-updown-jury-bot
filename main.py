@@ -3788,24 +3788,53 @@ class TradingBot:
             )
             dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
-        gate = evaluate_entry_gate(
-            direction=decision.direction,
-            entry_price=float(price),
-            current_price=float(_btc_now),
-            start_price=float(_btc_start),
-            seconds_elapsed=float(seconds_elapsed),
-            jury_confidence=float(decision.avg_confidence),
-            support_ratio=float(support_ratio),
-            seconds_remaining=float(seconds_remaining),
-            recent_prices=list(ctx.recent_prices),
-            recent_timestamps=list(ctx.recent_timestamps),
-            poly_up_ask=ctx.poly_up_ask,
-            poly_down_ask=ctx.poly_down_ask,
-            recent_results=(None if LIVE_MIRROR_PAPER_GATES else list(ctx.recent_results or [])),
-        )
-        if not gate.allow:
-            logger.info("Skip trade by entry gate: %s", gate.reason)
-            return
+        # Entry gate: use signal_cache result in parity mode (same as Paper)
+        if LIVE_MIRROR_PAPER_GATES:
+            _gate_allow = int(_sig_row.get("gate_allow") or 0)
+            _gate_reason = str(_sig_row.get("gate_reason") or "")
+            _gate_ev = float(_sig_row.get("gate_ev") or 0)
+            if not _gate_allow:
+                logger.info("Skip trade by entry gate (signal_cache): %s", _gate_reason)
+                return
+            # Create proxy gate object for downstream code
+            class _GateProxy:
+                allow = True
+                expected_roi = _gate_ev
+                model_prob = 0.5
+                reason = _gate_reason
+                win_prob = 0.6
+                prob_floor = 0.5
+                fee_rate = 0.01
+                is_coinflip = False
+                fair_up = 0.5
+                dispersion = 0.0
+                alignment = 0.0
+                penalty = 0.0
+                spread_cost = 0.0
+                net_ev_before_penalty = _gate_ev
+                regime_pass = True
+                regime_details = ""
+                skip_reason = ""
+            gate = _GateProxy()
+        else:
+            gate = evaluate_entry_gate(
+                direction=decision.direction,
+                entry_price=float(price),
+                current_price=float(_btc_now),
+                start_price=float(_btc_start),
+                seconds_elapsed=float(seconds_elapsed),
+                jury_confidence=float(decision.avg_confidence),
+                support_ratio=float(support_ratio),
+                seconds_remaining=float(seconds_remaining),
+                recent_prices=list(ctx.recent_prices),
+                recent_timestamps=list(ctx.recent_timestamps),
+                poly_up_ask=ctx.poly_up_ask,
+                poly_down_ask=ctx.poly_down_ask,
+                recent_results=list(ctx.recent_results or []),
+            )
+            if not gate.allow:
+                logger.info("Skip trade by entry gate: %s", gate.reason)
+                return
         market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
         market_dir_prob = None
         lag_prob_edge = None

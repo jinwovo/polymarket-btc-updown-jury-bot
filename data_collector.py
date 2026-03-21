@@ -428,6 +428,36 @@ class DataCollector:
 
             buy_sell_ratio = _bs_ratio
 
+            # ── Entry gate (same check as Paper/Live) ──
+            gate_allow = 0
+            gate_ev = None
+            gate_reason = None
+            if decision.direction in ("UP", "DOWN") and guards_passed:
+                try:
+                    from trade_gate import evaluate_entry_gate
+                    _entry_price = float(dn_ask if decision.direction == "DOWN" else up_ask) if (up_ask and dn_ask) else 0.5
+                    _support = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
+                    _support_ratio = _support / max(len(decision.verdicts), 1)
+                    _gate = evaluate_entry_gate(
+                        direction=decision.direction,
+                        entry_price=_entry_price,
+                        current_price=self.btc_price_adjusted or 0,
+                        start_price=self.window_start_price or 0,
+                        seconds_elapsed=elapsed,
+                        jury_confidence=float(decision.avg_confidence),
+                        support_ratio=float(_support_ratio),
+                        seconds_remaining=remaining,
+                        recent_prices=list(self._recent_prices[-600:]),
+                        recent_timestamps=list(self._recent_timestamps[-600:]),
+                        poly_up_ask=up_ask,
+                        poly_down_ask=dn_ask,
+                    )
+                    gate_allow = 1 if _gate.allow else 0
+                    gate_ev = float(_gate.expected_roi) if _gate.expected_roi else None
+                    gate_reason = str(_gate.reason or "")[:200]
+                except Exception as _ge:
+                    logger.debug("Entry gate check failed: %s", _ge)
+
             # Write to signal_cache table (single row, always overwritten)
             import json as _json
             judges_json = _json.dumps([
@@ -442,8 +472,8 @@ class DataCollector:
                     unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
                     seconds_elapsed, seconds_remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                    buy_sell_ratio)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     now, self.current_window_start, decision.direction,
                     float(decision.avg_confidence), float(decision.max_edge),
@@ -451,7 +481,7 @@ class DataCollector:
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
                     btc_move_pct, recent_move, trend_move, guards_passed,
-                    buy_sell_ratio,
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason,
                 ),
             )
             self.db.commit()

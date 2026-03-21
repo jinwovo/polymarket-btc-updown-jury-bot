@@ -278,7 +278,10 @@ def init_market_schema(conn):
             recent_move_pct DOUBLE NULL,
             trend_move_pct DOUBLE NULL,
             guards_passed TINYINT NOT NULL DEFAULT 0,
-            buy_sell_ratio DOUBLE NULL
+            buy_sell_ratio DOUBLE NULL,
+            gate_allow TINYINT NOT NULL DEFAULT 0,
+            gate_ev DOUBLE NULL,
+            gate_reason TEXT NULL
         ) ENGINE=InnoDB
         """,
         """
@@ -361,6 +364,9 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache ADD COLUMN trend_move_pct DOUBLE NULL",
         "ALTER TABLE signal_cache ADD COLUMN guards_passed TINYINT NOT NULL DEFAULT 0",
         "ALTER TABLE signal_cache ADD COLUMN buy_sell_ratio DOUBLE NULL",
+        "ALTER TABLE signal_cache ADD COLUMN gate_allow TINYINT NOT NULL DEFAULT 0",
+        "ALTER TABLE signal_cache ADD COLUMN gate_ev DOUBLE NULL",
+        "ALTER TABLE signal_cache ADD COLUMN gate_reason TEXT NULL",
     ]:
         try:
             execute_write(conn, alter_sql)
