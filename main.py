@@ -4204,16 +4204,30 @@ class TradingBot:
                 )
             return
 
-        # --- Phase 2: scrape exact PTB + Current price at ~3s (one-shot) ---
+        # --- Phase 2: PTB correction ---
+        # Playwright scraping disabled in Live — data_collector handles it.
+        # Live uses signal_cache start_price for entry decisions.
         if self._ptb_scrape_done:
             return
         if seconds_elapsed < 3.0:
             return
         self._ptb_scrape_done = True
 
-        scraped_ptb, scraped_current = await self.poly_client.scrape_prices(
-            self.current_market.slug
-        )
+        # Try to get PTB from signal_cache instead of scraping
+        scraped_ptb = None
+        scraped_current = None
+        try:
+            conn = self._ensure_state_conn()
+            _sc = fetch_one_dict(conn, "SELECT start_price, btc_price FROM signal_cache WHERE id = 1")
+            if _sc:
+                _sp = float(_sc.get("start_price") or 0)
+                _bp = float(_sc.get("btc_price") or 0)
+                if _sp > 10000:
+                    scraped_ptb = _sp
+                if _bp > 10000:
+                    scraped_current = _bp
+        except Exception:
+            pass
 
         # --- Calibrate offset using Polymarket Current price ---
         if scraped_current is not None and scraped_current > 0:
