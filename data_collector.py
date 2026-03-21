@@ -99,6 +99,10 @@ class DataCollector:
         self._running = False
         # Shared Jury — evaluates signal for both paper and live
         self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
+        # RTDS WebSocket state
+        self._rtds_price: float = 0.0
+        self._rtds_updated_at: float = 0.0
+        self._rtds_alive: bool = False
         # Trade event tracking (for server console display)
         self._last_paper_trade_id: int = 0
         self._last_live_trade_id: int = 0
@@ -151,7 +155,7 @@ class DataCollector:
         except Exception:
             pass
 
-        # Run in parallel: Binance WS + Polymarket polling + flush loop + Chainlink + price sync
+        # Run in parallel: Binance WS + CLOB polling + flush + window + Chainlink + RTDS + Playwright fallback
         await asyncio.gather(
             self._binance_ws_loop(),
             self._polymarket_poll_loop(),
@@ -161,7 +165,8 @@ class DataCollector:
                 get_binance_price=lambda: self.btc_price,
                 get_binance_price_at=self._get_raw_price_at,
             ),
-            self._polymarket_price_sync_loop(),
+            self._rtds_price_loop(),              # primary: RTDS WebSocket
+            self._polymarket_price_sync_loop(),    # fallback: Playwright (only when RTDS down)
         )
 
     def _get_raw_price_at(self, ts: float):
@@ -656,10 +661,9 @@ class DataCollector:
             self.current_market.slug, prev or 0, scraped_ptb, delta, prev_src,
         )
 
-    async def _polymarket_price_sync_loop(self):
-        """Stream Chainlink BTC/USD from Polymarket RTDS WebSocket.
-        Replaces Playwright scraping — faster (1s), lighter, no browser crashes.
-        This is the SAME Chainlink Data Streams price used for settlement."""
+    async def _rtds_price_loop(self):
+        """Stream Chainlink BTC/USD from Polymarket RTDS WebSocket (primary).
+        Updates btc_price_adjusted every ~1s. Auto-reconnect on failure."""
         import websockets as _ws
         _last_log = 0.0
         _reconnect_delay = 1.0
@@ -668,7 +672,6 @@ class DataCollector:
             try:
                 uri = "wss://ws-live-data.polymarket.com"
                 async with _ws.connect(uri, ping_interval=5, ping_timeout=10) as ws:
-                    # Subscribe to Chainlink BTC/USD
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [{
@@ -678,7 +681,8 @@ class DataCollector:
                         }]
                     }))
                     logger.warning("RTDS Chainlink price feed connected")
-                    _reconnect_delay = 1.0  # reset on success
+                    _reconnect_delay = 1.0
+                    self._rtds_alive = True
 
                     async for msg in ws:
                         if not self._running:
@@ -690,7 +694,6 @@ class DataCollector:
                         except Exception:
                             continue
 
-                        # Extract price from payload
                         payload = data.get("payload", {})
                         chainlink_price = None
                         if isinstance(payload, dict):
@@ -704,8 +707,11 @@ class DataCollector:
                         if chainlink_price is None or chainlink_price < 10000:
                             continue
 
-                        # Update calibration (same logic as old Playwright sync)
                         now = time.time()
+                        self._rtds_price = chainlink_price
+                        self._rtds_updated_at = now
+
+                        # Update calibration
                         binance_now = self.btc_price
                         if binance_now is not None and binance_now > 0:
                             new_offset = binance_now - chainlink_price
@@ -715,20 +721,61 @@ class DataCollector:
                             self._chainlink.binance_at_update = binance_now
                             self._chainlink.chainlink_updated_at = now
                             self._chainlink.polymarket_sync_active = True
-                            self.btc_price_adjusted = chainlink_price  # direct use
+                            self.btc_price_adjusted = chainlink_price
 
                             offset_delta = abs(new_offset - old_offset)
                             if offset_delta > 5.0 or (now - _last_log) > 60.0:
                                 logger.info(
-                                    "RTDS price: chainlink=$%.2f binance=$%.2f offset=$%.2f",
+                                    "RTDS: $%.2f (binance=$%.2f offset=$%.2f)",
                                     chainlink_price, binance_now, new_offset,
                                 )
                                 _last_log = now
 
             except Exception as e:
-                logger.warning("RTDS connection error: %s (reconnect in %.0fs)", e, _reconnect_delay)
+                self._rtds_alive = False
+                logger.warning("RTDS error: %s (reconnect in %.0fs)", e, _reconnect_delay)
                 await asyncio.sleep(_reconnect_delay)
-                _reconnect_delay = min(_reconnect_delay * 2, 30.0)  # exponential backoff
+                _reconnect_delay = min(_reconnect_delay * 2, 30.0)
+
+    async def _polymarket_price_sync_loop(self):
+        """Playwright fallback: only active when RTDS is down.
+        Also logs comparison between RTDS and Playwright for monitoring."""
+        _last_log = 0.0
+        await asyncio.sleep(15.0)  # let RTDS connect first
+        while self._running:
+            try:
+                # If RTDS is alive and recent (<5s), skip Playwright
+                rtds_age = time.time() - getattr(self, '_rtds_updated_at', 0)
+                if rtds_age < 5.0:
+                    await asyncio.sleep(5.0)
+                    continue
+
+                # RTDS down — use Playwright as fallback
+                poly_price = await self.poly_client.extract_current_price()
+                if poly_price is not None and poly_price > 0:
+                    now = time.time()
+                    binance_now = self.btc_price
+                    if binance_now is not None and binance_now > 0:
+                        new_offset = binance_now - poly_price
+                        self._chainlink.offset = new_offset
+                        self._chainlink.chainlink_price = poly_price
+                        self._chainlink.binance_at_update = binance_now
+                        self._chainlink.chainlink_updated_at = now
+                        self._chainlink.polymarket_sync_active = True
+                        self.btc_price_adjusted = poly_price
+
+                        if (now - _last_log) > 30.0:
+                            # Log comparison if RTDS was recently alive
+                            rtds_px = getattr(self, '_rtds_price', None)
+                            diff_str = f" (RTDS diff=${abs(poly_price - rtds_px):.2f})" if rtds_px else ""
+                            logger.warning(
+                                "Playwright fallback: $%.2f%s (RTDS age=%.0fs)",
+                                poly_price, diff_str, rtds_age,
+                            )
+                            _last_log = now
+            except Exception as e:
+                logger.debug("Playwright fallback error: %s", e)
+            await asyncio.sleep(3.0)
 
     # ------------------------------------------------------------------
     # Inline diffusion / lag helpers (mirror judges.py logic)
