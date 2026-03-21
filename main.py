@@ -3647,8 +3647,11 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_recent_move_lookback_sec)
         )
-        # Use DB ticks (same source as paper) when parity mode is on.
-        if LIVE_MIRROR_PAPER_GATES:
+        recent_move = None
+        # Skip DB queries in parity mode — guards already checked by signal_cache
+        if _skip_price_guards:
+            pass
+        elif LIVE_MIRROR_PAPER_GATES:
             recent_move = _recent_move_pct_db(
                 conn, int(current_start), now, recent_move_lookback_sec,
             )
@@ -3707,7 +3710,10 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(config.trading.live_trend_align_lookback_sec)
         )
-        if LIVE_MIRROR_PAPER_GATES:
+        trend_move = None
+        if _skip_price_guards:
+            pass
+        elif LIVE_MIRROR_PAPER_GATES:
             trend_move = _recent_move_pct_db(
                 conn, int(current_start), now, trend_lookback_sec,
             )

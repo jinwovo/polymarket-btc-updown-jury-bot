@@ -1291,7 +1291,7 @@ def open_trade_if_signal(
     btc_move_from_start_pct = float(cached.get("btc_move_pct") or 0) if cached else (
         ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
     )
-    if not int(cached.get("guards_passed") or 0) if cached else True:
+    if cached and not int(cached.get("guards_passed") or 0):
         logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
         return False
     # Trend/macro guards handled by signal_cache.guards_passed (above)
