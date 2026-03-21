@@ -2,9 +2,9 @@
 
 ## Price Source Hierarchy (MOST IMPORTANT)
 Settlement uses Chainlink oracle. The "ground truth" price is:
-1. **data_collector's Playwright scrape** = Polymarket "Current price" = Chainlink price ← USE THIS
-2. Live's Binance WebSocket + Chainlink RPC = $50-200 offset possible ← DON'T USE for decisions
-3. DB `btc_ticks` = data_collector's calibrated price ← backtest uses this
+1. **RTDS WebSocket** (`wss://ws-live-data.polymarket.com`) = Chainlink Data Streams ~1s ← PRIMARY
+2. **Playwright scrape** = same Chainlink price, fallback when RTDS down ← FALLBACK
+3. **Chainlink RPC** = on-chain aggregator, 27s heartbeat ← LAST RESORT
 
 **ALL entry decisions (Paper, Live, Backtest) must use data_collector's calibrated price.**
 Live's own WebSocket price is ONLY used for the actual FOK order (CLOB handles matching).
@@ -68,8 +68,27 @@ data_collector (single process, 0.1s tick)
 ## Data Collection
 - `btc_ticks`: price, volume, buy_volume, sell_volume (Binance "m" flag)
 - `poly_odds`: up/down bid/ask/mid/spread/overround (0.1s)
-- `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio
+- `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
+
+## TODO: Pending Data Analysis (apply after sufficient data)
+
+### Binance-RTDS Gap Arbitrage (data collecting since 2026-03-22 03:45 KST)
+- `signal_cache.binance_rtds_gap` = Binance raw - RTDS Chainlink price
+- **NOT the raw gap itself** — need gap DELTA (change from average)
+- Strategy: avg_gap_60s = rolling mean, gap_delta = current - avg
+  - gap_delta > threshold → UP (Binance surging ahead)
+  - gap_delta < -threshold → DOWN (Binance dropping ahead)
+- **Wait for 48+ hours of data**, then:
+  1. Analyze avg gap, std dev, distribution
+  2. Find optimal threshold via backtest
+  3. Apply as fast-lane trigger or ArbitrageJudge enhancement
+- Risk: don't apply raw gap as signal (constant offset ≠ direction)
+
+### Buy/Sell Volume Ratio (data collecting since 2026-03-20)
+- `btc_ticks.buy_volume / sell_volume` stored, ratio in signal_cache
+- Judge bias DISABLED — backtest showed PF 1.71 → 1.26
+- Revisit after 1 week of data with proper feature analysis
 
 ## Backtest Reference
 - Last validated (11h): 18 trades, 61.1% WR, +$856, PF=1.71
