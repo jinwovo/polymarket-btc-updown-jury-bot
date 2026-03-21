@@ -675,7 +675,7 @@ class DataCollector:
                         "action": "subscribe",
                         "subscriptions": [{
                             "topic": "crypto_prices_chainlink",
-                            "type": "update",
+                            "type": "*",
                             "filters": '{"symbol":"btc/usd"}'
                         }]
                     }))
