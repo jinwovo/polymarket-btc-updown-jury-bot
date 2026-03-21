@@ -1,84 +1,99 @@
 # CLAUDE.md
 
+## Price Source Hierarchy (MOST IMPORTANT)
+Settlement uses Chainlink oracle. The "ground truth" price is:
+1. **data_collector's Playwright scrape** = Polymarket "Current price" = Chainlink price ← USE THIS
+2. Live's Binance WebSocket + Chainlink RPC = $50-200 offset possible ← DON'T USE for decisions
+3. DB `btc_ticks` = data_collector's calibrated price ← backtest uses this
+
+**ALL entry decisions (Paper, Live, Backtest) must use data_collector's calibrated price.**
+Live's own WebSocket price is ONLY used for the actual FOK order (CLOB handles matching).
+
 ## Log Files
-- `bot.log` — Live trading (main.py) — INFO+
-- `bot_paper.log` — Paper trading (paper_trade_sim.py) — INFO+
-- `bot_collector.log` — Data collector (data_collector.py) — INFO+
-- Console shows WARNING+ only (trades, errors, corrections)
+- `bot.log` — Live trading (main.py) — INFO+ (console: WARNING+)
+- `bot_paper.log` — Paper trading (paper_trade_sim.py) — INFO+ (console: WARNING+)
+- `bot_collector.log` — Data collector (data_collector.py) — INFO+ (console: WARNING+)
 
 ## Architecture
 ```
-data_collector (single process)
-  ├→ Binance WebSocket + Chainlink calibration → btc_ticks
-  ├→ CLOB polling 0.1s (refresh_odds) → poly_odds
-  ├→ Jury evaluation (3 judges) → signal_cache
-  ├→ Playwright PTB/Final price scraping (separate tab)
-  └→ Window tracking + outcome backfill (up to 15min retry)
-         ↓ signal_cache (DB)
+data_collector (single process, 0.1s tick)
+  ├→ Binance WebSocket + Chainlink calibration → btc_ticks (with buy/sell vol)
+  ├→ Playwright scrapes Polymarket Current price → calibration offset
+  ├→ CLOB polling (refresh_odds) → poly_odds
+  ├→ Jury evaluation (3 judges: Statistical, Arbitrage, Orderbook)
+  ├→ Price guards (divergence, momentum, trend) → guards_passed
+  └→ signal_cache DB table (direction, guards_passed, prices, buy_sell_ratio)
+         ↓
     ┌────┴────┐
   Paper      Live
-  (reads signal_cache → entry gates → simulated trade)
-  (reads signal_cache → entry gates → FOK order via CLOB API)
+  reads signal_cache → entry_gate → simulated trade
+  reads signal_cache → entry_gate → MAKER_FIRST/FOK order
 ```
 
 ## Key Config (env/runtime.public.env)
-- `JURY_THRESHOLD=2` (majority, no opposing votes allowed)
-- `ENTRY_ORDER_MODE=MARKET` (FOK — Fill-or-Kill, 1 API call)
+- `JURY_THRESHOLD=2` (majority, no opposing votes with 3 judges)
+- `ENTRY_ORDER_MODE=MAKER_FIRST` (try maker 0% fee → FOK fallback)
 - `MIN_EDGE=0.10`, `MIN_EXPECTED_ROI=0.050`
 - `PAPER_ENTRY_START_SEC=90`, `PAPER_DOWN_ENTRY_END_SEC=200`
-- `PAPER_PERF_PAUSE_SEC=0` (disabled — old DRY_RUN losses poisoned stats)
+- `PAPER_PERF_PAUSE_SEC=0` (disabled)
+- `LIVE_MAX_DRAWDOWN_STOP_PCT=1.0` (disabled)
 - `DRY_RUN` is NOT in env file — dashboard controls via env_overrides
 
 ## Critical Rules — DO NOT BREAK
-- **Never set `DRY_RUN=true` in runtime.public.env** — config.py loads with override=True, which overwrites dashboard's Start Live DRY_RUN=false
-- **Never use GTC orders** — Polymarket POST /order takes 1-23s, GTC requires 4+ API calls (post/poll/poll/cancel) causing timeouts. FOK = 1 call
-- **Paper and Live must read from signal_cache** — running separate judges causes divergence (different CLOB snapshots at different times)
-- **py_clob_client HTTP must be patched** — default is httpx HTTP/2 with 5s timeout, causes ReadTimeout on every order. Patch in polymarket_client.py: HTTP/1.1, timeout=45s, retries=3
-- **All 3 processes poll at 0.1s** — data_collector, paper, live. Rate limit is 150 req/s, we use ~20
+- **Never set `DRY_RUN=true` in runtime.public.env** — config.py override=True overwrites dashboard's Start Live
+- **Never use GTC orders for entry** — Polymarket POST /order takes 1-23s, use FOK
+- **Paper and Live must read from signal_cache** — running separate judges causes divergence
+- **entry_gate must use signal_cache prices (_btc_now/_btc_start)** — NOT ctx.current_binance_price (WebSocket has $50-200 offset)
+- **Price guards run in data_collector only** — Paper/Live read guards_passed, no re-checking
+- **py_clob_client HTTP must be patched** — default HTTP/2 + 5s timeout = ReadTimeout. Patch: HTTP/1.1, 45s, retries=3
+- **All processes poll at 0.1s** — data_collector, paper, live. Rate limit 150 req/s, we use ~20
+- **Duplicate orders → uncertain_fill** — never assume full fill on "duplicated" error
+- **GTC cancel fail → skip FOK** — prevents double position
 
 ## Bugs Found & Fixed (don't reintroduce)
-- **DRY_RUN override** — env file's DRY_RUN=true was overwriting dashboard's DRY_RUN=false because config.py uses load_dotenv(override=True). Fix: removed DRY_RUN from env file entirely.
-- **HTTP/2 ReadTimeout** — py_clob_client defaults to httpx.Client(http2=True) with 5s timeout. Polymarket doesn't reliably close HTTP/2 streams. Fix: monkey-patch to HTTP/1.1 + 45s timeout.
-- **"order too old"** — create_market_order internally calls 3 slow APIs (tick_size, neg_risk, calculate_market_price) each taking 5-15s. By the time post_order runs, the signing timestamp is expired. Fix: pre-fetch all 3 once, then only sign+post in retry loop.
-- **"Duplicated" order error** — network error on post_order → retry with same signed order → server says "already accepted". Fix: each retry creates fresh signed order (new nonce). Duplicated response treated as success.
-- **Paper/Live divergence** — Paper used build_snapshot() (data_collector's DB signal), Live ran own judges with different CLOB cache → different decisions. Fix: shared signal_cache in DB, single Jury in data_collector.
-- **CLOB thin-book phantom edges** — CLOB asks like (0.08/0.93) look like huge edge to judges but are just low liquidity. Fix: _get_ask_prices normalizes when sum deviates >0.25 from 1.0.
-- **Perf pause from ghost losses** — DRY_RUN trades recorded as losses → 12.5% WR → 28min cooldown blocking all live entries. Fix: disabled perf_pause entirely (PAPER_PERF_PAUSE_SEC=0).
+- **DRY_RUN override** — env file override=True overwrites dashboard's DRY_RUN=false
+- **HTTP/2 ReadTimeout** — py_clob_client default. Patch to HTTP/1.1 + 45s
+- **"order too old"** — create_market_order makes 3 slow API calls. Pre-fetch + cache
+- **Paper/Live divergence** — different CLOB snapshots, different judges, different timing. Fix: shared signal_cache
+- **Drawdown stop at 20%** — was silently blocking ALL Live entries with $25 seed
+- **Perf pause from ghost losses** — DRY_RUN trades recorded as losses → 28min cooldown
+- **Loss streak adaptive strictness** — old losses raised EV threshold from 5% to 5.8%
+- **entry_gate using WebSocket prices** — caused different coinflip_guard results
+- **Momentum guard timing divergence** — 3s BTC bounce = Paper passes, Live fails
+- **Unicode ≈ in exit reason** — caused logging format error
+- **Operator precedence in guards_passed check** — `not X if cached else True` bug
+- **CLOB thin-book phantom edges** — judges saw asks=(0.08/0.93), normalized when sum>0.25
+- **Polymarket page freeze** — auto-reload after 15s stale price
 
-## Data Reliability
-- Data before 2026-03-18 has inaccurate prices (Chainlink RPC drift). Only 2026-03-18+ is reliable.
-- Settlement uses Polymarket API (Chainlink-based), NOT Binance prices
-- Final price appears on Polymarket page 10-15 min after window close; backfill_final_prices.py corrects DB
-- 5 outcome flips found in 24h backfill (Binance-Chainlink $1-7 gap)
+## Data Collection
+- `btc_ticks`: price, volume, buy_volume, sell_volume (Binance "m" flag)
+- `poly_odds`: up/down bid/ask/mid/spread/overround (0.1s)
+- `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio
+- Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
-## Backtest Results (48h, latest config)
-- 113 trades, 62.8% WR, +$6,193 PnL, PF=1.97, maxDD=$673
-- UP: 42 trades 61.9% WR, DOWN: 71 trades 63.4% WR
-- Trades/hour: 2.4
-
-## File Reference
-- `main.py` — Live trading bot (async, reads signal_cache)
-- `paper_trade_sim.py` — Paper simulator (sync, reads signal_cache)
-- `data_collector.py` — Data collection + shared Jury + signal_cache writer
-- `judges.py` — 3 judges (Statistical, Arbitrage, Orderbook) + Jury deliberation
-- `polymarket_client.py` — CLOB API client + Playwright scraper + HTTP patch
-- `entry_parity.py` — Adaptive threshold calculation
-- `exit_policy.py` — Exit rules (hold-to-expiry strategy)
-- `trade_gate.py` — Entry gate (EV, probability, coinflip guard)
-- `config.py` — All settings via env vars (loads .env with override=True!)
-- `env/runtime.public.env` — Runtime knobs (safe to commit)
-- `backtest.py` — Backtester using DB data
-- `backfill_final_prices.py` — One-time script to correct end prices from Polymarket
-- `param_sweep.py` — Parameter optimization script
-- `dashboard_server.py` — API server + process manager (Start Live/Paper)
-- `db_config.py` — DB schema + helpers (MariaDB port 3400)
-- `clob_auth.py` — Polymarket CLOB authentication
+## Backtest Reference
+- Last validated (11h): 18 trades, 61.1% WR, +$856, PF=1.71
+- Judges accuracy: Statistical=61.1%, Arbitrage=66.7%, Orderbook=58.8%
 
 ## Polymarket API Notes
-- GET /book rate limit: 1,500 req/10s (150/s)
-- POST /order rate limit: 3,500 req/10s
-- POST /order response time: 0.2s (normal) to 23s (under load)
-- 425 "service not ready" = market not yet active after window start
-- Minimum order size: 5 shares
-- Maker orders = 0% fee, Taker ~3.15% at 50/50 odds
-- Heartbeat is opt-in (not required unless explicitly started)
+- GET /book: 1,500 req/10s (150/s)
+- POST /order: 3,500 req/10s, response 0.2s-23s
+- 425 "service not ready" = market not active yet after window start
+- Min order size: 5 shares
+- Maker = 0% fee, Taker ~3.15% at 50/50
+- Heartbeat opt-in (not required)
+
+## File Reference
+- `main.py` — Live trading (reads signal_cache, places orders)
+- `paper_trade_sim.py` — Paper trading (reads signal_cache, simulates)
+- `data_collector.py` — CLOB polling + Jury + guards → signal_cache
+- `judges.py` — 3 judges + MomentumJudge (disabled) + Jury
+- `polymarket_client.py` — CLOB API + Playwright + HTTP patch
+- `trade_gate.py` — Entry gate (EV, coinflip, probability)
+- `entry_parity.py` — Adaptive threshold (strictness from loss_streak)
+- `exit_policy.py` — Exit rules (hold-to-expiry, hard_adverse_flush)
+- `config.py` — Settings via env (loads with override=True!)
+- `env/runtime.public.env` — Runtime knobs
+- `backtest.py` — Backtester
+- `db_config.py` — DB schema (MariaDB port 3400)
+- `dashboard_server.py` — API + process manager
