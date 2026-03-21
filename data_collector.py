@@ -353,6 +353,25 @@ class DataCollector:
                 poly_down_ask=dn_ask,
             )
 
+            # Buy/sell volume ratio (last 60s)
+            _bs_ratio = None
+            try:
+                _vol_row = fetch_one(
+                    self.db,
+                    "SELECT SUM(buy_volume), SUM(sell_volume) FROM btc_ticks WHERE ts > ?",
+                    (now - 60,),
+                )
+                if _vol_row and _vol_row[0] is not None and _vol_row[1] is not None:
+                    _bv = float(_vol_row[0])
+                    _sv = float(_vol_row[1])
+                    if _sv > 0:
+                        _bs_ratio = _bv / _sv
+                    elif _bv > 0:
+                        _bs_ratio = 10.0
+                ctx.buy_sell_ratio = _bs_ratio
+            except Exception:
+                pass
+
             decision = self._jury.deliberate(ctx)
 
             # ── Price guards (same as paper_trade_sim) ──
@@ -407,6 +426,8 @@ class DataCollector:
 
                 guards_passed = 1 if (divergence_ok and momentum_ok and trend_ok) else 0
 
+            buy_sell_ratio = _bs_ratio
+
             # Write to signal_cache table (single row, always overwritten)
             import json as _json
             judges_json = _json.dumps([
@@ -420,8 +441,9 @@ class DataCollector:
                    (id, ts, window_start, direction, avg_confidence, max_edge,
                     unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
                     seconds_elapsed, seconds_remaining,
-                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
+                    buy_sell_ratio)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     now, self.current_window_start, decision.direction,
                     float(decision.avg_confidence), float(decision.max_edge),
@@ -429,6 +451,7 @@ class DataCollector:
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
                     btc_move_pct, recent_move, trend_move, guards_passed,
+                    buy_sell_ratio,
                 ),
             )
             self.db.commit()

@@ -55,6 +55,8 @@ class MarketContext:
     poly_down_ask: Optional[float] = None
     # Historical performance
     recent_results: list[str] = None
+    # Buy/sell volume ratio (last 60s): >1 = buy pressure, <1 = sell pressure
+    buy_sell_ratio: Optional[float] = None
 
 
 def _safe_pct_change(current: float, past: float) -> float:
@@ -348,6 +350,13 @@ class StatisticalJudge:
 
         if streak_len >= 5 and streak_dir in ("UP", "DOWN"):
             p_up = _clamp01(p_up - 0.02 if streak_dir == "UP" else p_up + 0.02)
+
+        # Buy/sell volume ratio: >1 = buyers aggressive = UP bias
+        # Disabled for now — needs more data to validate. Backtest showed
+        # negative impact (-0.45 PF) with ±0.03 bias. Keep collecting data.
+        # if ctx.buy_sell_ratio is not None and ctx.buy_sell_ratio > 0:
+        #     _vol_signal = _clamp(math.log(ctx.buy_sell_ratio) / 0.7, -1.0, 1.0)
+        #     p_up = _clamp01(p_up + _vol_signal * 0.03)
 
         return (
             p_up,

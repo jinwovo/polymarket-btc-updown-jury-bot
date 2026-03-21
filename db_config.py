@@ -277,7 +277,8 @@ def init_market_schema(conn):
             btc_move_pct DOUBLE NULL,
             recent_move_pct DOUBLE NULL,
             trend_move_pct DOUBLE NULL,
-            guards_passed TINYINT NOT NULL DEFAULT 0
+            guards_passed TINYINT NOT NULL DEFAULT 0,
+            buy_sell_ratio DOUBLE NULL
         ) ENGINE=InnoDB
         """,
         """
@@ -359,6 +360,7 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache ADD COLUMN recent_move_pct DOUBLE NULL",
         "ALTER TABLE signal_cache ADD COLUMN trend_move_pct DOUBLE NULL",
         "ALTER TABLE signal_cache ADD COLUMN guards_passed TINYINT NOT NULL DEFAULT 0",
+        "ALTER TABLE signal_cache ADD COLUMN buy_sell_ratio DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)
