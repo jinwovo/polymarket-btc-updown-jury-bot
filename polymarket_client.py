@@ -33,7 +33,7 @@ try:
         timeout=httpx.Timeout(45.0, connect=15.0),
         transport=_patched_transport,
     )
-    logger.info("Patched py_clob_client HTTP: timeout=30s, retries=3, http1.1")
+    logger.info("Patched py_clob_client HTTP: timeout=45s, retries=3, http1.1")
 except Exception as _patch_err:
     logger.warning("Failed to patch py_clob_client HTTP: %s", _patch_err)
 
@@ -1442,11 +1442,15 @@ class PolymarketClient:
                 raw_payload=resp,
                 default_price=_to_optional_float(reference_price),
             )
+            # Mark duplicate-accepted as uncertain — we don't know actual fill
+            if _order_likely_accepted:
+                result["uncertain_fill"] = True
             logger.info(
-                "Market/FOK order %s: status=%s filled=$%.2f",
+                "Market/FOK order %s: status=%s filled=$%.2f%s",
                 side,
                 result.get("status"),
                 result.get("executed_notional", 0.0),
+                " (uncertain-duplicate)" if _order_likely_accepted else "",
             )
             return result
         except Exception as e:
@@ -1559,6 +1563,7 @@ class PolymarketClient:
                             _attempt + 1, _net_err,
                         )
                         resp = {"orderID": "duplicate-accepted", "status": "LIVE", "transactionsHashes": []}
+                        _order_likely_accepted = True
                         break
                     if _attempt < max_attempts - 1:
                         # Server errors (425, 429, 5xx) need longer backoff
@@ -1662,12 +1667,16 @@ class PolymarketClient:
                             else f"limit timeout ({timeout:.2f}s): cancel failed"
                         )
 
+            # Mark duplicate-accepted as uncertain fill
+            if _order_likely_accepted:
+                result["uncertain_fill"] = True
             logger.info(
-                "%s order %s: status=%s filled=$%.2f",
+                "%s order %s: status=%s filled=$%.2f%s",
                 mode,
                 side,
                 result.get("status"),
                 result.get("executed_notional", 0.0),
+                " (uncertain-duplicate)" if _order_likely_accepted else "",
             )
             return result
         except Exception as e:
@@ -1800,6 +1809,12 @@ class PolymarketClient:
                         maker_result.get("executed_notional", 0),
                         maker_result.get("executed_price", 0),
                     )
+                    return maker_result
+                # Check if GTC cancel failed (order still live on exchange)
+                if maker_result and not maker_result.get("cancelled", True):
+                    logger.warning("MAKER_FIRST: GTC cancel failed, skipping FOK to avoid double position")
+                    maker_result["mode"] = "MAKER_FIRST(cancel_failed)"
+                    maker_result["uncertain_fill"] = True
                     return maker_result
                 # Maker didn't fill — fallback to FOK (taker)
                 logger.info("MAKER_FIRST: maker not filled, falling back to FOK")
