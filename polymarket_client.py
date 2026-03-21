@@ -744,8 +744,19 @@ class PolymarketClient:
                 time.sleep(2.0)
                 logger.info("Playwright page reloaded (stale price fix)")
             except Exception as e:
-                logger.warning("Playwright reload failed, resetting browser: %s", e)
+                logger.warning("Playwright reload failed, restarting browser: %s", e)
                 cls._reset_browser()
+                # Restart browser immediately
+                if cls._ensure_browser():
+                    logger.info("Playwright browser restarted after crash")
+                else:
+                    logger.error("Playwright browser restart FAILED")
+        else:
+            # Page is None (was reset) — restart browser
+            if cls._ensure_browser():
+                logger.info("Playwright browser started (was None)")
+            else:
+                logger.error("Playwright browser start FAILED")
 
     @classmethod
     def close_scraper(cls):

@@ -706,10 +706,16 @@ class DataCollector:
                             _last_log = now
                 else:
                     _consecutive_none += 1
-                    if _consecutive_none >= 15:
+                    if _consecutive_none >= 30:
+                        # Playwright completely dead — fallback to Chainlink calibration
+                        logger.warning("Price sync: Playwright dead (%ds), using Chainlink fallback", _consecutive_none)
+                        _consecutive_none = 0
+                        # Chainlink calibrator is always running — just let it handle offset
+                        await asyncio.sleep(10.0)
+                        continue
+                    elif _consecutive_none >= 15:
                         logger.warning("Price sync: no price for %ds, reloading page", _consecutive_none)
                         await self.poly_client.reload_scraper_page()
-                        _consecutive_none = 0
                         await asyncio.sleep(3.0)
                         continue
             except Exception as e:
