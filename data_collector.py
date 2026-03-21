@@ -672,8 +672,9 @@ class DataCollector:
                     _consecutive_none = 0
                     now = time.time()
 
-                    # Detect stale page: same price for 15s = page frozen
-                    if abs(poly_price - _last_price) > 0.50:
+                    # Detect stale page: price unchanged for too long
+                    # $5 threshold — BTC moves $5+ in 10s during normal conditions
+                    if abs(poly_price - _last_price) > 5.0:
                         _last_price = poly_price
                         _last_price_change_ts = now
                     elif now - _last_price_change_ts > 10.0:
@@ -707,11 +708,15 @@ class DataCollector:
                 else:
                     _consecutive_none += 1
                     if _consecutive_none >= 30:
-                        # Playwright completely dead — fallback to Chainlink calibration
-                        logger.warning("Price sync: Playwright dead (%ds), using Chainlink fallback", _consecutive_none)
+                        # Playwright completely dead — use Chainlink as price source
+                        logger.warning("Price sync: Playwright dead (%ds), using Chainlink price", _consecutive_none)
                         _consecutive_none = 0
-                        # Chainlink calibrator is always running — just let it handle offset
-                        await asyncio.sleep(10.0)
+                        # Use Chainlink-calibrated price directly (not as accurate but functional)
+                        if self._chainlink.is_calibrated and self.btc_price is not None:
+                            self.btc_price_adjusted = self._chainlink.adjust(self.btc_price)
+                            _last_price = self.btc_price_adjusted
+                            _last_price_change_ts = time.time()
+                        await asyncio.sleep(5.0)
                         continue
                     elif _consecutive_none >= 15:
                         logger.warning("Price sync: no price for %ds, reloading page", _consecutive_none)
