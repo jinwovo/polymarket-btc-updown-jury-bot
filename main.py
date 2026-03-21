@@ -2204,7 +2204,7 @@ class TradingBot:
         if no_position_count >= attempts:
             logger.warning(
                 "%s uncertain entry confirmed NOT filled after %s attempts "
-                "(balance=0, orders=0). Skipping — next signal will retry.",
+                "(balance=0, orders=0). Skipping -- next signal will retry.",
                 source,
                 attempts,
             )
