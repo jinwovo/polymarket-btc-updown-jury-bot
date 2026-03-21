@@ -304,32 +304,6 @@ class StatisticalJudge:
                 break
         return (current, count)
 
-    def _compute_ema_price(self, prices: list[float], span: int) -> float:
-        """EMA of prices for SMOOTH fair value."""
-        if len(prices) < span:
-            return float(prices[-1]) if prices else 0.0
-        alpha = 2.0 / (span + 1)
-        ema = float(prices[-span])
-        for p in prices[-span + 1:]:
-            ema = alpha * float(p) + (1 - alpha) * ema
-        return ema
-
-    def _rate_of_change(self, prices: list[float], timestamps: list[float], lookback_sec: float) -> float | None:
-        """Price change over last lookback_sec seconds (for countertrend detection)."""
-        n = min(len(prices), len(timestamps))
-        if n < 5:
-            return None
-        latest_ts = float(timestamps[n - 1])
-        target = latest_ts - lookback_sec
-        p_old = None
-        for i in range(n - 1, -1, -1):
-            if float(timestamps[i]) <= target:
-                p_old = float(prices[i])
-                break
-        if p_old is None or p_old <= 0:
-            return None
-        return ((float(prices[n - 1]) - p_old) / p_old) * 100.0
-
     def _estimate_prob_components(self, ctx: MarketContext) -> tuple[Optional[float], dict]:
         n = min(len(ctx.recent_prices), len(ctx.recent_timestamps))
         if n < 20 or ctx.market_start_price <= 0 or ctx.current_binance_price <= 0:
@@ -348,49 +322,22 @@ class StatisticalJudge:
         sigma = max(float(sigma), _SIGMA_FLOOR_PER_SQRT_SEC)
 
         rem = max(1.0, float(ctx.seconds_remaining))
-
-        # ── DUAL FAIR VALUE (inspired by mlmodelpoly) ──
-        # FAST: raw current price → reactive, catches moves immediately
-        x_fast = math.log(ctx.current_binance_price / ctx.market_start_price)
+        x = math.log(ctx.current_binance_price / ctx.market_start_price)
         denom = sigma * math.sqrt(rem)
-        z_fast = (x_fast / denom) if denom > 1e-10 else (8.0 if x_fast > 0 else -8.0 if x_fast < 0 else 0.0)
-        p_up_fast = _clamp01(_norm_cdf(z_fast))
+        z = (x / denom) if denom > 1e-10 else (8.0 if x > 0 else -8.0 if x < 0 else 0.0)
+        p_up = _clamp01(_norm_cdf(z))
 
-        # SMOOTH: EMA-smoothed price → stable, filters noise
-        ema_price = self._compute_ema_price(look_prices, min(30, len(look_prices)))
-        x_smooth = math.log(max(ema_price, 1.0) / ctx.market_start_price) if ema_price > 0 else x_fast
-        z_smooth = (x_smooth / denom) if denom > 1e-10 else z_fast
-        p_up_smooth = _clamp01(_norm_cdf(z_smooth))
-
-        # Blend: when FAST and SMOOTH agree → high confidence
-        # When they disagree → reduce confidence (noisy signal)
-        agreement = 1.0 - abs(p_up_fast - p_up_smooth) * 2.0  # 1.0=perfect agree, 0.0=max disagree
-        agreement = _clamp(agreement, 0.3, 1.0)
-        p_up = p_up_fast * 0.6 + p_up_smooth * 0.4  # lean toward fast
-
-        x = x_fast
-        z = z_fast
-
-        # ── COUNTERTREND SIGNAL (inspired by mlmodelpoly) ──
-        # Detects when price is above start (z>0) but falling (ROC<0) → reversal
-        roc_30s = self._rate_of_change(look_prices, look_ts, 30.0)
-        countertrend = False
-        if roc_30s is not None:
-            # z>0 (above start) but ROC negative (falling) → likely DOWN
-            if z > 0.3 and roc_30s < -0.005:
-                p_up = _clamp01(p_up - 0.04)  # nudge toward DOWN
-                countertrend = True
-            # z<0 (below start) but ROC positive (rising) → likely UP
-            elif z < -0.3 and roc_30s > 0.005:
-                p_up = _clamp01(p_up + 0.04)  # nudge toward UP
-                countertrend = True
-
-        # Short-term trend
+        # Short-term trend (40 ticks ~ 40s) — within-window micro-trend
         trend_short = self._compute_trend_strength(
             look_prices[-40:] if len(look_prices) > 40 else look_prices
         )
+        # Long-term trend (300 ticks ~ 5min) — cross-window macro-trend
+        trend_long = self._compute_trend_strength(
+            look_prices[-300:] if len(look_prices) > 300 else look_prices
+        )
         streak_dir, streak_len = self._recent_streak(ctx.recent_results or [])
 
+        # Short-term trend bias only (long-term handled by MomentumJudge)
         trend_bias = _clamp(trend_short / 0.010, -1.0, 1.0) * 0.035
         p_up = _clamp01(p_up + trend_bias)
 
@@ -404,8 +351,12 @@ class StatisticalJudge:
         if streak_len >= 5 and streak_dir in ("UP", "DOWN"):
             p_up = _clamp01(p_up - 0.02 if streak_dir == "UP" else p_up + 0.02)
 
-        # Scale confidence by FAST/SMOOTH agreement
-        p_up = 0.5 + (p_up - 0.5) * agreement
+        # Buy/sell volume ratio: >1 = buyers aggressive = UP bias
+        # Disabled for now — needs more data to validate. Backtest showed
+        # negative impact (-0.45 PF) with ±0.03 bias. Keep collecting data.
+        # if ctx.buy_sell_ratio is not None and ctx.buy_sell_ratio > 0:
+        #     _vol_signal = _clamp(math.log(ctx.buy_sell_ratio) / 0.7, -1.0, 1.0)
+        #     p_up = _clamp01(p_up + _vol_signal * 0.03)
 
         return (
             p_up,
@@ -416,11 +367,6 @@ class StatisticalJudge:
                 "z": z,
                 "trend": trend_short,
                 "jumpy": jumpy,
-                "p_fast": p_up_fast,
-                "p_smooth": p_up_smooth,
-                "agreement": agreement,
-                "roc_30s": roc_30s,
-                "countertrend": countertrend,
             },
         )
 
@@ -446,10 +392,6 @@ class StatisticalJudge:
         z = float(meta.get("z", 0.0))
         trend = float(meta.get("trend", 0.0))
         jumpy = bool(meta.get("jumpy", False))
-        p_up_fast = float(meta.get("p_fast", 0.5))
-        p_up_smooth = float(meta.get("p_smooth", 0.5))
-        agreement = float(meta.get("agreement", 1.0))
-        roc_30s = meta.get("roc_30s")
 
         min_edge = self.base_min_edge + (0.008 if jumpy else 0.0)
         vote, edge, up_edge, down_edge = _edge_vote(
@@ -477,8 +419,7 @@ class StatisticalJudge:
         )
         reason = (
             f"p_up={p_up:.3f}, z={z:+.2f}, edge=({up_edge:+.3f}/{down_edge:+.3f}), "
-            f"rv={rv:.2e}, bv={bv:.2e}, jump={jump_ratio:.2f}, trend={trend:+.4f}%, "
-            f"fast={p_up_fast:.3f} smooth={p_up_smooth:.3f} agree={agreement:.2f} roc30={roc_30s or 0:+.4f}%"
+            f"rv={rv:.2e}, bv={bv:.2e}, jump={jump_ratio:.2f}, trend={trend:+.4f}%"
         )
         return JudgeVerdict(vote, confidence, reason, self.name)
 
