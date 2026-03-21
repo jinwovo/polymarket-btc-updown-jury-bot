@@ -708,15 +708,15 @@ class DataCollector:
                 else:
                     _consecutive_none += 1
                     if _consecutive_none >= 30:
-                        # Playwright completely dead — use Chainlink as price source
-                        logger.warning("Price sync: Playwright dead (%ds), using Chainlink price", _consecutive_none)
+                        # Playwright completely dead — force full restart
+                        logger.warning("Price sync: Playwright dead (%ds), force full restart", _consecutive_none)
                         _consecutive_none = 0
-                        # Use Chainlink-calibrated price directly (not as accurate but functional)
-                        if self._chainlink.is_calibrated and self.btc_price is not None:
-                            self.btc_price_adjusted = self._chainlink.adjust(self.btc_price)
-                            _last_price = self.btc_price_adjusted
-                            _last_price_change_ts = time.time()
-                        await asyncio.sleep(5.0)
+                        try:
+                            self.poly_client.close_scraper()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(3.0)
+                        # _ensure_browser will restart from scratch
                         continue
                     elif _consecutive_none >= 15:
                         logger.warning("Price sync: no price for %ds, reloading page", _consecutive_none)
