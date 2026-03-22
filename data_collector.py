@@ -441,6 +441,15 @@ class DataCollector:
                 try:
                     from trade_gate import evaluate_entry_gate
                     _entry_price = float(dn_ask if decision.direction == "DOWN" else up_ask) if (up_ask and dn_ask) else 0.5
+                    # Price range filter: reject extreme odds (market 70%+ confident other way)
+                    _down_min = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.30"))
+                    _max_ask = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.70"))
+                    if _entry_price < _down_min:
+                        gate_reason = f"cheap_token: ask={_entry_price:.3f} < {_down_min:.3f}"
+                        raise ValueError(gate_reason)
+                    if _entry_price > _max_ask:
+                        gate_reason = f"expensive_entry: ask={_entry_price:.3f} > {_max_ask:.3f}"
+                        raise ValueError(gate_reason)
                     _support = sum(1 for v in decision.verdicts if v.vote.value == decision.direction)
                     _support_ratio = _support / max(len(decision.verdicts), 1)
                     _gate = evaluate_entry_gate(
