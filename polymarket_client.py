@@ -1414,6 +1414,7 @@ class PolymarketClient:
             max_attempts = 5
             resp = None
             _last_err = None
+            _order_likely_accepted = False
             for _attempt in range(max_attempts):
                 try:
                     # Use cached values — only signing + post are in the hot path
@@ -1558,6 +1559,7 @@ class PolymarketClient:
             max_attempts = 5
             resp = None
             _last_err = None
+            _order_likely_accepted = False
             for _attempt in range(max_attempts):
                 try:
                     order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side_const)
