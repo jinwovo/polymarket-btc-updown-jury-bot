@@ -1342,8 +1342,23 @@ def open_trade_if_signal(
     if cached and _gate_allow:
         # Use signal_cache gate_ev for adaptive checks below
         class _GateProxy:
+            allow = True
             expected_roi = _gate_ev or 0.0
-            model_prob = 0.5  # not used when skipping
+            model_prob = 0.5
+            reason = _gate_reason or ""
+            win_prob = 0.6
+            prob_floor = 0.5
+            fee_rate = 0.01
+            is_coinflip = False
+            fair_up = 0.5
+            dispersion = 0.0
+            alignment = 0.0
+            penalty = 0.0
+            spread_cost = 0.0
+            net_ev_before_penalty = _gate_ev or 0.0
+            regime_pass = True
+            regime_details = ""
+            skip_reason = ""
         gate = _GateProxy()
         # Skip lag edge and contra gap — already passed in data_collector
     else:
