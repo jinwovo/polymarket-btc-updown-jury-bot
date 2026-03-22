@@ -3835,64 +3835,52 @@ class TradingBot:
             if not gate.allow:
                 logger.info("Skip trade by entry gate: %s", gate.reason)
                 return
-        market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
-        market_dir_prob = None
-        lag_prob_edge = None
-        if market_up_prob is not None and market_down_prob is not None:
-            market_dir_prob = (
-                float(market_up_prob)
-                if decision.direction == "UP"
-                else float(market_down_prob)
-            )
-            lag_prob_edge = float(gate.model_prob) - float(market_dir_prob)
-            min_lag_prob_edge = (
-                float(MIRROR_MIN_LAG_PROB_EDGE)
-                if LIVE_MIRROR_PAPER_GATES
-                else float(config.trading.live_min_lag_prob_edge)
-            )
-            if lag_prob_edge < min_lag_prob_edge:
-                logger.info(
-                    "Skip live lag-edge guard: dir=%s model_p=%.3f mkt_p=%.3f lag=%+.3f < %.3f",
-                    decision.direction,
-                    float(gate.model_prob),
-                    float(market_dir_prob),
-                    float(lag_prob_edge),
-                    min_lag_prob_edge,
+        # Lag-prob-edge and contra-gap guards:
+        # In parity mode, Paper skips these when signal_cache gate passed,
+        # so Live must also skip to maintain Paper=Live parity.
+        if not LIVE_MIRROR_PAPER_GATES:
+            market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
+            market_dir_prob = None
+            lag_prob_edge = None
+            if market_up_prob is not None and market_down_prob is not None:
+                market_dir_prob = (
+                    float(market_up_prob)
+                    if decision.direction == "UP"
+                    else float(market_down_prob)
                 )
-                return
-        if side_ask is not None and opposite_ask is not None:
-            contra_gap = float(opposite_ask) - float(side_ask)
-            max_contra_gap = (
-                float(MIRROR_MAX_CONTRA_GAP)
-                if LIVE_MIRROR_PAPER_GATES
-                else float(config.trading.live_max_contra_gap)
-            )
-            override_min_prob = (
-                float(MIRROR_CONTRA_OVERRIDE_MIN_MODEL_PROB)
-                if LIVE_MIRROR_PAPER_GATES
-                else float(config.trading.live_contra_override_min_model_prob)
-            )
-            override_min_conf = (
-                float(MIRROR_CONTRA_OVERRIDE_MIN_CONF)
-                if LIVE_MIRROR_PAPER_GATES
-                else float(config.trading.live_contra_override_min_conf)
-            )
-            if contra_gap > max_contra_gap:
-                if not (
-                    float(gate.model_prob) >= override_min_prob
-                    and float(decision.avg_confidence) >= override_min_conf
-                ):
+                lag_prob_edge = float(gate.model_prob) - float(market_dir_prob)
+                min_lag_prob_edge = float(config.trading.live_min_lag_prob_edge)
+                if lag_prob_edge < min_lag_prob_edge:
                     logger.info(
-                        "Skip live contra-gap guard: dir=%s gap=+%.3f > %.3f (p=%.3f conf=%.3f, need p>=%.3f conf>=%.3f)",
+                        "Skip live lag-edge guard: dir=%s model_p=%.3f mkt_p=%.3f lag=%+.3f < %.3f",
                         decision.direction,
-                        contra_gap,
-                        max_contra_gap,
                         float(gate.model_prob),
-                        float(decision.avg_confidence),
-                        override_min_prob,
-                        override_min_conf,
+                        float(market_dir_prob),
+                        float(lag_prob_edge),
+                        min_lag_prob_edge,
                     )
                     return
+            if side_ask is not None and opposite_ask is not None:
+                contra_gap = float(opposite_ask) - float(side_ask)
+                max_contra_gap = float(config.trading.live_max_contra_gap)
+                override_min_prob = float(config.trading.live_contra_override_min_model_prob)
+                override_min_conf = float(config.trading.live_contra_override_min_conf)
+                if contra_gap > max_contra_gap:
+                    if not (
+                        float(gate.model_prob) >= override_min_prob
+                        and float(decision.avg_confidence) >= override_min_conf
+                    ):
+                        logger.info(
+                            "Skip live contra-gap guard: dir=%s gap=+%.3f > %.3f (p=%.3f conf=%.3f, need p>=%.3f conf>=%.3f)",
+                            decision.direction,
+                            contra_gap,
+                            max_contra_gap,
+                            float(gate.model_prob),
+                            float(decision.avg_confidence),
+                            override_min_prob,
+                            override_min_conf,
+                        )
+                        return
         # ── Macro trend filter (mirrors paper_trade_sim) ──
         if LIVE_MIRROR_PAPER_GATES and not _skip_price_guards:
             try:
