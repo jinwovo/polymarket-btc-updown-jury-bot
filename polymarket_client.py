@@ -1732,9 +1732,12 @@ class PolymarketClient:
             logger.warning("Invalid ENTRY_ORDER_MODE=%s, fallback to MARKET", mode)
             mode = "MARKET"
 
-        # Polymarket minimum order size is $1.00
-        if amount < 1.0:
-            amount = 1.0
+        # Polymarket minimums: $1.00 AND 5 shares
+        # 5 shares at price P costs 5*P, so min_amount = max(1.0, 5*ask)
+        ask_price = _to_optional_float(reference_ask) or 0.50
+        min_amount = max(1.0, 5.0 * ask_price + 0.01)  # +0.01 margin
+        if amount < min_amount:
+            amount = round(min_amount, 2)
 
         # Dry-run should not be blocked by live drift checks.
         if config.trading.dry_run:
