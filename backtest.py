@@ -291,6 +291,9 @@ class Backtester:
         check_interval: float = 1.0,
         min_elapsed: float | None = None,
         initial_equity: float = 1000.0,
+        smart_exit: bool = False,
+        smart_exit_interval: float = 10.0,
+        smart_exit_min_roi_pct: float = 0.0,
     ):
         self.ticks = ticks
         self.odds = odds
@@ -302,6 +305,10 @@ class Backtester:
         self.min_elapsed = min_elapsed if min_elapsed is not None else float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
         self.entry_end_sec = float(os.getenv("PAPER_ENTRY_END_SEC", "270"))
         self.exit_cfg = _backtest_exit_policy_config()
+        # Smart mid-trade exit feature
+        self.smart_exit = smart_exit
+        self.smart_exit_interval = max(1.0, float(smart_exit_interval))
+        self.smart_exit_min_roi_pct = float(smart_exit_min_roi_pct)
 
         self.trades: list[BacktestTrade] = []
         self.recent_results: list[str] = []
@@ -540,6 +547,109 @@ class Backtester:
                 return exit_decision.reason, exit_pnl, exit_second
 
             t += check_interval
+
+        return None, None, None
+
+    def _simulate_smart_exit(
+        self,
+        ws: int,
+        we: int,
+        entry_time: float,
+        entry_price: float,
+        bet_size: float,
+        direction: str,
+        btc_start: float,
+    ) -> tuple[Optional[str], Optional[float], Optional[float]]:
+        """
+        Smart mid-trade exit: re-evaluate Jury every smart_exit_interval seconds.
+        If Jury flips direction (or says NO_TRADE) AND current ROI > smart_exit_min_roi_pct,
+        exit at current bid price.
+
+        Returns (exit_reason, exit_pnl, exit_second) or (None, None, None) if no exit.
+        """
+        if not self.smart_exit:
+            return None, None, None
+
+        shares = bet_size / entry_price
+        t = entry_time + self.smart_exit_interval
+
+        while t < float(we):
+            seconds_elapsed = t - float(ws)
+            seconds_remaining = float(we) - t
+
+            # Get BTC price at this time
+            btc_now = self._get_btc_price(t)
+            if btc_now is None:
+                t += self.smart_exit_interval
+                continue
+
+            # Get odds at this time
+            odds_now = self._get_odds_at(ws, t)
+            if odds_now is None:
+                t += self.smart_exit_interval
+                continue
+
+            # Mark-to-market: what would we get at bid?
+            if direction == "UP":
+                exit_bid = float(odds_now["up_bid"])
+            else:
+                exit_bid = float(odds_now["down_bid"])
+
+            current_value = shares * exit_bid
+            raw_pnl = current_value - bet_size
+            mtm_roi_pct = (raw_pnl / bet_size) * 100.0 if bet_size > 0 else 0.0
+
+            # Only exit when in profit (or at configured threshold)
+            if mtm_roi_pct <= self.smart_exit_min_roi_pct:
+                t += self.smart_exit_interval
+                continue
+
+            # Build MarketContext for Jury re-evaluation
+            lookback_prices = self._get_btc_prices_range(t - 1200.0, t)
+            lookback_ts = self._get_btc_timestamps_range(t - 1200.0, t)
+
+            if len(lookback_prices) < 10:
+                t += self.smart_exit_interval
+                continue
+
+            ctx = MarketContext(
+                current_binance_price=btc_now,
+                market_start_price=btc_start,
+                recent_prices=lookback_prices,
+                recent_timestamps=lookback_ts,
+                poly_up_price=float(odds_now["up_mid"]),
+                poly_down_price=float(odds_now["down_mid"]),
+                seconds_elapsed=seconds_elapsed,
+                seconds_remaining=seconds_remaining,
+                poly_up_bid=float(odds_now["up_bid"]),
+                poly_up_ask=float(odds_now["up_ask"]),
+                poly_down_bid=float(odds_now["down_bid"]),
+                poly_down_ask=float(odds_now["down_ask"]),
+                recent_results=None,
+            )
+
+            # Silently re-evaluate jury
+            old_level = logging.getLogger("judges").level
+            logging.getLogger("judges").setLevel(logging.WARNING)
+            try:
+                mid_decision = self.jury.deliberate(ctx)
+            finally:
+                logging.getLogger("judges").setLevel(old_level)
+
+            # Check if jury has flipped: now saying opposite direction or NO_TRADE
+            jury_flipped = (
+                mid_decision.direction != direction
+                and mid_decision.direction in ("UP", "DOWN", "NO_TRADE")
+            )
+            # Also require the flip to be to the OPPOSITE direction (not just NO_TRADE)
+            # unless configured otherwise — here we exit on any non-original signal
+            if jury_flipped:
+                exit_pnl = apply_fee_to_pnl(raw_pnl, bet_size) if raw_pnl > 0 else raw_pnl
+                flip_to = mid_decision.direction
+                reason = f"smart_exit_jury_flip:{flip_to}@{seconds_elapsed:.0f}s roi={mtm_roi_pct:+.1f}%"
+                return reason, exit_pnl, seconds_elapsed
+
+            t += self.smart_exit_interval
 
         return None, None, None
 
@@ -843,6 +953,28 @@ class Backtester:
                 btc_start=btc_start,
                 confidence=decision.avg_confidence,
             )
+
+            # --- Smart mid-trade exit (jury re-evaluation) ---
+            smart_reason, smart_pnl, smart_second = self._simulate_smart_exit(
+                ws=ws,
+                we=we,
+                entry_time=check_time,
+                entry_price=entry_price,
+                bet_size=bet_size,
+                direction=decision.direction,
+                btc_start=btc_start,
+            )
+
+            # Pick whichever exit fires first (smallest exit_second wins)
+            if smart_reason is not None and smart_pnl is not None:
+                use_smart = (
+                    exit_second is None
+                    or float(smart_second) < float(exit_second)
+                )
+                if use_smart:
+                    exit_reason = smart_reason
+                    exit_pnl = smart_pnl
+                    exit_second = smart_second
 
             if exit_reason is not None and exit_pnl is not None:
                 pnl = exit_pnl
@@ -1275,6 +1407,10 @@ def main():
     parser.add_argument("--json-out", type=str, default="sweep_best.json", help="Auto-sweep output json file")
     parser.add_argument("--equity", type=float, default=1000.0, help="Starting equity for adaptive sizing (default $1000)")
     parser.add_argument("--size-sweep", action="store_true", help="Sweep bet sizing parameters")
+    parser.add_argument("--smart-exit", action="store_true", help="Enable smart mid-trade exit (jury re-eval every 10s, exit at bid if jury flips and ROI>0)")
+    parser.add_argument("--smart-exit-interval", type=float, default=10.0, help="Seconds between jury re-evaluations during a trade (default 10)")
+    parser.add_argument("--smart-exit-min-roi", type=float, default=0.0, help="Minimum ROI%% required before smart exit fires (default 0.0 = any profit)")
+    parser.add_argument("--compare-smart-exit", action="store_true", help="Run backtest both without and with smart exit, print side-by-side comparison")
     args = parser.parse_args()
 
     if args.min_edge is not None:
@@ -1459,7 +1595,99 @@ def main():
         config.trading.max_bet_size = max(config.trading.max_bet_size, args.equity * 0.20)
 
     logging.getLogger("risk_manager").setLevel(logging.WARNING)
-    bt = Backtester(ticks, odds, windows, initial_equity=args.equity)
+
+    # --- Compare mode: run baseline vs smart-exit side-by-side ---
+    if args.compare_smart_exit:
+        logging.getLogger("backtest").setLevel(logging.WARNING)
+
+        # Baseline run (no smart exit)
+        bt_base = Backtester(ticks, odds, windows, initial_equity=args.equity, smart_exit=False)
+        trades_base = bt_base.run()
+        m_base = _compute_trade_metrics(trades_base)
+
+        # Smart-exit run
+        bt_smart = Backtester(
+            ticks,
+            odds,
+            windows,
+            initial_equity=args.equity,
+            smart_exit=True,
+            smart_exit_interval=args.smart_exit_interval,
+            smart_exit_min_roi_pct=args.smart_exit_min_roi,
+        )
+        trades_smart = bt_smart.run()
+        m_smart = _compute_trade_metrics(trades_smart)
+
+        config.trading.max_bet_size = original_max_bet
+
+        # Count smart-exit-triggered trades
+        smart_triggered = [t for t in trades_smart if t.exit_reason and t.exit_reason.startswith("smart_exit")]
+        smart_won = sum(1 for t in smart_triggered if t.pnl > 0)
+
+        w = 72
+        print(f"\n{'='*w}")
+        print(f" SMART EXIT COMPARISON  ({hours:.1f}h of data)")
+        print(f"{'='*w}")
+        print(f"  Smart exit interval:  {args.smart_exit_interval:.0f}s  |  min ROI to trigger: {args.smart_exit_min_roi:+.1f}%")
+        print(f"{'─'*w}")
+        print(f"  {'Metric':<28}  {'Baseline':>14}  {'Smart Exit':>14}  {'Delta':>10}")
+        print(f"{'─'*w}")
+
+        def _fmt_delta(base_val, smart_val, fmt="{:+.2f}", pct=False):
+            delta = smart_val - base_val
+            if pct:
+                return f"{delta:+.1f}pp"
+            try:
+                return fmt.format(delta)
+            except Exception:
+                return str(delta)
+
+        rows = [
+            ("Trades",        m_base["trades"],       m_smart["trades"],       "{:d}",    False),
+            ("Win rate",      m_base["win_rate"]*100, m_smart["win_rate"]*100, "{:.1f}%", True),
+            ("Total PnL ($)", m_base["total_pnl"],    m_smart["total_pnl"],    "${:+.2f}", False),
+            ("Avg PnL ($)",   m_base["avg_pnl"],      m_smart["avg_pnl"],      "${:+.4f}", False),
+            ("Profit factor", m_base["profit_factor"],m_smart["profit_factor"],"{:.2f}",  False),
+            ("Max drawdown",  m_base["max_drawdown"], m_smart["max_drawdown"], "${:.2f}", False),
+        ]
+        for label, bv, sv, fmt, pct in rows:
+            try:
+                bstr = fmt.format(bv)
+                sstr = fmt.format(sv)
+            except Exception:
+                bstr = str(bv)
+                sstr = str(sv)
+            delta_str = _fmt_delta(bv, sv, fmt, pct)
+            print(f"  {label:<28}  {bstr:>14}  {sstr:>14}  {delta_str:>10}")
+
+        print(f"{'─'*w}")
+        print(f"  Smart exits triggered:  {len(smart_triggered)}  |  profitable: {smart_won}/{len(smart_triggered)}")
+
+        # Break down smart exits by flip type
+        flip_counts: dict[str, int] = {}
+        for t in smart_triggered:
+            key = t.exit_reason.split(":")[1].split("@")[0] if t.exit_reason and ":" in t.exit_reason else "unknown"
+            flip_counts[key] = flip_counts.get(key, 0) + 1
+        if flip_counts:
+            print(f"  Flip breakdown: " + "  ".join(f"{k}={v}" for k, v in sorted(flip_counts.items())))
+
+        print(f"{'='*w}\n")
+
+        if args.csv:
+            export_trades_csv(trades_base, "backtest_trades_baseline.csv")
+            export_trades_csv(trades_smart, "backtest_trades_smart_exit.csv")
+        return
+
+    # --- Normal single run ---
+    bt = Backtester(
+        ticks,
+        odds,
+        windows,
+        initial_equity=args.equity,
+        smart_exit=args.smart_exit,
+        smart_exit_interval=args.smart_exit_interval,
+        smart_exit_min_roi_pct=args.smart_exit_min_roi,
+    )
     trades = bt.run()
     final_equity = bt.risk_mgr.equity
 
@@ -1469,6 +1697,14 @@ def main():
     report += f"  Final equity:       ${final_equity:.2f}\n"
     report += f"  Return:             {((final_equity - args.equity) / args.equity) * 100:+.1f}%\n"
     report += f"  Bet range:          {RiskManager.BET_PCT_MIN*100:.0f}%-{RiskManager.BET_PCT_MAX*100:.0f}% of equity\n"
+    if args.smart_exit:
+        smart_triggered = [t for t in trades if t.exit_reason and t.exit_reason.startswith("smart_exit")]
+        report += f"\n SMART EXIT\n {'─'*41}\n"
+        report += f"  Interval:           {args.smart_exit_interval:.0f}s\n"
+        report += f"  Min ROI to trigger: {args.smart_exit_min_roi:+.1f}%\n"
+        report += f"  Triggered:          {len(smart_triggered)} trades\n"
+        smart_won = sum(1 for t in smart_triggered if t.pnl > 0)
+        report += f"  Profitable exits:   {smart_won}/{len(smart_triggered)}\n"
 
     config.trading.max_bet_size = original_max_bet
 
