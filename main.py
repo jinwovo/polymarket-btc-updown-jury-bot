@@ -3838,6 +3838,7 @@ class TradingBot:
         # Lag-prob-edge and contra-gap guards:
         # In parity mode, Paper skips these when signal_cache gate passed,
         # so Live must also skip to maintain Paper=Live parity.
+        lag_prob_edge = None
         if not LIVE_MIRROR_PAPER_GATES:
             market_up_prob, market_down_prob = _normalized_market_probs(up_ask, down_ask)
             market_dir_prob = None
