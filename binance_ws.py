@@ -30,9 +30,9 @@ CHAINLINK_BTC_USD_POLYGON = "0xc907E116054Ad103354f2D350FD2514433D57F6f"
 CHAINLINK_POLL_INTERVAL = 10  # poll every 10s to catch 27s updates quickly
 POLYGON_RPC_URLS = [
     "https://polygon-bor-rpc.publicnode.com",
-    "https://polygon-rpc.com",
     "https://rpc.ankr.com/polygon",
     "https://polygon.llamarpc.com",
+    "https://1rpc.io/matic",
 ]
 
 AGGREGATOR_V3_ABI = [
