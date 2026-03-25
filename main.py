@@ -4065,7 +4065,7 @@ class TradingBot:
             return
 
         lag_display = f"{float(lag_prob_edge):+.3f}" if lag_prob_edge is not None else "n/a"
-        logger.info(
+        logger.warning(
             f">>> TRADE: {decision.direction} | ${bet_size:.2f} @ {price:.4f} | "
             f"conf={decision.avg_confidence:.3f} | unan={decision.unanimous} | "
             f"net_ev={gate.expected_roi:+.3%} | "
