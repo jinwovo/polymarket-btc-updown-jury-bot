@@ -1257,33 +1257,9 @@ def open_trade_if_signal(
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
-    # Implied-side guards: skip if signal_cache.guards_passed=1
-    # (data_collector already checked these)
-    _guards_ok = cached and int(cached.get("guards_passed") or 0)
-    if not _guards_ok:
-        # Use better of raw side_ask vs complement of opposite (thin CLOB fix)
-        effective_side_implied = side_implied
-        if side_implied is not None and opposite_implied is not None:
-            effective_side_implied = max(side_implied, 1.0 - opposite_implied)
-        if effective_side_implied is not None and effective_side_implied < PAPER_MIN_ENTRY_SIDE_IMPLIED:
-            logger.warning(
-                "Skip weak implied side ws=%s dir=%s: side_ask=%.3f eff=%.3f < %.3f",
-                window_start,
-                direction,
-                side_implied or 0.0,
-                effective_side_implied,
-                PAPER_MIN_ENTRY_SIDE_IMPLIED,
-            )
-            return False
-        if opposite_implied is not None and opposite_implied > PAPER_MAX_OPPOSITE_IMPLIED:
-            logger.warning(
-                "Skip contra-implied ws=%s dir=%s: opposite_ask=%.3f > %.3f",
-                window_start,
-                direction,
-                opposite_implied,
-                PAPER_MAX_OPPOSITE_IMPLIED,
-            )
-            return False
+    # All market guards (implied-side, divergence, momentum, trend, price range)
+    # are checked by data_collector → signal_cache.guards_passed.
+    # Paper does NOT re-check — ensures backtest = paper = live parity.
 
     btc_now = market.get("btc_price")
     btc_start = market.get("btc_start_price")
