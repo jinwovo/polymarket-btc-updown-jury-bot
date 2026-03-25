@@ -470,7 +470,7 @@ class DataCollector:
                     1 if decision.unanimous else 0, judges_json,
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
-                    btc_move_pct, recent_move, trend_move, guards_passed,
+                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                 ),
             )
