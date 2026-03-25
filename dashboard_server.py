@@ -2764,6 +2764,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down dashboard server...")
+    except Exception:
+        logger.exception("Dashboard server crashed")
     finally:
         server.server_close()
 
