@@ -27,8 +27,11 @@ def evaluate_market_guards(
     up_ask: float | None,
     down_ask: float | None,
     elapsed: float,
-    db_conn,
-    window_start: int | float,
+    db_conn=None,
+    window_start: int | float = 0,
+    # Array-based mode (backtest): pass prices/timestamps directly
+    prices: list[float] | None = None,
+    timestamps: list[float] | None = None,
     # Threshold overrides (read from env if None)
     up_boundary_pct: float | None = None,
     down_boundary_pct: float | None = None,
@@ -90,7 +93,13 @@ def evaluate_market_guards(
         factor = max(0.0, 1.0 - (dir_start - 0.06) / 0.06)
 
     # --- Momentum (short-term, 20s default) ---
-    recent_move = _recent_move_pct(db_conn, window_start, now_ts, _move_lookback)
+    if prices is not None and timestamps is not None:
+        # Array mode (backtest)
+        from backtest import _recent_move_pct as _array_move
+        recent_move = _array_move(prices=prices, timestamps=timestamps, now_ts=now_ts, lookback_sec=_move_lookback)
+    else:
+        # DB mode (data_collector / paper / live)
+        recent_move = _recent_move_pct(db_conn, window_start, now_ts, _move_lookback)
     if recent_move is not None:
         if direction == "UP" and recent_move < _min_move * factor:
             result.momentum_ok = False
@@ -107,7 +116,10 @@ def evaluate_market_guards(
                 result.reason = "momentum"
 
     # --- Trend alignment (medium-term, 75s default) ---
-    trend_move = _recent_move_pct(db_conn, window_start, now_ts, _trend_lookback)
+    if prices is not None and timestamps is not None:
+        trend_move = _array_move(prices=prices, timestamps=timestamps, now_ts=now_ts, lookback_sec=_trend_lookback)
+    else:
+        trend_move = _recent_move_pct(db_conn, window_start, now_ts, _trend_lookback)
     eff_trend = _trend_thr / max(factor, 0.05)
     if trend_move is not None:
         if direction == "UP" and trend_move < -eff_trend:

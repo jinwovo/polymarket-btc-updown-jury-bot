@@ -678,10 +678,7 @@ class Backtester:
 
             # Quick filter
             btc_change_pct = ((btc_current - btc_start) / btc_start) * 100.0
-            # Divergence risk: Binance-Chainlink gap can flip outcomes near start price.
-            # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias.
-            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.040"))
-            _bt_down_boundary = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.050"))
+            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.020"))
             if abs(btc_change_pct) < _bt_min_boundary:
                 check_time += self.check_interval
                 continue
@@ -736,12 +733,9 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
-            # DOWN-specific: wider boundary distance + entry time cutoff
+            # DOWN entry time cutoff
             if decision.direction == "DOWN":
-                if abs(btc_change_pct) < _bt_down_boundary:
-                    check_time += self.check_interval
-                    continue
-                _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
+                _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "200"))
                 if seconds_elapsed > _bt_down_end:
                     check_time += self.check_interval
                     continue
@@ -750,7 +744,23 @@ class Backtester:
             support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
             confidence = float(decision.avg_confidence)
 
-            # --- Price validity & implied probability gates (same as paper) ---
+            # --- Shared market guards (same as data_collector) ---
+            from entry_guards import evaluate_market_guards
+            _guard = evaluate_market_guards(
+                direction=decision.direction,
+                btc_price=float(btc_current),
+                start_price=float(btc_start),
+                up_ask=_safe_prob(float(odds["up_ask"])),
+                down_ask=_safe_prob(float(odds["down_ask"])),
+                elapsed=seconds_elapsed,
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+            )
+            if not _guard.passed:
+                check_time += self.check_interval
+                continue
+
             up_ask = _safe_prob(float(odds["up_ask"]))
             down_ask = _safe_prob(float(odds["down_ask"]))
             entry_price = up_ask if decision.direction == "UP" else down_ask
@@ -758,98 +768,8 @@ class Backtester:
             if entry_price is None or entry_price <= 0.01 or entry_price >= 0.99:
                 check_time += self.check_interval
                 continue
-            _bt_min_side = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
-            # Use better of raw side_ask vs complement of opposite (same as paper/live)
-            effective_side = entry_price
-            if entry_price is not None and opposite_ask is not None:
-                effective_side = max(entry_price, 1.0 - opposite_ask)
-            if effective_side is not None and effective_side < _bt_min_side:
-                check_time += self.check_interval
-                continue
-            _bt_down_min_price = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.38"))
-            if decision.direction == "DOWN" and entry_price < _bt_down_min_price:
-                check_time += self.check_interval
-                continue
-            _bt_max_opp = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.78"))
-            if opposite_ask is not None and opposite_ask > _bt_max_opp:
-                check_time += self.check_interval
-                continue
 
-            # --- Momentum (short-term) ---
-            _bt_move_lookback = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
-            recent_move = _recent_move_pct(
-                prices=list(lookback),
-                timestamps=list(lookback_ts),
-                now_ts=float(check_time),
-                lookback_sec=_bt_move_lookback,
-            )
-            if recent_move is None:
-                check_time += self.check_interval
-                continue
-            _bt_min_move = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
-
-            btc_move_from_start_pct = (
-                ((float(btc_current) - float(btc_start)) / float(btc_start)) * 100.0
-                if float(btc_start) > 0.0
-                else 0.0
-            )
-            # Strong start-move relaxation (same as paper/live)
-            _directional_start_move = (
-                btc_move_from_start_pct if decision.direction == "UP"
-                else -btc_move_from_start_pct
-            )
-            _strong_start_factor = 1.0
-            if _directional_start_move >= 0.06:
-                _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
-
-            if decision.direction == "UP" and recent_move < _bt_min_move * _strong_start_factor:
-                check_time += self.check_interval
-                continue
-
-            _bt_down_extra = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
-            down_move_thr = _bt_min_move
-            if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
-                down_move_thr += _bt_down_extra
-            effective_down_thr = down_move_thr * _strong_start_factor
-            if decision.direction == "DOWN" and recent_move > -effective_down_thr:
-                check_time += self.check_interval
-                continue
-
-            # --- Trend alignment (medium-term) ---
-            _bt_trend_lookback = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
-            trend_move = _recent_move_pct(
-                prices=list(lookback),
-                timestamps=list(lookback_ts),
-                now_ts=float(check_time),
-                lookback_sec=_bt_trend_lookback,
-            )
-            if trend_move is None:
-                check_time += self.check_interval
-                continue
-            _bt_trend_opp = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
-            if decision.direction == "UP" and trend_move < -_bt_trend_opp:
-                check_time += self.check_interval
-                continue
-            if decision.direction == "DOWN" and trend_move > _bt_trend_opp:
-                check_time += self.check_interval
-                continue
-
-            # --- Macro trend filter (aligned with paper/live) ---
-            _bt_macro_lookback = float(os.getenv("PAPER_MACRO_TREND_LOOKBACK_SEC", "900"))
-            _bt_macro_block = float(os.getenv("PAPER_MACRO_TREND_BLOCK_PCT", "0.040"))
-            macro_move = _recent_move_pct(
-                prices=list(lookback),
-                timestamps=list(lookback_ts),
-                now_ts=float(check_time),
-                lookback_sec=_bt_macro_lookback,
-            )
-            if macro_move is not None:
-                if decision.direction == "DOWN" and macro_move > _bt_macro_block:
-                    check_time += self.check_interval
-                    continue
-                if decision.direction == "UP" and macro_move < -_bt_macro_block:
-                    check_time += self.check_interval
-                    continue
+            btc_move_from_start_pct = btc_change_pct
 
             # --- DOWN above-start block/penalty ---
             _bt_down_block = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
