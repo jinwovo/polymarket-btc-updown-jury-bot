@@ -33,8 +33,10 @@ data_collector (single process, 0.1s tick)
 ## Key Config (env/runtime.public.env)
 - `JURY_THRESHOLD=2` (majority, no opposing votes with 3 judges)
 - `ENTRY_ORDER_MODE=MAKER_FIRST` (try maker 0% fee → FOK fallback)
-- `MIN_EDGE=0.10`, `MIN_EXPECTED_ROI=0.050`
+- `MIN_EDGE=0.08`, `MIN_EXPECTED_ROI=0.030`
 - `PAPER_ENTRY_START_SEC=90`, `PAPER_DOWN_ENTRY_END_SEC=200`
+- `PAPER_MIN_BOUNDARY_DIST_PCT=0.020`, `PAPER_DOWN_MIN_BOUNDARY_DIST_PCT=0.030`
+- `PAPER_DOWN_MIN_ENTRY_PRICE=0.30`, `PAPER_MAX_ENTRY_PRICE=0.70`
 - `PAPER_PERF_PAUSE_SEC=0` (disabled)
 - `LIVE_MAX_DRAWDOWN_STOP_PCT=1.0` (disabled)
 - `DRY_RUN` is NOT in env file — dashboard controls via env_overrides
@@ -42,9 +44,12 @@ data_collector (single process, 0.1s tick)
 ## Critical Rules — DO NOT BREAK
 - **Never set `DRY_RUN=true` in runtime.public.env** — config.py override=True overwrites dashboard's Start Live
 - **Never use GTC orders for entry** — Polymarket POST /order takes 1-23s, use FOK
+- **Backtest = Paper = Live entry conditions must be IDENTICAL** — same jury, same guards, same gate, same prices. If any one differs, performance diverges and backtest results are meaningless
 - **Paper and Live must read from signal_cache** — running separate judges causes divergence
 - **entry_gate must use signal_cache prices (_btc_now/_btc_start)** — NOT ctx.current_binance_price (WebSocket has $50-200 offset)
 - **Price guards run in data_collector only** — Paper/Live read guards_passed, no re-checking
+- **Paper must NOT run its own guards when guards_passed is available** — causes Paper to block trades that Live enters (or vice versa)
+- **Live must respect signal_cache.gate_allow** — Live should not bypass gate when Paper is blocked
 - **py_clob_client HTTP must be patched** — default HTTP/2 + 5s timeout = ReadTimeout. Patch: HTTP/1.1, 45s, retries=3
 - **All processes poll at 0.1s** — data_collector, paper, live. Rate limit 150 req/s, we use ~20
 - **Duplicate orders → uncertain_fill** — never assume full fill on "duplicated" error
@@ -91,8 +96,18 @@ data_collector (single process, 0.1s tick)
 - Revisit after 1 week of data with proper feature analysis
 
 ## Backtest Reference
-- Last validated (11h): 18 trades, 61.1% WR, +$856, PF=1.71
-- Judges accuracy: Statistical=61.1%, Arbitrage=66.7%, Orderbook=58.8%
+- Last validated (48h, 2026-03-25): 39 trades, 66.7% WR, +$1,891, PF=2.00
+- Settings: start=90s, boundary=0.020/0.030, edge=0.08, roi=0.030
+- Sweep winner (24h): s90+bd02 = 28t 71% +$1,458 PF=2.28
+- Sweep winner (48h): s60+bd02 = 77t 75% +$5,198 PF=2.63
+- Simple momentum (no judges): 180s+0.04% = 65t 90.8% +$10,010 (but unrealistic CLOB pricing)
+
+## Known Parity Issues (must fix)
+- **backtest.py runs its own guards** — different from data_collector's guards_passed
+- **Paper has self-guards that override signal_cache** — implied-side, trend-align checked separately
+- **data_collector guards_passed is often 0** — momentum + trend too strict, blocks everything
+- **Live bypassed guards in some code paths** — traded when Paper couldn't
+- **entry_gate called with different prices** — Paper uses DB odds, Live uses CLOB cache
 
 ## Polymarket API Notes
 - GET /book: 1,500 req/10s (150/s)
