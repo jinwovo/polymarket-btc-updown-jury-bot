@@ -1405,6 +1405,16 @@ class PolymarketClient:
             _market_price = await asyncio.to_thread(
                 client.calculate_market_price, token_id, side_const, float(amount), None
             )
+            # Reject if market price drifted too far from reference
+            if reference_price and _market_price:
+                _max_drift = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.03"))
+                if float(_market_price) > float(reference_price) + _max_drift:
+                    logger.warning(
+                        "FOK price too high: market=%.3f ref=%.3f drift=+%.3f > %.3f",
+                        float(_market_price), float(reference_price),
+                        float(_market_price) - float(reference_price), _max_drift,
+                    )
+                    return {"ok": False, "status": "rejected_drift", "filled_amount": 0, "mode": "MARKET"}
             _fee_rate = await asyncio.to_thread(
                 client._ClobClient__resolve_fee_rate, token_id, None
             )
@@ -1837,6 +1847,21 @@ class PolymarketClient:
                     maker_result["uncertain_fill"] = True
                     return maker_result
                 # Maker didn't fill — fallback to FOK (taker)
+                # Re-check current ask before FOK to avoid buying at inflated price
+                try:
+                    _book = await asyncio.to_thread(self._clob_client.get_order_book, token_id)
+                    _current_asks = _book.asks if _book and _book.asks else []
+                    if _current_asks:
+                        _current_best_ask = float(min(float(a.price) for a in _current_asks))
+                        _max_drift_abs = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.03"))
+                        if _current_best_ask > working_ask + _max_drift_abs:
+                            logger.warning(
+                                "MAKER_FIRST: FOK skipped — ask drifted too far (ref=%.3f, now=%.3f, drift=+%.3f > %.3f)",
+                                working_ask, _current_best_ask, _current_best_ask - working_ask, _max_drift_abs,
+                            )
+                            return {"ok": False, "status": "rejected_drift", "mode": "MAKER_FIRST(drift_skip)", "filled_amount": 0}
+                except Exception as _drift_err:
+                    logger.warning("MAKER_FIRST: drift check failed: %s", _drift_err)
                 logger.info("MAKER_FIRST: maker not filled, falling back to FOK")
             fok_result = await self.place_market_order(
                 token_id=token_id,
