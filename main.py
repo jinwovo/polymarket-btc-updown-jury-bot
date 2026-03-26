@@ -2057,6 +2057,17 @@ class TradingBot:
             self._pending_entry_retry = None
             return False
 
+        # Clear if signal direction changed (e.g. UP→DOWN or NO_TRADE)
+        try:
+            _retry_sig = fetch_one_dict(self._ensure_state_conn(), "SELECT direction FROM signal_cache WHERE id = 1")
+            _sig_dir = str((_retry_sig or {}).get("direction", "NO_TRADE"))
+            if _sig_dir != retry["direction"]:
+                logger.info("Entry retry cancelled: signal flipped %s→%s", retry["direction"], _sig_dir)
+                self._pending_entry_retry = None
+                return False
+        except Exception:
+            pass
+
         # Clear if older than 30 seconds
         age = now - float(retry["created_ts"])
         if age > 30.0:
