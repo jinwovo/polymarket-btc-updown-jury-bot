@@ -2083,18 +2083,17 @@ class TradingBot:
         retry["attempts"] = int(retry.get("attempts", 0)) + 1
 
         # Check that the current ask price still matches (same direction, close price)
-        if self.current_market is not None:
-            if retry["direction"] == "UP":
-                current_ask = (
-                    _safe_prob(self.current_market.up_best_ask)
-                    or _safe_prob(self.current_market.up_price)
-                )
-            else:
-                current_ask = (
-                    _safe_prob(self.current_market.down_best_ask)
-                    or _safe_prob(self.current_market.down_price)
-                )
-            if current_ask is not None and abs(current_ask - retry["price"]) > 0.03:
+        # Use signal_cache ask (not CLOB cache) for consistency with entry
+        _retry_drift_max = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.08"))
+        current_ask = None
+        try:
+            _retry_sig = fetch_one_dict(self._ensure_state_conn(), "SELECT up_ask, down_ask FROM signal_cache WHERE id = 1")
+            if _retry_sig:
+                current_ask = float(_retry_sig["up_ask"]) if retry["direction"] == "UP" else float(_retry_sig["down_ask"])
+        except Exception:
+            pass
+        if current_ask is not None:
+            if abs(current_ask - retry["price"]) > _retry_drift_max:
                 logger.info(
                     "Entry retry: price moved too far (saved=%.4f current=%.4f), cancelling",
                     retry["price"], current_ask,
