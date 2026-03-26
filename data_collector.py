@@ -356,7 +356,7 @@ class DataCollector:
             for r in paper_recent:
                 ws = int(r["window_start"])
                 age = now - float(r["opened_at"])
-                if ws not in live_ws and age >= 30 and ws not in self._parity_alerted_ws:
+                if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
                     self._parity_alerted_ws.add(ws)
                     msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
                     logger.warning(msg.replace("\n", " | "))
@@ -373,7 +373,7 @@ class DataCollector:
             for r in live_recent:
                 ws = int(r["window_start"])
                 age = now - float(r["opened_at"])
-                if ws not in paper_ws and age >= 30 and ws not in self._parity_alerted_ws:
+                if ws not in paper_ws and age >= 45 and ws not in self._parity_alerted_ws:
                     self._parity_alerted_ws.add(ws)
                     msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
                     logger.warning(msg.replace("\n", " | "))
