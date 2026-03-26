@@ -1406,9 +1406,9 @@ class PolymarketClient:
                 client.calculate_market_price, token_id, side_const, float(amount), None
             )
             # Reject if market price drifted too far from reference
+            _max_fok_drift = float(os.getenv("MAX_FOK_PRICE_DRIFT", "0.05"))
             if reference_price and _market_price:
-                _max_drift = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.03"))
-                if float(_market_price) > float(reference_price) + _max_drift:
+                if float(_market_price) > float(reference_price) + _max_fok_drift:
                     logger.warning(
                         "FOK price too high: market=%.3f ref=%.3f drift=+%.3f > %.3f",
                         float(_market_price), float(reference_price),
@@ -1425,16 +1425,30 @@ class PolymarketClient:
             resp = None
             _last_err = None
             _order_likely_accepted = False
+            # Use limit-FOK: cap price at reference + drift tolerance
+            _fok_limit_price = min(
+                float(_market_price) if _market_price else 0.99,
+                float(reference_price or 0.99) + _max_fok_drift,
+            )
+            _fok_limit_price = round(min(max(_fok_limit_price, 0.01), 0.99), 2)
+            _fok_size = float(amount / _fok_limit_price) if _fok_limit_price > 0 else 0
+            logger.info(
+                "FOK limit: ref=%.3f market=%.3f limit=%.3f size=%.1f",
+                float(reference_price or 0), float(_market_price or 0),
+                _fok_limit_price, _fok_size,
+            )
             for _attempt in range(max_attempts):
                 try:
-                    # Use cached values — only signing + post are in the hot path
-                    order_args = MarketOrderArgs(
-                        token_id=token_id, amount=float(amount),
-                        side=side_const, price=_market_price,
+                    from py_clob_client.clob_types import OrderArgs
+                    order_args = OrderArgs(
+                        token_id=token_id,
+                        price=_fok_limit_price,
+                        size=_fok_size,
+                        side=side_const,
                         fee_rate_bps=_fee_rate,
                     )
                     signed = await asyncio.to_thread(
-                        client.builder.create_market_order,
+                        client.create_order,
                         order_args,
                         CreateOrderOptions(tick_size=_tick_size, neg_risk=_neg_risk),
                     )
