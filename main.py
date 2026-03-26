@@ -1022,6 +1022,16 @@ class TradingBot:
             f"realized pnl: ${pnl:,.2f} ({roi_pct:+.2f}%)"
         )
 
+    def _get_chainlink_price(self) -> float:
+        """Get current BTC price from signal_cache (Chainlink/RTDS), fallback to Binance."""
+        try:
+            _sc = fetch_one_dict(self._ensure_state_conn(), "SELECT btc_price FROM signal_cache WHERE id = 1")
+            if _sc and _sc.get("btc_price"):
+                return float(_sc["btc_price"])
+        except Exception:
+            pass
+        return float(self.price_feed.current_price or 0.0)
+
     def _current_live_cap(self) -> float:
         if self.live_sizing_mode == "ADAPTIVE" and not config.trading.dry_run:
             if self._adaptive_balance_cap is not None:
@@ -2386,8 +2396,8 @@ class TradingBot:
         )
         if bool(getattr(config.trading, "live_telegram_notify_close", True)):
             start_price = float(self.market_start_price or 0.0)
-            end_price = float(self.price_feed.current_price or 0.0)
-            btc_exit_price = float(self.price_feed.current_price or 0.0)
+            end_price = float(self._get_chainlink_price() or 0.0)
+            btc_exit_price = float(self._get_chainlink_price() or 0.0)
             msg = self._format_live_closed_telegram(
                 trade=trade,
                 actual_outcome=actual_outcome,
@@ -2671,7 +2681,7 @@ class TradingBot:
 
         btc_adverse_ok = True
         btc_move_from_entry_pct: Optional[float] = None
-        current_btc_px = float(self.price_feed.current_price or 0.0)
+        current_btc_px = float(self._get_chainlink_price() or 0.0)
         if bool(exit_cfg.stop_loss_require_btc_adverse):
             btc_entry_px = self.price_feed.get_price_at(float(trade.timestamp or now_ts))
             if btc_entry_px is not None and btc_entry_px > 0.0 and current_btc_px > 0.0:
