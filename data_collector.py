@@ -1262,17 +1262,20 @@ class DataCollector:
             try:
                 live_rows = fetch_all_dicts(
                     self.db,
-                    f"""SELECT id, direction, amount, price, pnl
+                    f"""SELECT id, direction,
+                        COALESCE(stake, amount) as stake,
+                        COALESCE(entry_price, price) as entry_price,
+                        pnl
                         FROM {table}
-                        WHERE window_start = ? AND status = 'CLOSED'""",
+                        WHERE window_start = ?""",
                     (window_start,),
                 )
             except Exception:
                 continue
             for lt in live_rows:
                 direction = str(lt.get("direction", ""))
-                stake = float(lt.get("amount") or 0)
-                entry_price = float(lt.get("price") or 0)
+                stake = float(lt.get("stake") or 0)
+                entry_price = float(lt.get("entry_price") or 0)
                 old_pnl = float(lt.get("pnl") or 0)
                 if not direction or stake <= 0 or entry_price <= 0:
                     continue
