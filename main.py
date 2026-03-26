@@ -926,7 +926,16 @@ class TradingBot:
         to_win_total = (stake / entry_px) if (stake > 0.0 and 0.0 < entry_px < 1.0) else 0.0
         expected_pnl = max(0.0, to_win_total - stake)
         start_price = float(self.market_start_price or 0.0)
-        current_price = float(self.price_feed.current_price or 0.0)
+        # Use signal_cache price (Chainlink/RTDS) for accuracy, fallback to Binance
+        try:
+            _sc = fetch_one_dict(self._ensure_state_conn(), "SELECT btc_price, start_price FROM signal_cache WHERE id = 1")
+            current_price = float(_sc.get("btc_price") or 0) if _sc else 0.0
+            if _sc and _sc.get("start_price"):
+                start_price = float(_sc["start_price"])
+        except Exception:
+            current_price = 0.0
+        if current_price <= 0:
+            current_price = float(self.price_feed.current_price or 0.0)
         up_ask = _safe_prob(self.current_market.up_best_ask if self.current_market else None)
         down_ask = _safe_prob(self.current_market.down_best_ask if self.current_market else None)
         slug = (self.current_market.slug if self.current_market else None) or "--"
