@@ -3487,18 +3487,10 @@ class TradingBot:
         if not token_id:
             return
 
-        # ── Fresh CLOB fetch (parity mode) ─────────────────────────
-        # Use the same point-in-time CLOB snapshot as paper_trade_sim
-        # so both see identical ask prices at the moment of entry decision.
-        if LIVE_MIRROR_PAPER_GATES:
-            from polymarket_client import fetch_clob_book_sync
-            (_up_bid, _up_ask_clob, _), (_dn_bid, _dn_ask_clob, _) = await asyncio.gather(
-                asyncio.to_thread(fetch_clob_book_sync, str(self.current_market.up_token_id)),
-                asyncio.to_thread(fetch_clob_book_sync, str(self.current_market.down_token_id)),
-            )
-            up_ask = _safe_prob(_up_ask_clob) or _safe_prob(self.current_market.up_best_ask) or _safe_prob(self.current_market.up_price)
-            down_ask = _safe_prob(_dn_ask_clob) or _safe_prob(self.current_market.down_best_ask) or _safe_prob(self.current_market.down_price)
-        else:
+        # ── Ask prices: use signal_cache in parity mode ─────────────
+        # signal_cache up_ask/down_ask already set above from data_collector's
+        # CLOB snapshot. Do NOT re-fetch — timing difference causes 0.05-0.25 divergence.
+        if not LIVE_MIRROR_PAPER_GATES:
             up_ask = (
                 _safe_prob(self.current_market.up_best_ask)
                 or _safe_prob(self.current_market.up_price)
