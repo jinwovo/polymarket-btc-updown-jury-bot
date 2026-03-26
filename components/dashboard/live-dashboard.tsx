@@ -1828,11 +1828,12 @@ export function LiveDashboard() {
                   <select
                     value={liveSizingMode}
                     onChange={(e) =>
-                      setLiveSizingMode(e.target.value as "adaptive" | "fixed")
+                      setLiveSizingMode(e.target.value as "adaptive" | "adaptive_seed" | "fixed")
                     }
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   >
-                    <option value="adaptive">adaptive (recommended)</option>
+                    <option value="adaptive">adaptive (balance)</option>
+                    <option value="adaptive_seed">adaptive (seed capital)</option>
                     <option value="fixed">fixed (use invest amount)</option>
                   </select>
                 </label>

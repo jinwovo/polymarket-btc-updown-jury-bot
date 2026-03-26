@@ -311,7 +311,7 @@ def _normalize_live_position_mode(raw: Any) -> str:
 
 def _normalize_live_sizing_mode(raw: Any) -> str:
     mode = str(raw or "adaptive").strip().lower()
-    if mode in ("adaptive", "fixed"):
+    if mode in ("adaptive", "adaptive_seed", "fixed"):
         return mode
     return "adaptive"
 
