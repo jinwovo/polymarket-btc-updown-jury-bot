@@ -3,6 +3,7 @@ Polymarket client for BTC Up/Down 5-minute markets.
 Handles market discovery, real-time odds monitoring, and order placement via CLOB API.
 """
 import asyncio
+import os
 import time
 import json
 import logging
