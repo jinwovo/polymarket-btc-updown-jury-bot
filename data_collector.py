@@ -284,7 +284,7 @@ class DataCollector:
             # Paper closes
             rows = fetch_all_dicts(
                 self.db,
-                "SELECT id, window_start, direction, pnl, close_type FROM paper_trades WHERE id > ? AND pnl IS NOT NULL AND closed_at IS NOT NULL AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
+                "SELECT id, window_start, direction, pnl, close_reason FROM paper_trades WHERE id > ? AND pnl IS NOT NULL AND closed_at IS NOT NULL AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
                 (self._last_paper_close_id,),
             )
             for r in rows:
@@ -293,7 +293,7 @@ class DataCollector:
                 tag = "WIN" if pnl > 0 else "LOSS"
                 logger.warning(
                     "[PAPER %s] %s $%+.2f (%s) ws=%s",
-                    tag, r["direction"], pnl, r.get("close_type", ""), r["window_start"],
+                    tag, r["direction"], pnl, r.get("close_reason", ""), r["window_start"],
                 )
             # Live opens/closes
             for table in ("live_trades", "trades"):
@@ -1160,7 +1160,7 @@ class DataCollector:
         # ── Correct paper_trades ──
         paper_rows = fetch_all_dicts(
             self.db,
-            """SELECT id, direction, stake, entry_price, pnl, close_type
+            """SELECT id, direction, stake, entry_price, pnl, close_reason
                FROM paper_trades
                WHERE window_start = ? AND archived_at IS NULL""",
             (window_start,),
@@ -1178,10 +1178,10 @@ class DataCollector:
             execute_write(
                 self.db,
                 """UPDATE paper_trades
-                   SET pnl = ?, exit_price = ?,
-                       close_type = CONCAT(COALESCE(close_type,''), ' [adj: ', ?, '→', ?, ']')
+                   SET pnl = ?, won = ?, actual_outcome = ?,
+                       close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: ', ?, '→', ?, ']')
                    WHERE id = ?""",
-                (new_pnl, 1.0 if won else 0.0, old_outcome, new_outcome, pt["id"]),
+                (new_pnl, 1 if won else 0, new_outcome, old_outcome, new_outcome, pt["id"]),
             )
             corrections.append(
                 f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"

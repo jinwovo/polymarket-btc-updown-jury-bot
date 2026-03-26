@@ -1101,12 +1101,48 @@ def _backfill_unresolved_windows(conn) -> int:
         start_price = float(row["btc_start_price"]) if row.get("btc_start_price") is not None else None
         if start_price is None:
             start_price = _price_at_or_near(conn, float(ws), prefer_before=False)
-        end_price = _price_at_or_near(conn, float(we), prefer_before=True)
 
-        if start_price is None or end_price is None:
-            continue
+        # --- Try Gamma API first (authoritative settlement prices) ---
+        gamma_ptb = None
+        gamma_final = None
+        gamma_outcome = None
+        try:
+            import httpx
+            slug = f"btc-updown-5m-{ws}"
+            resp = httpx.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                timeout=5,
+            )
+            events = resp.json()
+            if events:
+                meta = events[0].get("eventMetadata") or {}
+                if meta.get("priceToBeat") is not None and meta.get("finalPrice") is not None:
+                    gamma_ptb = float(meta["priceToBeat"])
+                    gamma_final = float(meta["finalPrice"])
+                    gamma_outcome = "UP" if gamma_final >= gamma_ptb else "DOWN"
+        except Exception:
+            pass  # Fall back to btc_ticks
 
-        outcome = "UP" if end_price >= start_price else "DOWN"
+        if gamma_outcome is not None:
+            outcome = gamma_outcome
+            end_price = gamma_final
+            if gamma_ptb is not None and start_price is not None:
+                start_price = gamma_ptb  # Use authoritative PTB too
+            logger.info(
+                "Backfilled %s from Gamma API: ptb=$%.2f final=$%.2f outcome=%s",
+                slug, gamma_ptb or 0, gamma_final or 0, outcome,
+            )
+        else:
+            # Fallback: use btc_ticks (less accurate for close calls)
+            end_price = _price_at_or_near(conn, float(we), prefer_before=True)
+            if start_price is None or end_price is None:
+                continue
+            outcome = "UP" if end_price >= start_price else "DOWN"
+            logger.info(
+                "Backfilled %d from btc_ticks (Gamma unavailable): end=$%.2f outcome=%s",
+                ws, end_price, outcome,
+            )
+
         execute_write(
             conn,
             """UPDATE market_windows
