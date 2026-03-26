@@ -714,6 +714,9 @@ export function LiveDashboard() {
         body: JSON.stringify({ action: "seed_capital", seed_capital: val }),
       });
       // Refresh live status so daily_risk updates immediately
+      // Small delay to let backend process the env change
+      await new Promise((r) => setTimeout(r, 300));
+      liveStatusInFlightRef.current = false; // force refresh
       await refreshLiveStatus();
     } finally {
       setSeedCapitalSaving(false);
