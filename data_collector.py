@@ -327,73 +327,72 @@ class DataCollector:
             logger.debug("Trade check error: %s", e)
 
     def _check_parity_mismatch(self):
-        """If Paper opened but Live didn't (or vice versa) within 45s, alert via Telegram.
-        Only checks when BOTH Paper and Live processes are running."""
+        """If Paper opened but Live didn't within 45s of Paper's entry (or vice versa), alert."""
         try:
             now = time.time()
 
-            # Get ALL paper and live trades for recent windows (by window_start, not opened_at)
-            # This avoids timing issues -- check if same window has both or only one
-            recent_ws_cutoff = int(now) - 600  # last 10 min of windows
-            paper_ws_set = set()
-            try:
-                rows = fetch_all_dicts(self.db, "SELECT DISTINCT window_start FROM paper_trades WHERE window_start > %s AND archived_at IS NULL", (recent_ws_cutoff,))
-                paper_ws_set = {int(r["window_start"]) for r in rows}
-            except Exception:
-                pass
-
-            live_ws_set = set()
+            # Recent paper trades with opened_at
+            paper_trades = fetch_all_dicts(
+                self.db,
+                "SELECT window_start, opened_at FROM paper_trades WHERE opened_at > %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 5",
+                (now - 300,),
+            )
+            # Recent live trades
+            live_trades = []
             for table in ("live_trades", "trades"):
                 try:
-                    rows = fetch_all_dicts(self.db, f"SELECT DISTINCT window_start FROM {table} WHERE window_start > %s", (recent_ws_cutoff,))
-                    live_ws_set = {int(r["window_start"]) for r in rows}
+                    live_trades = fetch_all_dicts(
+                        self.db,
+                        f"SELECT window_start, opened_at FROM {table} WHERE opened_at > %s ORDER BY opened_at DESC LIMIT 5",
+                        (now - 300,),
+                    )
                     break
                 except Exception:
                     continue
 
-            # Only alert if BOTH have traded at least once recently (both processes active)
-            if not paper_ws_set or not live_ws_set:
+            # Need both to have recent activity
+            if not paper_trades and not live_trades:
                 return
 
-            # Find mismatches: windows where only one side traded
-            all_ws = paper_ws_set | live_ws_set
-            for ws in all_ws:
-                if ws in self._parity_alerted_ws:
-                    continue
-                # Only alert for windows that ended at least 45s ago
-                ws_end = ws + 300
-                if now - ws_end < 45:
-                    continue
+            paper_ws = {int(r["window_start"]) for r in paper_trades}
+            live_ws = {int(r["window_start"]) for r in live_trades}
 
-                has_paper = ws in paper_ws_set
-                has_live = ws in live_ws_set
+            # Paper opened but Live didn't -- check 45s after Paper's opened_at
+            for r in paper_trades:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                    # Verify Live has traded at least once recently (process is running)
+                    if not live_trades:
+                        continue
+                    self._parity_alerted_ws.add(ws)
+                    msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} (age={age:.0f}s after Paper entry)"
+                    logger.warning(msg.replace("\n", " | "))
+                    self._send_parity_telegram(msg)
 
-                if has_paper and not has_live:
+            # Live opened but Paper didn't -- check 45s after Live's opened_at
+            for r in live_trades:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in paper_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                    if not paper_trades:
+                        continue
                     self._parity_alerted_ws.add(ws)
-                    msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws}"
+                    msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} (age={age:.0f}s after Live entry)"
                     logger.warning(msg.replace("\n", " | "))
-                    try:
-                        from telegram_notifier import send_telegram_message
-                        tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
-                        tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
-                        if tg_token and tg_chat:
-                            send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
-                    except Exception:
-                        pass
-                elif has_live and not has_paper:
-                    self._parity_alerted_ws.add(ws)
-                    msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws}"
-                    logger.warning(msg.replace("\n", " | "))
-                    try:
-                        from telegram_notifier import send_telegram_message
-                        tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
-                        tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
-                        if tg_token and tg_chat:
-                            send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
-                    except Exception:
-                        pass
+                    self._send_parity_telegram(msg)
         except Exception as e:
             logger.debug("Parity check error: %s", e)
+
+    def _send_parity_telegram(self, msg: str):
+        try:
+            from telegram_notifier import send_telegram_message
+            tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+            tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+            if tg_token and tg_chat:
+                send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
+        except Exception:
+            pass
 
     def _evaluate_and_cache_signal(self, now: float, ua, da, ub, db):
         """Run Jury with current data, write signal to DB for paper/live to read."""
