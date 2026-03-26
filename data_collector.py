@@ -97,7 +97,7 @@ class DataCollector:
         self._window_start_official: bool = False
         self._ptb_scrape_done: bool = False
         self._running = False
-        # Shared Jury — evaluates signal for both paper and live
+        # Shared Jury -- evaluates signal for both paper and live
         self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
         # RTDS WebSocket state
         self._rtds_price: float = 0.0
@@ -218,7 +218,7 @@ class DataCollector:
                             self._recent_timestamps = self._recent_timestamps[-self._RECENT_MAX:]
 
                         # Note: btc_start_price is only set from official Price to Beat (PTB).
-                        # Binance fallback removed — wrong start price causes wrong direction.
+                        # Binance fallback removed -- wrong start price causes wrong direction.
 
                         # Buffer ticks with Chainlink-calibrated price + buy/sell split
                         bucket = round(ts, 1)
@@ -443,7 +443,7 @@ class DataCollector:
 
             decision = self._jury.deliberate(ctx)
 
-            # ── Price guards (shared module — same logic as backtest) ──
+            # ── Price guards (shared module -- same logic as backtest) ──
             btc_move_pct = 0.0
             recent_move_pct = None
             trend_move_pct = None
@@ -555,7 +555,7 @@ class DataCollector:
                     if self.current_window_start > 0 and self.btc_price_adjusted is not None:
                         self._finalize_window(self.current_window_start, self.btc_price_adjusted)
 
-                    # Start tracking new window — chainlink_adj immediately, scrape at +3s
+                    # Start tracking new window -- chainlink_adj immediately, scrape at +3s
                     self.current_window_start = window_start
                     self.window_start_price = None
                     self._window_start_official = False
@@ -578,7 +578,7 @@ class DataCollector:
                             self._chainlink.is_calibrated
                             and self.btc_price is not None
                         ):
-                            # Immediate fallback — scrape will correct in ~3s
+                            # Immediate fallback -- scrape will correct in ~3s
                             self.window_start_price = self._chainlink.adjust(self.btc_price)
                             self._window_start_official = True
                             self._window_start_source = "chainlink_adj"
@@ -810,7 +810,7 @@ class DataCollector:
                     _pw_consecutive_fail = 0
 
                     if rtds_ok:
-                        # RTDS alive — only log if diff > $10 (something wrong)
+                        # RTDS alive -- only log if diff > $10 (something wrong)
                         diff = abs(self._rtds_price - poly_price)
                         if diff > 10.0:
                             logger.warning(
@@ -818,7 +818,7 @@ class DataCollector:
                                 self._rtds_price, poly_price, diff,
                             )
                     else:
-                        # RTDS down — use Playwright as primary
+                        # RTDS down -- use Playwright as primary
                         binance_now = self.btc_price
                         if binance_now is not None and binance_now > 0:
                             new_offset = binance_now - poly_price
@@ -1069,7 +1069,7 @@ class DataCollector:
                 start_price = row[0]
                 outcome = "UP" if end_price >= start_price else "DOWN"
             else:
-                logger.warning("Window %s finalized without PTB start price — outcome UNKNOWN", window_start)
+                logger.warning("Window %s finalized without PTB start price -- outcome UNKNOWN", window_start)
                 outcome = "UNKNOWN"
 
             execute_write(
@@ -1088,7 +1088,7 @@ class DataCollector:
                     f"${start_price:,.2f} -> ${end_price:,.2f} ({change_pct:+.4f}%)"
                 )
 
-            # Schedule async PTB backfill — Gamma API only returns PTB after resolution
+            # Schedule async PTB backfill -- Gamma API only returns PTB after resolution
             asyncio.get_event_loop().create_task(
                 self._backfill_ptb(window_start)
             )

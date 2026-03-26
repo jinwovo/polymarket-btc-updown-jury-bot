@@ -144,7 +144,7 @@ def _recent_move_pct(
 def _recent_move_pct_db(
     conn, window_start: int, now_ts: float, lookback_sec: float,
 ) -> float | None:
-    """DB-based recent move — identical to paper_trade_sim._recent_move_pct.
+    """DB-based recent move -- identical to paper_trade_sim._recent_move_pct.
 
     Using the same data source (btc_ticks table) ensures paper and live
     see identical momentum/trend values for the same timestamp.
@@ -444,7 +444,7 @@ def _live_recent_risk_state(conn) -> tuple[int, float]:
             break
 
     # Time-decayed loss rate: trades older than 6h count less,
-    # trades older than 24h barely count — prevents stale losses
+    # trades older than 24h barely count -- prevents stale losses
     # from keeping the bot overly conservative.
     now = time.time()
     _HALF_LIFE_SEC = 6 * 3600  # 6 hours half-life
@@ -1984,7 +1984,7 @@ class TradingBot:
             )
             if recovered:
                 return True
-            # Recovery confirmed no position on exchange — order never filled.
+            # Recovery confirmed no position on exchange -- order never filled.
             # Safe to skip without kill-switch; next signal will retry naturally.
             if self._maintenance_mode:
                 logger.warning(
@@ -2143,7 +2143,7 @@ class TradingBot:
             self._pending_entry_retry = None
             return True
 
-        # Still rejected — will retry on next tick
+        # Still rejected -- will retry on next tick
         return True
 
     async def _recover_uncertain_entry_result(
@@ -2213,7 +2213,7 @@ class TradingBot:
             return True
         await self._log_live_exposure_snapshot(f"{source} entry-uncertain final")
         # If ALL attempts confirmed no position on exchange, the order simply
-        # never went through (API hiccup).  Safe to skip — no kill-switch needed.
+        # never went through (API hiccup).  Safe to skip -- no kill-switch needed.
         if no_position_count >= attempts:
             logger.warning(
                 "%s uncertain entry confirmed NOT filled after %s attempts "
@@ -3090,7 +3090,7 @@ class TradingBot:
         # Auto-claim disabled: py_clob_client doesn't expose claim/redeem API
         # await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
-        # Price sync disabled — data_collector handles Chromium scraping and
+        # Price sync disabled -- data_collector handles Chromium scraping and
         # writes calibrated prices to DB. Live reads signal_cache, not own prices.
         price_sync_task = None
 
@@ -3500,7 +3500,7 @@ class TradingBot:
 
         # ── Ask prices: use signal_cache in parity mode ─────────────
         # signal_cache up_ask/down_ask already set above from data_collector's
-        # CLOB snapshot. Do NOT re-fetch — timing difference causes 0.05-0.25 divergence.
+        # CLOB snapshot. Do NOT re-fetch -- timing difference causes 0.05-0.25 divergence.
         if not LIVE_MIRROR_PAPER_GATES:
             up_ask = (
                 _safe_prob(self.current_market.up_best_ask)
@@ -3654,7 +3654,7 @@ class TradingBot:
             else float(config.trading.live_recent_move_lookback_sec)
         )
         recent_move = None
-        # Skip DB queries in parity mode — guards already checked by signal_cache
+        # Skip DB queries in parity mode -- guards already checked by signal_cache
         if _skip_price_guards:
             pass
         elif LIVE_MIRROR_PAPER_GATES:
@@ -4163,7 +4163,7 @@ class TradingBot:
                 and self.price_feed.calibrator.is_calibrated
                 and self.price_feed.current_price is not None
             ):
-                # Immediate fallback — scrape will correct in ~3s
+                # Immediate fallback -- scrape will correct in ~3s
                 self.market_start_price = self.price_feed.adjusted_price
                 self._market_start_official = True
                 self._market_start_source = "chainlink_adj"
@@ -4250,7 +4250,7 @@ class TradingBot:
             return
 
         # --- Phase 2: PTB correction ---
-        # Playwright scraping disabled in Live — data_collector handles it.
+        # Playwright scraping disabled in Live -- data_collector handles it.
         # Live uses signal_cache start_price for entry decisions.
         if self._ptb_scrape_done:
             return
@@ -4508,7 +4508,7 @@ class TradingBot:
                 self._spawn_background_task(
                     self._send_live_telegram(msg, reason="trade_close_expiry")
                 )
-            # Schedule delayed settlement verification — Polymarket may not have
+            # Schedule delayed settlement verification -- Polymarket may not have
             # settled yet at rollover time.  Re-check after 15s and 30s.
             _ws = int(window_start_ts)
             _dir = str(resolved_trade.direction)

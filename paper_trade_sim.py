@@ -99,7 +99,7 @@ def _check_data_freshness(conn) -> bool:
 def _warn_stale(now: float, msg: str):
     global _last_stale_warn_ts
     if now - _last_stale_warn_ts >= _DATA_STALE_WARN_INTERVAL:
-        logger.warning("DATA STALE: %s — no trading possible until data_collector feeds fresh data!", msg)
+        logger.warning("DATA STALE: %s -- no trading possible until data_collector feeds fresh data!", msg)
         _last_stale_warn_ts = now
 
 
@@ -641,7 +641,7 @@ def _compute_bet_size(
     max_edge: float | None = None,
 ) -> float:
     """Adaptive bet sizing: 5-15% of equity based on conviction.
-    Matched to RiskManager.compute_bet_size — uses max_edge for conviction,
+    Matched to RiskManager.compute_bet_size -- uses max_edge for conviction,
     caps at 20% of equity to prevent runaway bet sizes."""
     if available_equity <= 0:
         return 0.0
@@ -1266,7 +1266,7 @@ def open_trade_if_signal(
         return False
 
     # Ask prices come from signal_cache (data_collector's CLOB snapshot).
-    # No separate CLOB fetch needed — saves 2 API calls per tick.
+    # No separate CLOB fetch needed -- saves 2 API calls per tick.
     up_ask_val = _safe_prob(market.get("up_ask"))
     down_ask_val = _safe_prob(market.get("down_ask"))
 
@@ -1295,7 +1295,7 @@ def open_trade_if_signal(
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
     # All market guards (implied-side, divergence, momentum, trend, price range)
     # are checked by data_collector → signal_cache.guards_passed.
-    # Paper does NOT re-check — ensures backtest = paper = live parity.
+    # Paper does NOT re-check -- ensures backtest = paper = live parity.
 
     btc_now = market.get("btc_price")
     btc_start = market.get("btc_start_price")
@@ -1372,7 +1372,7 @@ def open_trade_if_signal(
             regime_details = ""
             skip_reason = ""
         gate = _GateProxy()
-        # Skip lag edge and contra gap — already passed in data_collector
+        # Skip lag edge and contra gap -- already passed in data_collector
     else:
         pass  # fallback path uses real gate object
 
