@@ -50,6 +50,10 @@ data_collector (single process, 0.1s tick)
 - **Price guards run in data_collector only** — Paper/Live read guards_passed, no re-checking
 - **Paper must NOT run its own guards when guards_passed is available** — causes Paper to block trades that Live enters (or vice versa)
 - **Live must respect signal_cache.gate_allow** — Live should not bypass gate when Paper is blocked
+- **Live must SKIP adaptive parity guards when gate_allow=1** — data_collector already validated. Live-specific loss_streak/strictness must NOT override signal_cache decisions
+- **Paper must align to Live, not the other way around** — Live is real money. Paper/backtest match Live's entry logic. Live's safety guards (FOK price limit, kill-switch) are the only Live-only additions
+- **FOK must use limit-price** — max reference_ask + $0.05. Prevents slippage (was 0.61→0.79)
+- **Settlement outcome must use Gamma API finalPrice** — btc_ticks can differ $5-10 from Chainlink oracle. In close calls this flips UP/DOWN
 - **py_clob_client HTTP must be patched** — default HTTP/2 + 5s timeout = ReadTimeout. Patch: HTTP/1.1, 45s, retries=3
 - **All processes poll at 0.1s** — data_collector, paper, live. Rate limit 150 req/s, we use ~20
 - **Duplicate orders → uncertain_fill** — never assume full fill on "duplicated" error
