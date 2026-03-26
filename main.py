@@ -72,7 +72,7 @@ def _normalize_position_mode(raw: str) -> str:
 
 def _normalize_sizing_mode(raw: str) -> str:
     mode = str(raw or "ADAPTIVE").strip().upper()
-    if mode in ("ADAPTIVE", "FIXED"):
+    if mode in ("ADAPTIVE", "ADAPTIVE_SEED", "FIXED"):
         return mode
     return "ADAPTIVE"
 
@@ -1072,7 +1072,7 @@ class TradingBot:
     ) -> float:
         """Adaptive bet sizing: 5-15% of real balance based on conviction.
         Same logic as RiskManager.compute_bet_size / paper_trade_sim."""
-        if self.live_sizing_mode == "FIXED":
+        if self.live_sizing_mode not in ("ADAPTIVE", "ADAPTIVE_SEED"):
             fixed = float(config.trading.max_bet_size)
             if fixed <= 0.0:
                 return 0.0
@@ -1081,10 +1081,9 @@ class TradingBot:
                 2,
             )
 
-        # Use adaptive seed capital if set, otherwise real on-chain balance
-        _adaptive_seed = float(os.getenv("LIVE_ADAPTIVE_SEED_CAPITAL", "0"))
-        if _adaptive_seed > 0:
-            equity = _adaptive_seed
+        # Adaptive equity: balance-based or seed-capital-based
+        if self.live_sizing_mode == "ADAPTIVE_SEED":
+            equity = float(os.getenv("LIVE_EQUITY_SEED_CAPITAL", "25"))
         else:
             equity = self._current_live_cap()
         if equity <= 0.0:
