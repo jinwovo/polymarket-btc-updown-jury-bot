@@ -3087,7 +3087,8 @@ class TradingBot:
                 return
 
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
-        await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
+        # Auto-claim disabled: py_clob_client doesn't expose claim/redeem API
+        # await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
         # Price sync disabled — data_collector handles Chromium scraping and
         # writes calibrated prices to DB. Live reads signal_cache, not own prices.
