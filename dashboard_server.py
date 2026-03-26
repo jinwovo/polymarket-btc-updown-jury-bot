@@ -715,6 +715,12 @@ def build_live_control_status() -> dict[str, Any]:
     status["account"] = _fetch_live_account_snapshot()
     status["telegram"] = _telegram_snapshot()
     status["daily_risk"] = _fetch_live_daily_risk()
+    # Persist sizing_mode from env so dropdown shows saved value even when stopped
+    saved_sizing = _normalize_live_sizing_mode(os.getenv("LIVE_SIZING_MODE", "adaptive"))
+    if not status.get("meta"):
+        status["meta"] = {}
+    if "sizing_mode" not in (status.get("meta") or {}):
+        status["meta"]["sizing_mode"] = saved_sizing
     return status
 
 
@@ -2242,6 +2248,9 @@ def control_live_start(
         else:
             per_trade_usd = max(5.0, requested_stake if requested_stake > 0 else 50.0)
 
+    # Persist sizing mode to env file so it survives restarts
+    _set_runtime_var("LIVE_SIZING_MODE", sizing.upper())
+    _update_env_file(_PUBLIC_ENV_PATH, {"LIVE_SIZING_MODE": sizing.upper()})
     env_overrides = {
         "DRY_RUN": "false",
         "MAX_BET_SIZE": f"{per_trade_usd}",
