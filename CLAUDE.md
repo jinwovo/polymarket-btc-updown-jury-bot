@@ -70,6 +70,8 @@ data_collector (single process, 0.1s tick)
 - **entry_gate using WebSocket prices** — caused different coinflip_guard results
 - **Momentum guard timing divergence** — 3s BTC bounce = Paper passes, Live fails
 - **Unicode ≈ in exit reason** — caused logging format error
+- **Unicode em-dash/arrows/box-drawing in logger** — Windows cp949 can't encode → crash kills Live order flow. NEVER use non-ASCII in logger messages (—, ─, →, ≈, ⚠️). Use ASCII only (--, -, ->, ~, [!])
+- **Missing `import os` in polymarket_client.py** — caused MAKER_FIRST drift check to crash, blocking all Live orders
 - **Operator precedence in guards_passed check** — `not X if cached else True` bug
 - **CLOB thin-book phantom edges** — judges saw asks=(0.08/0.93), normalized when sum>0.25
 - **Polymarket page freeze** — auto-reload after 15s stale price
