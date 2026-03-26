@@ -3442,10 +3442,8 @@ class TradingBot:
             # Override ctx asks with signal's asks (same CLOB snapshot)
             _sig_up_ask = _sig_row.get("up_ask")
             _sig_dn_ask = _sig_row.get("down_ask")
-            if _sig_up_ask is not None:
-                up_ask = _safe_prob(float(_sig_up_ask))
-            if _sig_dn_ask is not None:
-                down_ask = _safe_prob(float(_sig_dn_ask))
+            up_ask = _safe_prob(float(_sig_up_ask)) if _sig_up_ask is not None else (_safe_prob(self.current_market.up_best_ask) or 0.50)
+            down_ask = _safe_prob(float(_sig_dn_ask)) if _sig_dn_ask is not None else (_safe_prob(self.current_market.down_best_ask) or 0.50)
         else:
             decision = self.jury.deliberate(ctx)
 
