@@ -4462,17 +4462,34 @@ class TradingBot:
             except Exception as e:
                 logger.debug("Polymarket settlement query failed: %s", e)
 
-            # -- FALLBACK: Use Binance price comparison if API unavailable --
+            # -- FALLBACK: Use signal_cache/btc_ticks (Chainlink calibrated) --
+            # Do NOT use Binance raw price -- $30-50 offset causes wrong UP/DOWN
             window_end_ts = float(window_start_ts + 300)
-            end_price = self.price_feed.get_price_at(window_end_ts)
+            end_price = None
+            try:
+                _settle_tick = fetch_one(
+                    self._ensure_state_conn(),
+                    "SELECT price FROM btc_ticks WHERE ts BETWEEN %s AND %s ORDER BY ts DESC LIMIT 1",
+                    (window_end_ts - 3, window_end_ts + 3),
+                )
+                if _settle_tick:
+                    end_price = float(_settle_tick[0])
+            except Exception:
+                pass
             if end_price is None:
-                end_price = self.price_feed.current_price
+                # Last resort: signal_cache current price
+                try:
+                    _sc = fetch_one_dict(self._ensure_state_conn(), "SELECT btc_price FROM signal_cache WHERE id = 1")
+                    end_price = float(_sc["btc_price"]) if _sc and _sc.get("btc_price") else None
+                except Exception:
+                    pass
+            if end_price is None:
+                end_price = self.price_feed.current_price  # absolute last resort
             if actual_direction is None:
                 went_up = end_price >= self.market_start_price
                 actual_direction = "UP" if went_up else "DOWN"
                 logger.warning(
-                    "Settlement fallback to Binance: start=$%.2f end=$%.2f -> %s "
-                    "(Chainlink may differ!)",
+                    "Settlement fallback to btc_ticks: start=$%.2f end=$%.2f -> %s",
                     float(self.market_start_price), float(end_price), actual_direction,
                 )
             won = resolved_trade.direction == actual_direction
