@@ -1331,7 +1331,60 @@ def main():
     parser.add_argument("--smart-exit-interval", type=float, default=10.0, help="Seconds between jury re-evaluations during a trade (default 10)")
     parser.add_argument("--smart-exit-min-roi", type=float, default=0.0, help="Minimum ROI%% required before smart exit fires (default 0.0 = any profit)")
     parser.add_argument("--compare-smart-exit", action="store_true", help="Run backtest both without and with smart exit, print side-by-side comparison")
+    parser.add_argument("--from-ts", type=float, default=None, help="Start timestamp (for parallel chunks)")
+    parser.add_argument("--to-ts", type=float, default=None, help="End timestamp (for parallel chunks)")
+    parser.add_argument("--parallel", action="store_true", help="Run in parallel chunks (auto-splits --last-hours into 4h chunks)")
+    parser.add_argument("--chunk-hours", type=float, default=4.0, help="Chunk size for parallel mode (default 4h)")
+    parser.add_argument("--quiet", action="store_true", help="Minimal output (for parallel workers)")
     args = parser.parse_args()
+
+    # Parallel mode: split into chunks and merge
+    if args.parallel and args.last_hours:
+        import subprocess, json as _json
+        now = time.time()
+        total_hours = args.last_hours
+        chunk_h = args.chunk_hours
+        # Align to 5-minute window boundaries (300s)
+        end_aligned = (int(now) // 300) * 300
+        start_aligned = end_aligned - int(total_hours * 3600)
+        total_seconds = end_aligned - start_aligned
+        chunk_seconds = int(chunk_h * 3600)
+        # Round chunk to 300s boundary
+        chunk_seconds = max(300, (chunk_seconds // 300) * 300)
+        n_chunks = max(1, int(math.ceil(total_seconds / chunk_seconds)))
+
+        procs = []
+        for i in range(n_chunks):
+            from_ts = start_aligned + i * chunk_seconds
+            to_ts = min(end_aligned, from_ts + chunk_seconds)
+            cmd = [sys.executable, "backtest.py", "--from-ts", str(from_ts), "--to-ts", str(to_ts), "--quiet"]
+            procs.append(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+
+        total_trades = total_wins = total_losses = 0
+        total_pnl = 0.0
+        total_win_pnl = 0.0
+        total_loss_pnl = 0.0
+
+        for p in procs:
+            stdout, _ = p.communicate(timeout=300)
+            for line in (stdout or "").split("\n"):
+                if line.startswith("CHUNK_RESULT:"):
+                    data = _json.loads(line[len("CHUNK_RESULT:"):])
+                    total_trades += data["trades"]
+                    total_wins += data["wins"]
+                    total_losses += data["losses"]
+                    total_pnl += data["pnl"]
+                    total_win_pnl += data["win_pnl"]
+                    total_loss_pnl += data["loss_pnl"]
+
+        wr = (total_wins / total_trades * 100) if total_trades > 0 else 0
+        pf = abs(total_win_pnl / total_loss_pnl) if total_loss_pnl != 0 else 999
+        print(f"\n=== PARALLEL BACKTEST ({total_hours}h, {n_chunks} chunks x {chunk_h}h) ===")
+        print(f"  Total trades:         {total_trades}")
+        print(f"  Win rate:             {wr:.1f}% ({total_wins}W / {total_losses}L)")
+        print(f"  Total PnL:            ${total_pnl:+.2f}")
+        print(f"  Profit factor:        {pf:.2f}")
+        return
 
     if args.min_edge is not None:
         config.trading.min_edge = args.min_edge
@@ -1340,11 +1393,12 @@ def main():
     if args.jury_threshold is not None:
         config.trading.jury_threshold = args.jury_threshold
 
-    start_ts = None
-    if args.last_hours:
+    start_ts = args.from_ts
+    end_ts = args.to_ts
+    if args.last_hours and start_ts is None:
         start_ts = time.time() - args.last_hours * 3600
 
-    ticks, odds, windows = load_data(start_ts=start_ts)
+    ticks, odds, windows = load_data(start_ts=start_ts, end_ts=end_ts)
 
     if ticks.empty or windows.empty:
         logger.error(
@@ -1630,6 +1684,23 @@ def main():
 
     with open("backtest_report.txt", "w", encoding="utf-8") as f:
         f.write(report)
+
+    # Quiet mode: output JSON for parallel aggregation
+    if args.quiet:
+        import json as _qjson
+        _q_total = len(trades)
+        _q_wins = sum(1 for t in trades if t.pnl > 0)
+        _q_losses = _q_total - _q_wins
+        _q_pnl = sum(t.pnl for t in trades)
+        _q_win_pnl = sum(t.pnl for t in trades if t.pnl > 0)
+        _q_loss_pnl = sum(t.pnl for t in trades if t.pnl <= 0)
+        print("CHUNK_RESULT:" + _qjson.dumps({
+            "trades": _q_total, "wins": _q_wins, "losses": _q_losses,
+            "pnl": round(_q_pnl, 2),
+            "win_pnl": round(_q_win_pnl, 2),
+            "loss_pnl": round(_q_loss_pnl, 2),
+        }))
+        return
 
     try:
         print(report)
