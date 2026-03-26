@@ -1081,8 +1081,12 @@ class TradingBot:
                 2,
             )
 
-        # Use real on-chain balance as equity
-        equity = self._current_live_cap()
+        # Use adaptive seed capital if set, otherwise real on-chain balance
+        _adaptive_seed = float(os.getenv("LIVE_ADAPTIVE_SEED_CAPITAL", "0"))
+        if _adaptive_seed > 0:
+            equity = _adaptive_seed
+        else:
+            equity = self._current_live_cap()
         if equity <= 0.0:
             return 0.0
 
