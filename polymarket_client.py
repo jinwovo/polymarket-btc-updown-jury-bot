@@ -1844,7 +1844,7 @@ class PolymarketClient:
                     price=maker_price,
                     size=maker_size,
                     order_type="GTC",
-                    timeout_seconds=5.0,
+                    timeout_seconds=2.0,
                     poll_interval_seconds=0.5,
                 )
                 _maker_filled_amt = float(maker_result.get("executed_notional") or 0) if maker_result else 0
