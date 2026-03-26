@@ -342,7 +342,7 @@ class DataCollector:
                 try:
                     live_recent = fetch_all_dicts(
                         self.db,
-                        f"SELECT window_start, direction, opened_at FROM {table} WHERE opened_at > %s AND status='OPEN' ORDER BY opened_at DESC LIMIT 3",
+                        f"SELECT window_start, direction, opened_at FROM {table} WHERE opened_at > %s ORDER BY opened_at DESC LIMIT 3",
                         (now - 60,),
                     )
                     break
