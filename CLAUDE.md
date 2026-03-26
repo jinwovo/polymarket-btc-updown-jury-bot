@@ -58,6 +58,15 @@ data_collector (single process, 0.1s tick)
 - **All processes poll at 0.1s** — data_collector, paper, live. Rate limit 150 req/s, we use ~20
 - **Duplicate orders → uncertain_fill** — never assume full fill on "duplicated" error
 - **GTC cancel fail → skip FOK** — prevents double position
+- **After ANY git revert/reset/rebase** — MUST run verification before commit:
+  ```
+  grep "BET_PCT_MIN\|BET_PCT_MAX" risk_manager.py main.py backtest.py
+  grep "timeout_seconds=" polymarket_client.py
+  grep "conf_norm\|conv_norm" risk_manager.py main.py
+  grep "import os" polymarket_client.py
+  ```
+  Expected: MIN=0.10, MAX=0.15, timeout=2.0, conf_norm everywhere, import os present
+- **Never mix multiple file changes in one revert** — revert file-by-file, verify each
 
 ## Bugs Found & Fixed (don't reintroduce)
 - **DRY_RUN override** — env file override=True overwrites dashboard's DRY_RUN=false
