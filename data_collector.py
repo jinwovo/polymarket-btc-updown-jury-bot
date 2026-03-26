@@ -358,7 +358,7 @@ class DataCollector:
                 age = now - float(r["opened_at"])
                 if ws not in live_ws and age >= 30 and ws not in self._parity_alerted_ws:
                     self._parity_alerted_ws.add(ws)
-                    msg = f"⚠️ PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
+                    msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
                     logger.warning(msg.replace("\n", " | "))
                     try:
                         from telegram_notifier import send_telegram_message
@@ -375,7 +375,7 @@ class DataCollector:
                 age = now - float(r["opened_at"])
                 if ws not in paper_ws and age >= 30 and ws not in self._parity_alerted_ws:
                     self._parity_alerted_ws.add(ws)
-                    msg = f"⚠️ PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
+                    msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
                     logger.warning(msg.replace("\n", " | "))
                     try:
                         from telegram_notifier import send_telegram_message
@@ -1300,7 +1300,7 @@ class DataCollector:
                 tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
                 if tg_token:
                     msg = (
-                        f"⚠️ OUTCOME ADJUSTED\n"
+                        f"[!] OUTCOME ADJUSTED\n"
                         f"Window: {slug}\n"
                         f"Change: {old_outcome} → {new_outcome}\n"
                         f"Source: {source}\n"
