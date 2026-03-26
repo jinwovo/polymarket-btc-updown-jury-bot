@@ -35,7 +35,7 @@ data_collector (single process, 0.1s tick)
 - `ENTRY_ORDER_MODE=MAKER_FIRST` (try maker 0% fee → FOK fallback)
 - `MIN_EDGE=0.08`, `MIN_EXPECTED_ROI=0.030`
 - `PAPER_ENTRY_START_SEC=90`, `PAPER_DOWN_ENTRY_END_SEC=200`
-- `PAPER_MIN_BOUNDARY_DIST_PCT=0.020`, `PAPER_DOWN_MIN_BOUNDARY_DIST_PCT=0.030`
+- `PAPER_MIN_BOUNDARY_DIST_PCT=0.020`, `PAPER_D OWN_MIN_BOUNDARY_DIST_PCT=0.030`
 - `PAPER_DOWN_MIN_ENTRY_PRICE=0.30`, `PAPER_MAX_ENTRY_PRICE=0.70`
 - `PAPER_PERF_PAUSE_SEC=0` (disabled)
 - `LIVE_MAX_DRAWDOWN_STOP_PCT=1.0` (disabled)
@@ -75,6 +75,9 @@ data_collector (single process, 0.1s tick)
 - **Operator precedence in guards_passed check** — `not X if cached else True` bug
 - **CLOB thin-book phantom edges** — judges saw asks=(0.08/0.93), normalized when sum>0.25
 - **Polymarket page freeze** — auto-reload after 15s stale price
+- **Revert damage** — git revert/reset can silently undo changes in OTHER files. ALWAYS verify key values after any revert: `BET_PCT_MIN=0.10, BET_PCT_MAX=0.15, timeout_seconds=2.0, conf_norm formula`
+- **Sizing formula mismatch** — risk_manager used edge*confidence, main.py used confidence-only. Must be identical: `conf_norm = (confidence - 0.3) / 0.7`
+- **Settlement used Binance price** — caused wrong outcome ($52 diff). Must use btc_ticks (Chainlink calibrated) or Gamma API finalPrice
 
 ## Data Collection
 - `btc_ticks`: price, volume, buy_volume, sell_volume (Binance "m" flag)
