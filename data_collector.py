@@ -466,17 +466,7 @@ class DataCollector:
                         poly_up_ask=up_ask,
                         poly_down_ask=dn_ask,
                     )
-                    _new_gate = 1 if _gate.allow else 0
-                    # Sticky gate: once gate_allow=1 for this window+direction, keep it
-                    if _new_gate:
-                        gate_allow = 1
-                        self._sticky_gate_ws = int(self.current_window_start)
-                        self._sticky_gate_dir = decision.direction
-                    elif (getattr(self, '_sticky_gate_ws', 0) == int(self.current_window_start)
-                          and getattr(self, '_sticky_gate_dir', '') == decision.direction):
-                        gate_allow = 1  # keep sticky
-                    else:
-                        gate_allow = 0
+                    gate_allow = 1 if _gate.allow else 0
                     gate_ev = float(_gate.expected_roi) if _gate.expected_roi else None
                     gate_reason = str(_gate.reason or "")[:200]
                 except Exception as _ge:
@@ -536,8 +526,6 @@ class DataCollector:
                     self._window_start_official = False
                     self._window_start_source = "none"
                     self._ptb_scrape_done = False
-                    self._sticky_gate_ws = 0
-                    self._sticky_gate_dir = ""
 
                     # Find the Polymarket market
                     self.current_market = await self.poly_client.find_market(window_start)
