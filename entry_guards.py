@@ -80,6 +80,12 @@ def evaluate_market_guards(
 
     btc_move_pct = ((btc_price - start_price) / start_price) * 100.0
 
+    # --- DOWN-above-start hard block ---
+    _down_block_pct = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
+    if direction == "DOWN" and btc_move_pct > 0 and btc_move_pct >= _down_block_pct:
+        result.reason = f"DOWN_above_start: btc_vs_start=+{btc_move_pct:.4f}% >= {_down_block_pct:.4f}%"
+        return result
+
     # --- Divergence (boundary distance) ---
     boundary = _down_boundary if direction == "DOWN" else _up_boundary
     result.divergence_ok = abs(btc_move_pct) >= boundary
