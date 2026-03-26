@@ -1034,7 +1034,7 @@ class DataCollector:
                 start_price = row[0]
                 outcome = "UP" if end_price >= start_price else "DOWN"
             else:
-                logger.warning("Window %s finalized without PTB start price — outcome UNKNOWN", window_start)
+                logger.warning("Window %s finalized without PTB start price -- outcome UNKNOWN", window_start)
                 outcome = "UNKNOWN"
 
             execute_write(

@@ -541,7 +541,7 @@ class Backtester:
             opposite_hits = exit_decision.opposite_hits
 
             if exit_decision.reason is not None:
-                # Exit triggered -- compute PnL at exit bid
+                # Exit triggered — compute PnL at exit bid
                 exit_pnl = apply_fee_to_pnl(raw_pnl, bet_size) if raw_pnl > 0 else raw_pnl
                 exit_second = seconds_elapsed
                 return exit_decision.reason, exit_pnl, exit_second
@@ -642,7 +642,7 @@ class Backtester:
                 and mid_decision.direction in ("UP", "DOWN", "NO_TRADE")
             )
             # Also require the flip to be to the OPPOSITE direction (not just NO_TRADE)
-            # unless configured otherwise -- here we exit on any non-original signal
+            # unless configured otherwise — here we exit on any non-original signal
             if jury_flipped:
                 exit_pnl = apply_fee_to_pnl(raw_pnl, bet_size) if raw_pnl > 0 else raw_pnl
                 flip_to = mid_decision.direction
@@ -678,7 +678,10 @@ class Backtester:
 
             # Quick filter
             btc_change_pct = ((btc_current - btc_start) / btc_start) * 100.0
-            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.020"))
+            # Divergence risk: Binance-Chainlink gap can flip outcomes near start price.
+            # DOWN needs wider boundary due to higher mean-reversion + Chainlink UP bias.
+            _bt_min_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.040"))
+            _bt_down_boundary = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.050"))
             if abs(btc_change_pct) < _bt_min_boundary:
                 check_time += self.check_interval
                 continue
@@ -700,7 +703,7 @@ class Backtester:
             lookback_ts = self._get_btc_timestamps_range(check_time - 1200, check_time)
 
             # Data quality: min tick samples for meaningful lookback
-            # NOTE: Backtest data density varies -- using a lower threshold than
+            # NOTE: Backtest data density varies — using a lower threshold than
             # paper/live (which require 100 ticks + 16 odds) to avoid blocking
             # valid entries during sparse data periods.
             if len(lookback) < 10:
@@ -733,9 +736,12 @@ class Backtester:
                 check_time += self.check_interval
                 continue
 
-            # DOWN entry time cutoff
+            # DOWN-specific: wider boundary distance + entry time cutoff
             if decision.direction == "DOWN":
-                _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "200"))
+                if abs(btc_change_pct) < _bt_down_boundary:
+                    check_time += self.check_interval
+                    continue
+                _bt_down_end = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
                 if seconds_elapsed > _bt_down_end:
                     check_time += self.check_interval
                     continue
@@ -744,23 +750,7 @@ class Backtester:
             support_ratio = (support_votes / float(len(decision.verdicts))) if decision.verdicts else 0.0
             confidence = float(decision.avg_confidence)
 
-            # --- Shared market guards (same as data_collector) ---
-            from entry_guards import evaluate_market_guards
-            _guard = evaluate_market_guards(
-                direction=decision.direction,
-                btc_price=float(btc_current),
-                start_price=float(btc_start),
-                up_ask=_safe_prob(float(odds["up_ask"])),
-                down_ask=_safe_prob(float(odds["down_ask"])),
-                elapsed=seconds_elapsed,
-                prices=list(lookback),
-                timestamps=list(lookback_ts),
-                now_ts=float(check_time),
-            )
-            if not _guard.passed:
-                check_time += self.check_interval
-                continue
-
+            # --- Price validity & implied probability gates (same as paper) ---
             up_ask = _safe_prob(float(odds["up_ask"]))
             down_ask = _safe_prob(float(odds["down_ask"]))
             entry_price = up_ask if decision.direction == "UP" else down_ask
@@ -768,8 +758,98 @@ class Backtester:
             if entry_price is None or entry_price <= 0.01 or entry_price >= 0.99:
                 check_time += self.check_interval
                 continue
+            _bt_min_side = float(os.getenv("PAPER_MIN_ENTRY_SIDE_IMPLIED", "0.22"))
+            # Use better of raw side_ask vs complement of opposite (same as paper/live)
+            effective_side = entry_price
+            if entry_price is not None and opposite_ask is not None:
+                effective_side = max(entry_price, 1.0 - opposite_ask)
+            if effective_side is not None and effective_side < _bt_min_side:
+                check_time += self.check_interval
+                continue
+            _bt_down_min_price = float(os.getenv("PAPER_DOWN_MIN_ENTRY_PRICE", "0.38"))
+            if decision.direction == "DOWN" and entry_price < _bt_down_min_price:
+                check_time += self.check_interval
+                continue
+            _bt_max_opp = float(os.getenv("PAPER_MAX_OPPOSITE_IMPLIED", "0.78"))
+            if opposite_ask is not None and opposite_ask > _bt_max_opp:
+                check_time += self.check_interval
+                continue
 
-            btc_move_from_start_pct = btc_change_pct
+            # --- Momentum (short-term) ---
+            _bt_move_lookback = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
+            recent_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=_bt_move_lookback,
+            )
+            if recent_move is None:
+                check_time += self.check_interval
+                continue
+            _bt_min_move = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.006"))
+
+            btc_move_from_start_pct = (
+                ((float(btc_current) - float(btc_start)) / float(btc_start)) * 100.0
+                if float(btc_start) > 0.0
+                else 0.0
+            )
+            # Strong start-move relaxation (same as paper/live)
+            _directional_start_move = (
+                btc_move_from_start_pct if decision.direction == "UP"
+                else -btc_move_from_start_pct
+            )
+            _strong_start_factor = 1.0
+            if _directional_start_move >= 0.06:
+                _strong_start_factor = max(0.0, 1.0 - (_directional_start_move - 0.06) / 0.06)
+
+            if decision.direction == "UP" and recent_move < _bt_min_move * _strong_start_factor:
+                check_time += self.check_interval
+                continue
+
+            _bt_down_extra = float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
+            down_move_thr = _bt_min_move
+            if decision.direction == "DOWN" and btc_move_from_start_pct > 0.0:
+                down_move_thr += _bt_down_extra
+            effective_down_thr = down_move_thr * _strong_start_factor
+            if decision.direction == "DOWN" and recent_move > -effective_down_thr:
+                check_time += self.check_interval
+                continue
+
+            # --- Trend alignment (medium-term) ---
+            _bt_trend_lookback = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
+            trend_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=_bt_trend_lookback,
+            )
+            if trend_move is None:
+                check_time += self.check_interval
+                continue
+            _bt_trend_opp = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
+            if decision.direction == "UP" and trend_move < -_bt_trend_opp:
+                check_time += self.check_interval
+                continue
+            if decision.direction == "DOWN" and trend_move > _bt_trend_opp:
+                check_time += self.check_interval
+                continue
+
+            # --- Macro trend filter (aligned with paper/live) ---
+            _bt_macro_lookback = float(os.getenv("PAPER_MACRO_TREND_LOOKBACK_SEC", "900"))
+            _bt_macro_block = float(os.getenv("PAPER_MACRO_TREND_BLOCK_PCT", "0.040"))
+            macro_move = _recent_move_pct(
+                prices=list(lookback),
+                timestamps=list(lookback_ts),
+                now_ts=float(check_time),
+                lookback_sec=_bt_macro_lookback,
+            )
+            if macro_move is not None:
+                if decision.direction == "DOWN" and macro_move > _bt_macro_block:
+                    check_time += self.check_interval
+                    continue
+                if decision.direction == "UP" and macro_move < -_bt_macro_block:
+                    check_time += self.check_interval
+                    continue
 
             # --- DOWN above-start block/penalty ---
             _bt_down_block = float(os.getenv("PAPER_DOWN_ABOVE_START_BLOCK_PCT", "0.050"))
@@ -998,7 +1078,7 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
 {'='*70}
 
  OVERVIEW
- -----------------------------------------
+ ─────────────────────────────────────────
   Total trades:         {total}
   Trades/hour:          {total / max(hours, 0.1):.1f}
   Win rate:             {win_rate:.1%} ({wins}W / {losses}L)
@@ -1008,27 +1088,27 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
   Avg loss:             ${avg_loss:+.4f}
 
  TIMING
- -----------------------------------------
+ ─────────────────────────────────────────
   Avg entry time:       {avg_entry_sec:.0f}s into 5-min window
   Avg |BTC move|:       {avg_btc_move:.4f}%
 
  RISK
- -----------------------------------------
+ ─────────────────────────────────────────
   Profit factor:        {profit_factor:.2f}
   Max drawdown:         ${max_dd:.2f}
 
  DIRECTION
- -----------------------------------------
+ ─────────────────────────────────────────
   UP:   {len(up_t):4d} trades | WR: {up_wr:.1%} | PnL: ${sum(t.pnl for t in up_t):+.2f}
   DOWN: {len(dn_t):4d} trades | WR: {dn_wr:.1%} | PnL: ${sum(t.pnl for t in dn_t):+.2f}
 
  JURY
- -----------------------------------------
+ ─────────────────────────────────────────
   Unanimous ({jury_size}/{jury_size}): {len(unan):4d} | WR: {unan_wr:.1%} | PnL: ${sum(t.pnl for t in unan):+.2f}
   Majority  ({majority_size}/{jury_size}): {len(maj):4d} | WR: {maj_wr:.1%} | PnL: ${sum(t.pnl for t in maj):+.2f}
 
  JUDGE ACCURACY
- -----------------------------------------"""
+ ─────────────────────────────────────────"""
 
     for name, acc in judge_acc.items():
         report += f"\n  {name:25s} {acc:.1%}"
@@ -1036,7 +1116,7 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
     report += f"""
 
  EQUITY CURVE
- -----------------------------------------"""
+ ─────────────────────────────────────────"""
 
     if cum:
         min_c = min(cum)
@@ -1046,11 +1126,11 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
         step = max(1, len(cum) // 20)
         for i in range(0, len(cum), step):
             pos = int((cum[i] - min_c) / range_c * width)
-            bar = "-" * pos + "*"
-            report += f"\n  {i:4d} ${cum[i]:+8.2f} |{bar}"
+            bar = "─" * pos + "●"
+            report += f"\n  {i:4d} ${cum[i]:+8.2f} │{bar}"
         pos = int((cum[-1] - min_c) / range_c * width)
-        bar = "-" * pos + "*"
-        report += f"\n  {len(cum):4d} ${cum[-1]:+8.2f} |{bar}  < FINAL"
+        bar = "─" * pos + "●"
+        report += f"\n  {len(cum):4d} ${cum[-1]:+8.2f} │{bar}  ◄ FINAL"
 
     report += f"""
 
@@ -1331,60 +1411,7 @@ def main():
     parser.add_argument("--smart-exit-interval", type=float, default=10.0, help="Seconds between jury re-evaluations during a trade (default 10)")
     parser.add_argument("--smart-exit-min-roi", type=float, default=0.0, help="Minimum ROI%% required before smart exit fires (default 0.0 = any profit)")
     parser.add_argument("--compare-smart-exit", action="store_true", help="Run backtest both without and with smart exit, print side-by-side comparison")
-    parser.add_argument("--from-ts", type=float, default=None, help="Start timestamp (for parallel chunks)")
-    parser.add_argument("--to-ts", type=float, default=None, help="End timestamp (for parallel chunks)")
-    parser.add_argument("--parallel", action="store_true", help="Run in parallel chunks (auto-splits --last-hours into 4h chunks)")
-    parser.add_argument("--chunk-hours", type=float, default=4.0, help="Chunk size for parallel mode (default 4h)")
-    parser.add_argument("--quiet", action="store_true", help="Minimal output (for parallel workers)")
     args = parser.parse_args()
-
-    # Parallel mode: split into chunks and merge
-    if args.parallel and args.last_hours:
-        import subprocess, json as _json
-        now = time.time()
-        total_hours = args.last_hours
-        chunk_h = args.chunk_hours
-        # Align to 5-minute window boundaries (300s)
-        end_aligned = (int(now) // 300) * 300
-        start_aligned = end_aligned - int(total_hours * 3600)
-        total_seconds = end_aligned - start_aligned
-        chunk_seconds = int(chunk_h * 3600)
-        # Round chunk to 300s boundary
-        chunk_seconds = max(300, (chunk_seconds // 300) * 300)
-        n_chunks = max(1, int(math.ceil(total_seconds / chunk_seconds)))
-
-        procs = []
-        for i in range(n_chunks):
-            from_ts = start_aligned + i * chunk_seconds
-            to_ts = min(end_aligned, from_ts + chunk_seconds)
-            cmd = [sys.executable, "backtest.py", "--from-ts", str(from_ts), "--to-ts", str(to_ts), "--quiet"]
-            procs.append(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
-
-        total_trades = total_wins = total_losses = 0
-        total_pnl = 0.0
-        total_win_pnl = 0.0
-        total_loss_pnl = 0.0
-
-        for p in procs:
-            stdout, _ = p.communicate(timeout=300)
-            for line in (stdout or "").split("\n"):
-                if line.startswith("CHUNK_RESULT:"):
-                    data = _json.loads(line[len("CHUNK_RESULT:"):])
-                    total_trades += data["trades"]
-                    total_wins += data["wins"]
-                    total_losses += data["losses"]
-                    total_pnl += data["pnl"]
-                    total_win_pnl += data["win_pnl"]
-                    total_loss_pnl += data["loss_pnl"]
-
-        wr = (total_wins / total_trades * 100) if total_trades > 0 else 0
-        pf = abs(total_win_pnl / total_loss_pnl) if total_loss_pnl != 0 else 999
-        print(f"\n=== PARALLEL BACKTEST ({total_hours}h, {n_chunks} chunks x {chunk_h}h) ===")
-        print(f"  Total trades:         {total_trades}")
-        print(f"  Win rate:             {wr:.1f}% ({total_wins}W / {total_losses}L)")
-        print(f"  Total PnL:            ${total_pnl:+.2f}")
-        print(f"  Profit factor:        {pf:.2f}")
-        return
 
     if args.min_edge is not None:
         config.trading.min_edge = args.min_edge
@@ -1393,12 +1420,11 @@ def main():
     if args.jury_threshold is not None:
         config.trading.jury_threshold = args.jury_threshold
 
-    start_ts = args.from_ts
-    end_ts = args.to_ts
-    if args.last_hours and start_ts is None:
+    start_ts = None
+    if args.last_hours:
         start_ts = time.time() - args.last_hours * 3600
 
-    ticks, odds, windows = load_data(start_ts=start_ts, end_ts=end_ts)
+    ticks, odds, windows = load_data(start_ts=start_ts)
 
     if ticks.empty or windows.empty:
         logger.error(
@@ -1480,7 +1506,7 @@ def main():
         print(f" MIN-EDGE SWEEP ({hours:.1f} hours of real data)")
         print(f"{'='*60}")
         print(f" {'Edge':>6s} | {'Trades':>6s} | {'WR':>6s} | {'PnL':>10s} | {'PF':>5s}")
-        print(f" {'-'*6} | {'-'*6} | {'-'*6} | {'-'*10} | {'-'*5}")
+        print(f" {'─'*6} | {'─'*6} | {'─'*6} | {'─'*10} | {'─'*5}")
 
         for edge in edges:
             config.trading.min_edge = edge
@@ -1563,7 +1589,7 @@ def main():
         print(f"{'='*80}")
         return
 
-    # Single run -- raise MAX_BET_SIZE ceiling so adaptive sizing isn't capped at $5
+    # Single run — raise MAX_BET_SIZE ceiling so adaptive sizing isn't capped at $5
     original_max_bet = config.trading.max_bet_size
     if args.max_bet is None:
         config.trading.max_bet_size = max(config.trading.max_bet_size, args.equity * 0.20)
@@ -1603,9 +1629,9 @@ def main():
         print(f" SMART EXIT COMPARISON  ({hours:.1f}h of data)")
         print(f"{'='*w}")
         print(f"  Smart exit interval:  {args.smart_exit_interval:.0f}s  |  min ROI to trigger: {args.smart_exit_min_roi:+.1f}%")
-        print(f"{'-'*w}")
+        print(f"{'─'*w}")
         print(f"  {'Metric':<28}  {'Baseline':>14}  {'Smart Exit':>14}  {'Delta':>10}")
-        print(f"{'-'*w}")
+        print(f"{'─'*w}")
 
         def _fmt_delta(base_val, smart_val, fmt="{:+.2f}", pct=False):
             delta = smart_val - base_val
@@ -1634,7 +1660,7 @@ def main():
             delta_str = _fmt_delta(bv, sv, fmt, pct)
             print(f"  {label:<28}  {bstr:>14}  {sstr:>14}  {delta_str:>10}")
 
-        print(f"{'-'*w}")
+        print(f"{'─'*w}")
         print(f"  Smart exits triggered:  {len(smart_triggered)}  |  profitable: {smart_won}/{len(smart_triggered)}")
 
         # Break down smart exits by flip type
@@ -1666,14 +1692,14 @@ def main():
     final_equity = bt.risk_mgr.equity
 
     report = generate_report(trades, hours)
-    report += f"\n ADAPTIVE SIZING\n {'-'*41}\n"
+    report += f"\n ADAPTIVE SIZING\n {'─'*41}\n"
     report += f"  Start equity:       ${args.equity:.2f}\n"
     report += f"  Final equity:       ${final_equity:.2f}\n"
     report += f"  Return:             {((final_equity - args.equity) / args.equity) * 100:+.1f}%\n"
     report += f"  Bet range:          {RiskManager.BET_PCT_MIN*100:.0f}%-{RiskManager.BET_PCT_MAX*100:.0f}% of equity\n"
     if args.smart_exit:
         smart_triggered = [t for t in trades if t.exit_reason and t.exit_reason.startswith("smart_exit")]
-        report += f"\n SMART EXIT\n {'-'*41}\n"
+        report += f"\n SMART EXIT\n {'─'*41}\n"
         report += f"  Interval:           {args.smart_exit_interval:.0f}s\n"
         report += f"  Min ROI to trigger: {args.smart_exit_min_roi:+.1f}%\n"
         report += f"  Triggered:          {len(smart_triggered)} trades\n"
@@ -1684,23 +1710,6 @@ def main():
 
     with open("backtest_report.txt", "w", encoding="utf-8") as f:
         f.write(report)
-
-    # Quiet mode: output JSON for parallel aggregation
-    if args.quiet:
-        import json as _qjson
-        _q_total = len(trades)
-        _q_wins = sum(1 for t in trades if t.pnl > 0)
-        _q_losses = _q_total - _q_wins
-        _q_pnl = sum(t.pnl for t in trades)
-        _q_win_pnl = sum(t.pnl for t in trades if t.pnl > 0)
-        _q_loss_pnl = sum(t.pnl for t in trades if t.pnl <= 0)
-        print("CHUNK_RESULT:" + _qjson.dumps({
-            "trades": _q_total, "wins": _q_wins, "losses": _q_losses,
-            "pnl": round(_q_pnl, 2),
-            "win_pnl": round(_q_win_pnl, 2),
-            "loss_pnl": round(_q_loss_pnl, 2),
-        }))
-        return
 
     try:
         print(report)

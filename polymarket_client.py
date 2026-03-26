@@ -1434,7 +1434,7 @@ class PolymarketClient:
                     _last_err = _net_err
                     err_str = str(_net_err).lower()
                     if "duplicated" in err_str or "duplicate" in err_str:
-                        logger.info("FOK duplicate on attempt %d — accepted: %s", _attempt + 1, _net_err)
+                        logger.info("FOK duplicate on attempt %d -- accepted: %s", _attempt + 1, _net_err)
                         resp = {"orderID": "duplicate-accepted", "status": "MATCHED", "transactionsHashes": []}
                         break
                     if _attempt < max_attempts - 1:

@@ -89,21 +89,21 @@ class RiskManager:
 
     def compute_bet_size(self, confidence: float, edge: float) -> float:
         """
-        Adaptive bet sizing: 5-15% of current equity based on conviction.
+        Adaptive bet sizing: 10-15% of current equity based on confidence.
 
-        conviction = edge * confidence (0..1 range, higher = stronger signal)
-        bet_pct = lerp(5%, 15%, conviction_normalized)
+        conf_norm = (confidence - 0.3) / 0.7  (same formula as main.py Live)
+        bet_pct = lerp(10%, 15%, conf_norm)
         bet = equity * bet_pct
 
         Clamped to MAX_BET_SIZE as hard ceiling and MIN_BET_SIZE as floor.
-        Reduced further on losing streaks.
         """
         if confidence <= 0 or edge <= 0:
             return 0.0
 
-        # Direct confidence-based sizing: conf 0.3=5%, conf 1.0=20%
-        # Low confidence = small bet, high confidence = big bet
+        # Confidence-based sizing (matches main.py Live exactly)
         conf_norm = min(1.0, max(0.0, (confidence - 0.3) / 0.7))
+
+        # Lerp between 10% and 15% of equity
         bet_pct = self.BET_PCT_MIN + conf_norm * (self.BET_PCT_MAX - self.BET_PCT_MIN)
 
         bet_amount = self.equity * bet_pct
