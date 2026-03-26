@@ -327,11 +327,11 @@ class StatisticalJudge:
         z = (x / denom) if denom > 1e-10 else (8.0 if x > 0 else -8.0 if x < 0 else 0.0)
         p_up = _clamp01(_norm_cdf(z))
 
-        # Short-term trend (40 ticks ~ 40s) — within-window micro-trend
+        # Short-term trend (40 ticks ~ 40s) -- within-window micro-trend
         trend_short = self._compute_trend_strength(
             look_prices[-40:] if len(look_prices) > 40 else look_prices
         )
-        # Long-term trend (300 ticks ~ 5min) — cross-window macro-trend
+        # Long-term trend (300 ticks ~ 5min) -- cross-window macro-trend
         trend_long = self._compute_trend_strength(
             look_prices[-300:] if len(look_prices) > 300 else look_prices
         )
@@ -352,8 +352,8 @@ class StatisticalJudge:
             p_up = _clamp01(p_up - 0.02 if streak_dir == "UP" else p_up + 0.02)
 
         # Buy/sell volume ratio: >1 = buyers aggressive = UP bias
-        # Disabled for now — needs more data to validate. Backtest showed
-        # negative impact (-0.45 PF) with ±0.03 bias. Keep collecting data.
+        # Disabled for now -- needs more data to validate. Backtest showed
+        # negative impact (-0.45 PF) with +/-0.03 bias. Keep collecting data.
         # if ctx.buy_sell_ratio is not None and ctx.buy_sell_ratio > 0:
         #     _vol_signal = _clamp(math.log(ctx.buy_sell_ratio) / 0.7, -1.0, 1.0)
         #     p_up = _clamp01(p_up + _vol_signal * 0.03)
@@ -508,10 +508,10 @@ class ArbitrageJudge:
         freshness, move_5s, move_30s = self._lag_freshness(ctx)
 
         # HARD GATE: if the lag is stale, there is NO arbitrage opportunity.
-        # The entire strategy premise is exploiting fresh Binance→Poly lag.
-        # A stale lag means Polymarket already priced it in → no edge.
-        # Raised from 0.20 → 0.35: only trade on genuinely fresh lag.
-        # ArbitrageJudge is most accurate at 68.2% — tighter freshness
+        # The entire strategy premise is exploiting fresh Binance->Poly lag.
+        # A stale lag means Polymarket already priced it in -> no edge.
+        # Raised from 0.20 -> 0.35: only trade on genuinely fresh lag.
+        # ArbitrageJudge is most accurate at 68.2% -- tighter freshness
         # filters stale signals where Polymarket already caught up.
         min_freshness = 0.35
         min_30s_move = 0.00008  # need at least 0.008% move in 30s
@@ -708,7 +708,7 @@ class MomentumJudge:
 
     Key insight: BTC has short-term momentum persistence. If price has been
     rising for the last 60s, it's more likely to continue than reverse.
-    This is the missing signal — other judges look at position (where price IS)
+    This is the missing signal -- other judges look at position (where price IS)
     but not direction (where price is GOING).
 
     Features:
@@ -794,8 +794,8 @@ class MomentumJudge:
         mom_180_safe = mom_180 if mom_180 is not None else 0.0
 
         # Velocity: how fast is price moving RIGHT NOW (15s) vs recently (60s)?
-        # If 15s momentum > 60s momentum → accelerating → likely continues
-        # If 15s momentum < 60s momentum → decelerating → may reverse
+        # If 15s momentum > 60s momentum -> accelerating -> likely continues
+        # If 15s momentum < 60s momentum -> decelerating -> may reverse
         if abs(mom_60) > 0.001:
             velocity_ratio = mom_15 / mom_60  # >1 = accelerating, <1 = decelerating
         else:
@@ -954,10 +954,10 @@ def estimate_ensemble_close_probability(
 
     # -- 4. Final probability with Cautious Calibration --
     # (arXiv:2408.05120) Shrink toward 0.5 to prevent overconfident entries.
-    # calibrated = 0.5 + shrinkage × (raw - 0.5)
+    # calibrated = 0.5 + shrinkage x (raw - 0.5)
     # shrinkage < 1.0 means we're intentionally underconfident.
-    # Adaptive: early in window (more uncertain) → more shrink;
-    #           late in window (price more locked in) → less shrink.
+    # Adaptive: early in window (more uncertain) -> more shrink;
+    #           late in window (price more locked in) -> less shrink.
     progress = _clamp01(1.0 - remaining / 300.0)  # 0.0=start, 1.0=expiry
     # At start: shrinkage=0.75 (aggressive shrink), at expiry: shrinkage=0.92
     cautious_shrinkage = 0.75 + 0.17 * progress
@@ -999,7 +999,7 @@ class Jury:
     """
 
     def __init__(self, threshold: Optional[int] = None, min_score_margin: float = 0.04):
-        # Three judges (MomentumJudge tested but removed — 62.3% accuracy
+        # Three judges (MomentumJudge tested but removed -- 62.3% accuracy
         # was not independent enough from other judges, slightly hurt ensemble).
         #   1. StatisticalJudge:    physics (bipower variance, jumps, trend)
         #   2. ArbitrageJudge:      lag freshness (is the mispricing exploitable?)
@@ -1065,7 +1065,7 @@ class Jury:
             return 1.08
         if aligns == 1:
             return 0.96
-        # Both 15s and 45s moves oppose the vote → counter-trend trade.
+        # Both 15s and 45s moves oppose the vote -> counter-trend trade.
         # This is the primary loss pattern: betting against momentum.
         return 0.60
 
@@ -1098,7 +1098,7 @@ class Jury:
         down_score = sum(weighted_conf.get(v.judge_name, v.confidence) for v in down_votes)
 
         # Require majority with no opposing votes.
-        # UP UP ABSTAIN → OK.  UP UP DOWN → NO_TRADE.
+        # UP UP ABSTAIN -> OK.  UP UP DOWN -> NO_TRADE.
         if n_up >= self.threshold and n_down == 0 and up_score >= down_score + self.min_score_margin:
             direction = "UP"
             final_vote = Vote.UP

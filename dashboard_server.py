@@ -792,7 +792,7 @@ def _get_market_start_price(
     window_end: int,
     db_value: Any,
 ) -> Optional[float]:
-    """Return official Price to Beat from DB. No Binance tick fallback — wrong
+    """Return official Price to Beat from DB. No Binance tick fallback -- wrong
     start price causes wrong UP/DOWN direction."""
     return _to_float(db_value)
 

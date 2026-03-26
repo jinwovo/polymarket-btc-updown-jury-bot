@@ -541,7 +541,7 @@ class Backtester:
             opposite_hits = exit_decision.opposite_hits
 
             if exit_decision.reason is not None:
-                # Exit triggered — compute PnL at exit bid
+                # Exit triggered -- compute PnL at exit bid
                 exit_pnl = apply_fee_to_pnl(raw_pnl, bet_size) if raw_pnl > 0 else raw_pnl
                 exit_second = seconds_elapsed
                 return exit_decision.reason, exit_pnl, exit_second
@@ -642,7 +642,7 @@ class Backtester:
                 and mid_decision.direction in ("UP", "DOWN", "NO_TRADE")
             )
             # Also require the flip to be to the OPPOSITE direction (not just NO_TRADE)
-            # unless configured otherwise — here we exit on any non-original signal
+            # unless configured otherwise -- here we exit on any non-original signal
             if jury_flipped:
                 exit_pnl = apply_fee_to_pnl(raw_pnl, bet_size) if raw_pnl > 0 else raw_pnl
                 flip_to = mid_decision.direction
@@ -700,7 +700,7 @@ class Backtester:
             lookback_ts = self._get_btc_timestamps_range(check_time - 1200, check_time)
 
             # Data quality: min tick samples for meaningful lookback
-            # NOTE: Backtest data density varies — using a lower threshold than
+            # NOTE: Backtest data density varies -- using a lower threshold than
             # paper/live (which require 100 ticks + 16 odds) to avoid blocking
             # valid entries during sparse data periods.
             if len(lookback) < 10:
@@ -998,7 +998,7 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
 {'='*70}
 
  OVERVIEW
- ─────────────────────────────────────────
+ -----------------------------------------
   Total trades:         {total}
   Trades/hour:          {total / max(hours, 0.1):.1f}
   Win rate:             {win_rate:.1%} ({wins}W / {losses}L)
@@ -1008,27 +1008,27 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
   Avg loss:             ${avg_loss:+.4f}
 
  TIMING
- ─────────────────────────────────────────
+ -----------------------------------------
   Avg entry time:       {avg_entry_sec:.0f}s into 5-min window
   Avg |BTC move|:       {avg_btc_move:.4f}%
 
  RISK
- ─────────────────────────────────────────
+ -----------------------------------------
   Profit factor:        {profit_factor:.2f}
   Max drawdown:         ${max_dd:.2f}
 
  DIRECTION
- ─────────────────────────────────────────
+ -----------------------------------------
   UP:   {len(up_t):4d} trades | WR: {up_wr:.1%} | PnL: ${sum(t.pnl for t in up_t):+.2f}
   DOWN: {len(dn_t):4d} trades | WR: {dn_wr:.1%} | PnL: ${sum(t.pnl for t in dn_t):+.2f}
 
  JURY
- ─────────────────────────────────────────
+ -----------------------------------------
   Unanimous ({jury_size}/{jury_size}): {len(unan):4d} | WR: {unan_wr:.1%} | PnL: ${sum(t.pnl for t in unan):+.2f}
   Majority  ({majority_size}/{jury_size}): {len(maj):4d} | WR: {maj_wr:.1%} | PnL: ${sum(t.pnl for t in maj):+.2f}
 
  JUDGE ACCURACY
- ─────────────────────────────────────────"""
+ -----------------------------------------"""
 
     for name, acc in judge_acc.items():
         report += f"\n  {name:25s} {acc:.1%}"
@@ -1036,7 +1036,7 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
     report += f"""
 
  EQUITY CURVE
- ─────────────────────────────────────────"""
+ -----------------------------------------"""
 
     if cum:
         min_c = min(cum)
@@ -1046,11 +1046,11 @@ def generate_report(trades: list[BacktestTrade], hours: float) -> str:
         step = max(1, len(cum) // 20)
         for i in range(0, len(cum), step):
             pos = int((cum[i] - min_c) / range_c * width)
-            bar = "─" * pos + "●"
-            report += f"\n  {i:4d} ${cum[i]:+8.2f} │{bar}"
+            bar = "-" * pos + "*"
+            report += f"\n  {i:4d} ${cum[i]:+8.2f} |{bar}"
         pos = int((cum[-1] - min_c) / range_c * width)
-        bar = "─" * pos + "●"
-        report += f"\n  {len(cum):4d} ${cum[-1]:+8.2f} │{bar}  ◄ FINAL"
+        bar = "-" * pos + "*"
+        report += f"\n  {len(cum):4d} ${cum[-1]:+8.2f} |{bar}  < FINAL"
 
     report += f"""
 
@@ -1426,7 +1426,7 @@ def main():
         print(f" MIN-EDGE SWEEP ({hours:.1f} hours of real data)")
         print(f"{'='*60}")
         print(f" {'Edge':>6s} | {'Trades':>6s} | {'WR':>6s} | {'PnL':>10s} | {'PF':>5s}")
-        print(f" {'─'*6} | {'─'*6} | {'─'*6} | {'─'*10} | {'─'*5}")
+        print(f" {'-'*6} | {'-'*6} | {'-'*6} | {'-'*10} | {'-'*5}")
 
         for edge in edges:
             config.trading.min_edge = edge
@@ -1509,7 +1509,7 @@ def main():
         print(f"{'='*80}")
         return
 
-    # Single run — raise MAX_BET_SIZE ceiling so adaptive sizing isn't capped at $5
+    # Single run -- raise MAX_BET_SIZE ceiling so adaptive sizing isn't capped at $5
     original_max_bet = config.trading.max_bet_size
     if args.max_bet is None:
         config.trading.max_bet_size = max(config.trading.max_bet_size, args.equity * 0.20)
@@ -1549,9 +1549,9 @@ def main():
         print(f" SMART EXIT COMPARISON  ({hours:.1f}h of data)")
         print(f"{'='*w}")
         print(f"  Smart exit interval:  {args.smart_exit_interval:.0f}s  |  min ROI to trigger: {args.smart_exit_min_roi:+.1f}%")
-        print(f"{'─'*w}")
+        print(f"{'-'*w}")
         print(f"  {'Metric':<28}  {'Baseline':>14}  {'Smart Exit':>14}  {'Delta':>10}")
-        print(f"{'─'*w}")
+        print(f"{'-'*w}")
 
         def _fmt_delta(base_val, smart_val, fmt="{:+.2f}", pct=False):
             delta = smart_val - base_val
@@ -1580,7 +1580,7 @@ def main():
             delta_str = _fmt_delta(bv, sv, fmt, pct)
             print(f"  {label:<28}  {bstr:>14}  {sstr:>14}  {delta_str:>10}")
 
-        print(f"{'─'*w}")
+        print(f"{'-'*w}")
         print(f"  Smart exits triggered:  {len(smart_triggered)}  |  profitable: {smart_won}/{len(smart_triggered)}")
 
         # Break down smart exits by flip type
@@ -1612,14 +1612,14 @@ def main():
     final_equity = bt.risk_mgr.equity
 
     report = generate_report(trades, hours)
-    report += f"\n ADAPTIVE SIZING\n {'─'*41}\n"
+    report += f"\n ADAPTIVE SIZING\n {'-'*41}\n"
     report += f"  Start equity:       ${args.equity:.2f}\n"
     report += f"  Final equity:       ${final_equity:.2f}\n"
     report += f"  Return:             {((final_equity - args.equity) / args.equity) * 100:+.1f}%\n"
     report += f"  Bet range:          {RiskManager.BET_PCT_MIN*100:.0f}%-{RiskManager.BET_PCT_MAX*100:.0f}% of equity\n"
     if args.smart_exit:
         smart_triggered = [t for t in trades if t.exit_reason and t.exit_reason.startswith("smart_exit")]
-        report += f"\n SMART EXIT\n {'─'*41}\n"
+        report += f"\n SMART EXIT\n {'-'*41}\n"
         report += f"  Interval:           {args.smart_exit_interval:.0f}s\n"
         report += f"  Min ROI to trigger: {args.smart_exit_min_roi:+.1f}%\n"
         report += f"  Triggered:          {len(smart_triggered)} trades\n"

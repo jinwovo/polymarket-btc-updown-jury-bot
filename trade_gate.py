@@ -348,7 +348,7 @@ def evaluate_entry_gate(
     fee_rate = max(0.0, float(config.trading.fee_rate))
     min_roi = float(config.trading.min_expected_roi)
 
-    # ── Spread cost awareness (from RL article insight) ──
+    # -- Spread cost awareness (from RL article insight) --
     # The overround (up_ask + down_ask - 1.0) represents the book's spread tax.
     # If we need to early-exit, we lose roughly half the overround.  Factor this
     # into the effective fee so that wide-spread windows need bigger edge.
@@ -366,7 +366,7 @@ def evaluate_entry_gate(
         )
     )
     win_prob_pass = bool(model_prob >= win_prob_floor)
-    # ── Coinflip weak-edge guard ──
+    # -- Coinflip weak-edge guard --
     # When entry_price is near 0.50 (the coin-flip zone), require a stronger
     # probability edge before allowing entry.  Most recent losses came from
     # entering at 0.47-0.53 with thin margins that flipped.

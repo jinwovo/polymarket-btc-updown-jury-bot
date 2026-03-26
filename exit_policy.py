@@ -101,7 +101,7 @@ class ExitPolicyConfig:
     favor_hold_min_remaining_sec: float = 60.0
     favor_hold_break_even_floor_roi_pct: float = -8.0
     # Near-certain win: exit immediately when opposite token is this cheap
-    # (our side ≈ 1 - opposite_ask, e.g. opposite <= 0.05 → side >= 0.95).
+    # (our side ~ 1 - opposite_ask, e.g. opposite <= 0.05 -> side >= 0.95).
     # No point risking a late reversal when we've essentially won.
     near_certain_win_opposite_ask: float = 0.05
     near_certain_win_min_hold_sec: float = 10.0
@@ -251,8 +251,8 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
             severe_adverse=severe_adverse,
         )
 
-    # Near-certain win: our side token ≈ 1 - opposite_ask.
-    # When opposite is nearly worthless, we've essentially won — sell now
+    # Near-certain win: our side token ~ 1 - opposite_ask.
+    # When opposite is nearly worthless, we've essentially won -- sell now
     # rather than risk a late reversal for a tiny extra payout.
     ncw_threshold = float(cfg.near_certain_win_opposite_ask)
     if (
@@ -289,7 +289,7 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
     else:
         opposite_hits = 0
 
-    # Hard adverse flush: BINARY MARKET — only salvage when position is
+    # Hard adverse flush: BINARY MARKET -- only salvage when position is
     # nearly certainly lost.  Require opposite >= 0.93 (market 93%+ against
     # us) AND remaining <= 90s (late enough that reversal is unlikely).
     hard_adverse_ask = max(float(cfg.opposite_ask), 0.93)
@@ -332,7 +332,7 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
 
     # Time stop: only fire when ROI is truly negative (losing) AND not in
     # strong_favor.  Previous logic cut profitable positions that hadn't
-    # reached profit_take threshold yet — e.g. paper id=6 was UP-correct
+    # reached profit_take threshold yet -- e.g. paper id=6 was UP-correct
     # but time_stop closed it at a loss because of mark-to-market lag.
     effective_timestop_roi = min(float(cfg.timestop_max_roi_pct), -2.0)  # never positive
     if (
@@ -349,9 +349,9 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
 
     peak = float(inp.peak_roi_pct)
     # Trailing stop: suppress when BTC is moving in our favour with enough
-    # time left — mark-to-market dips are normal noise in 5m binary markets.
+    # time left -- mark-to-market dips are normal noise in 5m binary markets.
     # Also suppress if ROI is still above break-even (> -5%) and remaining > 60s.
-    # EXCEPTION: never suppress when peak was very high — protecting large
+    # EXCEPTION: never suppress when peak was very high -- protecting large
     # profits takes priority over waiting for settlement.  The force_peak
     # threshold marks the level where profit protection overrides holding.
     high_peak_protect = peak >= float(cfg.trailing_force_peak_pct)
@@ -395,7 +395,7 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
             f", rem={remaining:.1f}s, favor={strong_favor}, late={break_even_late_window})"
         )
 
-    # Profit-take: when ROI exceeds force threshold, ignore strong_favor —
+    # Profit-take: when ROI exceeds force threshold, ignore strong_favor --
     # locking in guaranteed large wins trumps directional momentum.
     # Binance-Chainlink divergence means even "winning" positions can lose
     # at settlement, so taking profit at extreme ROI is strictly better.

@@ -898,7 +898,7 @@ class DataCollector:
         if denom < 1e-8:
             return 1.0 if x > 0 else 0.0
         z = max(-8.0, min(8.0, x / denom))
-        # Φ(z) via math.erfc
+        # Phi(z) via math.erfc
         return 0.5 * math.erfc(-z / math.sqrt(2.0))
 
     @staticmethod
