@@ -3915,7 +3915,10 @@ class TradingBot:
                 dynamic_min_roi * 100.0,
             )
             return
-        if LIVE_MIRROR_PAPER_GATES:
+        # If signal_cache gate_allow=1, data_collector already validated everything.
+        # Skip adaptive parity guards to ensure Paper=Live parity.
+        _skip_adaptive_guards = bool(LIVE_MIRROR_PAPER_GATES and '_gate_allow' in dir() and _gate_allow)
+        if LIVE_MIRROR_PAPER_GATES and not _skip_adaptive_guards:
             try:
                 conn = self._ensure_state_conn()
                 loss_streak, recent_loss_rate = _live_recent_risk_state(conn)
