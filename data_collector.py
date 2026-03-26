@@ -258,9 +258,9 @@ class DataCollector:
                             _ub, _ua, _db, _da,
                             _spread_up, _spread_down, _overround,
                         ))
-                        # ── Shared Jury evaluation ──
+                        # -- Shared Jury evaluation --
                         self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
-                # ── Check for new trades (display on server console) ──
+                # -- Check for new trades (display on server console) --
                 self._check_new_trades()
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
@@ -443,7 +443,7 @@ class DataCollector:
 
             decision = self._jury.deliberate(ctx)
 
-            # ── Price guards (shared module -- same logic as backtest) ──
+            # -- Price guards (shared module -- same logic as backtest) --
             btc_move_pct = 0.0
             recent_move_pct = None
             trend_move_pct = None
@@ -468,7 +468,7 @@ class DataCollector:
 
             buy_sell_ratio = _bs_ratio
 
-            # ── Entry gate (same check as Paper/Live) ──
+            # -- Entry gate (same check as Paper/Live) --
             gate_allow = 0
             gate_ev = None
             gate_reason = None
@@ -1124,7 +1124,7 @@ class DataCollector:
                             slug, fp,
                         )
 
-                # ── Read current DB state ──
+                # -- Read current DB state --
                 row = fetch_one(
                     self.db,
                     "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
@@ -1136,10 +1136,10 @@ class DataCollector:
                 end_price = float(row[1]) if row[1] else None
                 old_outcome = str(row[2]) if row[2] else None
 
-                # ── Determine PTB (start price) ──
+                # -- Determine PTB (start price) --
                 ptb_f = float(ptb) if ptb is not None and float(ptb) > 0 else old_start
 
-                # ── Determine best outcome ──
+                # -- Determine best outcome --
                 # Priority: 1) Polymarket oracle API  2) Final price vs PTB  3) end_price vs PTB
                 outcome = None
                 outcome_source = "unknown"
@@ -1157,7 +1157,7 @@ class DataCollector:
                     # No useful data yet, keep trying
                     continue
 
-                # ── Update market_windows ──
+                # -- Update market_windows --
                 if ptb_f is not None:
                     execute_write(
                         self.db,
@@ -1183,7 +1183,7 @@ class DataCollector:
                 )
 
                 corrected_tag = (
-                    f" [CORRECTED {old_outcome}→{outcome} via {outcome_source}]"
+                    f" [CORRECTED {old_outcome}->{outcome} via {outcome_source}]"
                     if outcome_changed else ""
                 )
                 logger.info(
@@ -1195,7 +1195,7 @@ class DataCollector:
                     corrected_tag,
                 )
 
-                # ── If outcome changed, correct trades ──
+                # -- If outcome changed, correct trades --
                 if outcome_changed:
                     self._correct_trades_for_outcome_change(
                         window_start, slug, old_outcome, outcome, outcome_source,
@@ -1221,7 +1221,7 @@ class DataCollector:
         recalculate PnL, and send Telegram alert."""
         corrections = []
 
-        # ── Correct paper_trades ──
+        # -- Correct paper_trades --
         paper_rows = fetch_all_dicts(
             self.db,
             """SELECT id, direction, stake, entry_price, pnl, close_reason
@@ -1243,15 +1243,15 @@ class DataCollector:
                 self.db,
                 """UPDATE paper_trades
                    SET pnl = ?, won = ?, actual_outcome = ?,
-                       close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: ', ?, '→', ?, ']')
+                       close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: ', ?, '->', ?, ']')
                    WHERE id = ?""",
                 (new_pnl, 1 if won else 0, new_outcome, old_outcome, new_outcome, pt["id"]),
             )
             corrections.append(
-                f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+                f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}->${new_pnl:+.2f}"
             )
 
-        # ── Correct live_trades (trades table) ──
+        # -- Correct live_trades (trades table) --
         for table in ("trades", "live_trades"):
             try:
                 live_rows = fetch_all_dicts(
@@ -1277,22 +1277,22 @@ class DataCollector:
                     self.db,
                     f"""UPDATE {table}
                         SET actual_outcome = ?, won = ?, pnl = ?,
-                            close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}→{new_outcome}]')
+                            close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}->{new_outcome}]')
                         WHERE id = ?""",
                     (new_outcome, 1 if won else 0, new_pnl, lt["id"]),
                 )
                 corrections.append(
-                    f"  Live #{lt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+                    f"  Live #{lt['id']} {direction}: ${old_pnl:+.2f}->${new_pnl:+.2f}"
                 )
 
         self.db.commit()
         logger.warning(
-            "OUTCOME ADJUSTED %s: %s→%s (via %s)\n%s",
+            "OUTCOME ADJUSTED %s: %s->%s (via %s)\n%s",
             slug, old_outcome, new_outcome, source,
             "\n".join(corrections) if corrections else "  (no trades affected)",
         )
 
-        # ── Telegram alert ──
+        # -- Telegram alert --
         if corrections:
             try:
                 from telegram_notifier import send_telegram_message
@@ -1302,7 +1302,7 @@ class DataCollector:
                     msg = (
                         f"[!] OUTCOME ADJUSTED\n"
                         f"Window: {slug}\n"
-                        f"Change: {old_outcome} → {new_outcome}\n"
+                        f"Change: {old_outcome} -> {new_outcome}\n"
                         f"Source: {source}\n"
                         f"\n"
                         + "\n".join(corrections)

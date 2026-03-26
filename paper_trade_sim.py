@@ -1179,7 +1179,7 @@ def open_trade_if_signal(
     risk_fraction: float,
     sizing_mode: str,
 ) -> bool:
-    # ── Read shared signal from data_collector's Jury (via DB) ──
+    # -- Read shared signal from data_collector's Jury (via DB) --
     cached = _read_signal_cache(conn)
     if cached is None:
         return False
@@ -1294,7 +1294,7 @@ def open_trade_if_signal(
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
     # All market guards (implied-side, divergence, momentum, trend, price range)
-    # are checked by data_collector → signal_cache.guards_passed.
+    # are checked by data_collector -> signal_cache.guards_passed.
     # Paper does NOT re-check -- ensures backtest = paper = live parity.
 
     btc_now = market.get("btc_price")
@@ -1318,7 +1318,7 @@ def open_trade_if_signal(
         return False
     # Trend/macro guards handled by signal_cache.guards_passed (above)
 
-    # Entry gate checked by data_collector → signal_cache.gate_allow
+    # Entry gate checked by data_collector -> signal_cache.gate_allow
     # Paper reads result instead of re-running (same price = same result)
     if cached:
         _gate_allow = int(cached.get("gate_allow") or 0)

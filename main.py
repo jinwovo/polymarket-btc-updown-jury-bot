@@ -2057,12 +2057,12 @@ class TradingBot:
             self._pending_entry_retry = None
             return False
 
-        # Clear if signal direction changed (e.g. UP→DOWN or NO_TRADE)
+        # Clear if signal direction changed (e.g. UP->DOWN or NO_TRADE)
         try:
             _retry_sig = fetch_one_dict(self._ensure_state_conn(), "SELECT direction FROM signal_cache WHERE id = 1")
             _sig_dir = str((_retry_sig or {}).get("direction", "NO_TRADE"))
             if _sig_dir != retry["direction"]:
-                logger.info("Entry retry cancelled: signal flipped %s→%s", retry["direction"], _sig_dir)
+                logger.info("Entry retry cancelled: signal flipped %s->%s", retry["direction"], _sig_dir)
                 self._pending_entry_retry = None
                 return False
         except Exception:
@@ -3498,7 +3498,7 @@ class TradingBot:
         if not token_id:
             return
 
-        # ── Ask prices: use signal_cache in parity mode ─────────────
+        # -- Ask prices: use signal_cache in parity mode -------------
         # signal_cache up_ask/down_ask already set above from data_collector's
         # CLOB snapshot. Do NOT re-fetch -- timing difference causes 0.05-0.25 divergence.
         if not LIVE_MIRROR_PAPER_GATES:
@@ -3620,7 +3620,7 @@ class TradingBot:
         # data_collector's Jury + Paper's entry guards already check these.
         # Re-checking in Live with 1-3s timing difference causes Live to miss
         # trades that Paper catches (BTC micro-bounce between checks).
-        # Price guards checked by data_collector → signal_cache.guards_passed.
+        # Price guards checked by data_collector -> signal_cache.guards_passed.
         # Paper and Live both read the SAME result. No timing divergence.
         if LIVE_MIRROR_PAPER_GATES:
             _guards_ok = bool(int(_sig_row.get("guards_passed") or 0))
@@ -3888,7 +3888,7 @@ class TradingBot:
                             override_min_conf,
                         )
                         return
-        # ── Macro trend filter (mirrors paper_trade_sim) ──
+        # -- Macro trend filter (mirrors paper_trade_sim) --
         if LIVE_MIRROR_PAPER_GATES and not _skip_price_guards:
             try:
                 _mt_conn = self._ensure_state_conn()
@@ -4368,7 +4368,7 @@ class TradingBot:
                         window_start, poly_outcome,
                     )
                     return
-                # ── MISMATCH: Polymarket oracle disagrees with our Binance-based result ──
+                # -- MISMATCH: Polymarket oracle disagrees with our Binance-based result --
                 logger.error(
                     "SETTLEMENT CORRECTION: ws=%s Polymarket=%s but bot recorded=%s "
                     "(Binance-Chainlink divergence). Correcting DB.",
@@ -4442,7 +4442,7 @@ class TradingBot:
             resolved_trade = self.current_trade
             resolved_market = self.current_market
 
-            # ── PRIMARY: Check Polymarket's actual settlement outcome ──
+            # -- PRIMARY: Check Polymarket's actual settlement outcome --
             # Binance and Chainlink prices can diverge, so we MUST check
             # Polymarket's oracle-based settlement rather than computing ourselves.
             actual_direction = None
@@ -4458,7 +4458,7 @@ class TradingBot:
             except Exception as e:
                 logger.debug("Polymarket settlement query failed: %s", e)
 
-            # ── FALLBACK: Use Binance price comparison if API unavailable ──
+            # -- FALLBACK: Use Binance price comparison if API unavailable --
             window_end_ts = float(window_start_ts + 300)
             end_price = self.price_feed.get_price_at(window_end_ts)
             if end_price is None:
@@ -4546,7 +4546,7 @@ class TradingBot:
             resampled_prices = [float(t.price) for t in recent]
             resampled_ts = [float(t.timestamp) for t in recent]
 
-        # ── Fresh CLOB fetch for judges (same as paper's fetch_clob_book_sync) ──
+        # -- Fresh CLOB fetch for judges (same as paper's fetch_clob_book_sync) --
         # refresh_odds() cache can be stale by 0.5-2s. Paper fetches fresh
         # CLOB at evaluation time, so Live must do the same to get identical
         # ask prices. This is the #1 cause of paper-only trades.

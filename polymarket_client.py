@@ -17,7 +17,7 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# ── Patch py_clob_client HTTP: increase timeout, add retry ──
+# -- Patch py_clob_client HTTP: increase timeout, add retry --
 # Default is httpx.Client(http2=True) with 5s timeout -- too tight for
 # Polymarket API which often takes 3-8s under load. Also add transport-
 # level retries for connection errors.
