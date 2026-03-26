@@ -1098,15 +1098,12 @@ class TradingBot:
         if equity <= 0.0:
             return 0.0
 
-        # Conviction = edge * confidence, typical 0.01-0.15
-        conviction = _clamp(float(edge), 0.0, 0.30) * _clamp(float(confidence), 0.0, 1.0)
-        # Normalize: 0.02 = weak, 0.12+ = very strong
-        conv_norm = _clamp((conviction - 0.02) / 0.10, 0.0, 1.0)
+        # Direct confidence-based sizing: conf 0.3=5%, conf 1.0=20%
+        conf_norm = _clamp((float(confidence) - 0.3) / 0.7, 0.0, 1.0)
 
-        # Lerp 5%-15% of equity
-        BET_PCT_MIN = 0.05
+        BET_PCT_MIN = 0.10
         BET_PCT_MAX = 0.15
-        bet_pct = BET_PCT_MIN + conv_norm * (BET_PCT_MAX - BET_PCT_MIN)
+        bet_pct = BET_PCT_MIN + conf_norm * (BET_PCT_MAX - BET_PCT_MIN)
         bet = equity * bet_pct
 
         # Reduce on losing streak

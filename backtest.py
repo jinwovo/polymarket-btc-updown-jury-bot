@@ -1504,7 +1504,7 @@ def main():
             print(f" {bet_min*100:5.0f}%  | {bet_max*100:5.0f}%  | {len(trades):6d} | {wr:5.1%} | ${pnl:+9.2f} | {pf:5.2f} | ${max_dd:>9.2f} | ${final_eq:>9.2f} | {ret:+6.1f}%")
 
         # Restore defaults
-        RiskManager.BET_PCT_MIN = 0.05
+        RiskManager.BET_PCT_MIN = 0.10
         RiskManager.BET_PCT_MAX = 0.15
         print(f"{'='*80}")
         return

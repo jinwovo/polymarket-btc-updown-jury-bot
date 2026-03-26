@@ -25,8 +25,8 @@ class RiskManager:
 
     # Adaptive sizing: bet 5-20% of equity based on conviction
     # Sweep showed 5-20% gives +$768 PnL vs 5-15% with same drawdown profile
-    BET_PCT_MIN = 0.05   # 5% of equity for weakest qualifying signals
-    BET_PCT_MAX = 0.20   # 20% of equity for strongest signals
+    BET_PCT_MIN = 0.10   # 5% of equity for weakest qualifying signals
+    BET_PCT_MAX = 0.15   # 20% of equity for strongest signals
 
     def __init__(self, time_fn=None, initial_equity: float = 0.0):
         self.trades: list[TradeRecord] = []
@@ -101,13 +101,10 @@ class RiskManager:
         if confidence <= 0 or edge <= 0:
             return 0.0
 
-        # Conviction score: edge * confidence, typical range 0.01-0.15
-        conviction = edge * confidence
-        # Normalize to 0-1 range (0.03 = weak, 0.12+ = very strong)
-        conv_norm = min(1.0, max(0.0, (conviction - 0.02) / 0.10))
-
-        # Lerp between 5% and 15% of equity
-        bet_pct = self.BET_PCT_MIN + conv_norm * (self.BET_PCT_MAX - self.BET_PCT_MIN)
+        # Direct confidence-based sizing: conf 0.3=5%, conf 1.0=20%
+        # Low confidence = small bet, high confidence = big bet
+        conf_norm = min(1.0, max(0.0, (confidence - 0.3) / 0.7))
+        bet_pct = self.BET_PCT_MIN + conf_norm * (self.BET_PCT_MAX - self.BET_PCT_MIN)
 
         bet_amount = self.equity * bet_pct
 
