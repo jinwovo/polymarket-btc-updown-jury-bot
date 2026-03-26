@@ -461,7 +461,7 @@ export function LiveDashboard() {
   const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
   const [paperTelegramNotify, setPaperTelegramNotify] = useState(false);
   const [liveStake, setLiveStake] = useState("5");
-  const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "fixed">("adaptive");
+  const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "adaptive_seed" | "fixed">("adaptive");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authPrivateKey, setAuthPrivateKey] = useState("");
@@ -1159,7 +1159,7 @@ export function LiveDashboard() {
   useEffect(() => {
     const meta = (liveStatus?.meta ?? {}) as Record<string, unknown>;
     const rawSizing = String(meta.sizing_mode ?? "").toLowerCase();
-    if (rawSizing === "adaptive" || rawSizing === "fixed") {
+    if (rawSizing === "adaptive" || rawSizing === "adaptive_seed" || rawSizing === "fixed") {
       setLiveSizingMode(rawSizing);
     }
     const rawPos = String(meta.position_mode ?? "").toUpperCase();
@@ -1210,7 +1210,7 @@ export function LiveDashboard() {
   const liveTelegram = liveStatus?.telegram;
   const hasLiveApiCreds = Boolean(liveApiCreds?.exists);
   const liveStakeNum = Number(liveStake || "0");
-  const liveStakeValid = liveSizingMode === "adaptive" || (Number.isFinite(liveStakeNum) && liveStakeNum > 0);
+  const liveStakeValid = liveSizingMode === "adaptive" || liveSizingMode === "adaptive_seed" || (Number.isFinite(liveStakeNum) && liveStakeNum > 0);
   const liveStakeOverBalance =
     liveSizingMode === "fixed" &&
     liveStakeValid &&
@@ -1819,7 +1819,7 @@ export function LiveDashboard() {
                   <input
                     value={liveStake}
                     onChange={(e) => setLiveStake(e.target.value)}
-                    disabled={liveSizingMode === "adaptive"}
+                    disabled={liveSizingMode === "adaptive" || liveSizingMode === "adaptive_seed"}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
                   />
                 </label>
@@ -1855,6 +1855,10 @@ export function LiveDashboard() {
               {liveSizingMode === "adaptive" ? (
                 <p className="text-xs text-muted-foreground">
                   Adaptive mode sizes entries proportionally from confidence/edge and account balance cap.
+                </p>
+              ) : liveSizingMode === "adaptive_seed" ? (
+                <p className="text-xs text-muted-foreground">
+                  Adaptive mode sizes entries proportionally from confidence/edge and Seed Capital amount.
                 </p>
               ) : null}
 
