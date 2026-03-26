@@ -1451,97 +1451,83 @@ def open_trade_if_signal(
     adaptive_max_ask = float(parity_thresholds.adaptive_max_ask)
     dynamic_gap = float(parity_thresholds.dynamic_gap)
 
-    if direction == "DOWN" and btc_move_from_start_pct > 0.0:
-        if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
+    # When signal_cache gate_allow=1, data_collector already validated all entry
+    # conditions. Skip ALL adaptive guards to ensure Paper=Live parity.
+    if not (cached and _gate_allow):
+        if direction == "DOWN" and btc_move_from_start_pct > 0.0:
+            if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
+                logger.warning(
+                    "Skip DOWN-above-start hard block ws=%s: btc_vs_start=%+.4f%% >= %.4f%%",
+                    window_start,
+                    btc_move_from_start_pct,
+                    PAPER_DOWN_ABOVE_START_BLOCK_PCT,
+                )
+                return False
+            ratio = btc_move_from_start_pct / max(PAPER_DOWN_ABOVE_START_BLOCK_PCT, 1e-9)
+            ev_penalty = PAPER_DOWN_ABOVE_START_EV_PENALTY * _clamp(ratio, 0.0, 1.0)
+            adaptive_min_ev += ev_penalty
+
+        since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
+        high_quality_override = (
+            gate.expected_roi >= PAPER_HIGH_QUALITY_EV
+            and confidence >= PAPER_HIGH_QUALITY_CONF
+            and support_ratio >= max(adaptive_min_support, 0.80)
+        )
+        if since_last < dynamic_gap and not high_quality_override:
+            return False
+
+        if gate.expected_roi < adaptive_min_ev:
             logger.warning(
-                "Skip DOWN-above-start hard block ws=%s: btc_vs_start=%+.4f%% >= %.4f%%",
-                window_start,
-                btc_move_from_start_pct,
-                PAPER_DOWN_ABOVE_START_BLOCK_PCT,
+                "Skip weak EV ws=%s dir=%s: net_ev=%+.3f%% < %.3f%% (loss_streak=%s, recent_loss_rate=%.0f%%)",
+                window_start, direction,
+                gate.expected_roi * 100.0, adaptive_min_ev * 100.0,
+                loss_streak, recent_loss_rate * 100.0,
             )
             return False
-        ratio = btc_move_from_start_pct / max(PAPER_DOWN_ABOVE_START_BLOCK_PCT, 1e-9)
-        ev_penalty = PAPER_DOWN_ABOVE_START_EV_PENALTY * _clamp(ratio, 0.0, 1.0)
-        adaptive_min_ev += ev_penalty
-
-    since_last = (now_ts - last_opened_at) if last_opened_at > 0 else 999999.0
-    high_quality_override = (
-        gate.expected_roi >= PAPER_HIGH_QUALITY_EV
-        and confidence >= PAPER_HIGH_QUALITY_CONF
-        and support_ratio >= max(adaptive_min_support, 0.80)
-    )
-    if since_last < dynamic_gap and not high_quality_override:
-        return False
-
-    if gate.expected_roi < adaptive_min_ev:
-        logger.warning(
-            "Skip weak EV ws=%s dir=%s: net_ev=%+.3f%% < %.3f%% (loss_streak=%s, recent_loss_rate=%.0f%%)",
-            window_start,
-            direction,
-            gate.expected_roi * 100.0,
-            adaptive_min_ev * 100.0,
-            loss_streak,
-            recent_loss_rate * 100.0,
-        )
-        return False
-    if support_ratio < adaptive_min_support:
-        logger.warning(
-            "Skip weak jury ws=%s dir=%s: support=%.1f%% < %.1f%%",
-            window_start,
-            direction,
-            support_ratio * 100.0,
-            adaptive_min_support * 100.0,
-        )
-        return False
-    require_unanimous = bool(parity_thresholds.require_unanimous)
-    if require_unanimous and support_ratio < 1.0:
-        logger.warning(
-            "Skip non-unanimous ws=%s dir=%s: strictness=%.2f(->%.2f) support=%.1f%%",
-            window_start,
-            direction,
-            strictness,
-            strictness_eff,
-            support_ratio * 100.0,
-        )
-        return False
-    if confidence < adaptive_min_conf:
-        logger.warning(
-            "Skip low confidence ws=%s dir=%s: conf=%.3f < %.3f",
-            window_start,
-            direction,
-            confidence,
-            adaptive_min_conf,
-        )
-        return False
-    if entry_price > adaptive_max_ask:
-        logger.warning(
-            "Skip expensive entry ws=%s dir=%s: ask=%.3f > %.3f",
-            window_start,
-            direction,
-            entry_price,
-            adaptive_max_ask,
-        )
-        return False
-
-    # Underdog guard: cheap tokens (ask < 0.40) have low win rate (~45%).
-    # EV_FIRST inflates net_ev for cheap asks, masking poor probability.
-    # Require higher confidence and EV to justify the low base-rate.
-    if entry_price < 0.40:
-        underdog_min_conf = adaptive_min_conf + 0.10
-        underdog_min_ev = adaptive_min_ev * 2.0
-        if confidence < underdog_min_conf:
+        if support_ratio < adaptive_min_support:
             logger.warning(
-                "Skip underdog entry ws=%s dir=%s: ask=%.3f conf=%.3f < %.3f (underdog)",
-                window_start, direction, entry_price, confidence, underdog_min_conf,
+                "Skip weak jury ws=%s dir=%s: support=%.1f%% < %.1f%%",
+                window_start, direction,
+                support_ratio * 100.0, adaptive_min_support * 100.0,
             )
             return False
-        if gate.expected_roi < underdog_min_ev:
+        require_unanimous = bool(parity_thresholds.require_unanimous)
+        if require_unanimous and support_ratio < 1.0:
             logger.warning(
-                "Skip underdog EV ws=%s dir=%s: ask=%.3f ev=%.3f%% < %.3f%% (underdog)",
-                window_start, direction, entry_price,
-                gate.expected_roi * 100, underdog_min_ev * 100,
+                "Skip non-unanimous ws=%s dir=%s: strictness=%.2f(->%.2f) support=%.1f%%",
+                window_start, direction, strictness, strictness_eff, support_ratio * 100.0,
             )
             return False
+        if confidence < adaptive_min_conf:
+            logger.warning(
+                "Skip low confidence ws=%s dir=%s: conf=%.3f < %.3f",
+                window_start, direction, confidence, adaptive_min_conf,
+            )
+            return False
+        if entry_price > adaptive_max_ask:
+            logger.warning(
+                "Skip expensive entry ws=%s dir=%s: ask=%.3f > %.3f",
+                window_start, direction, entry_price, adaptive_max_ask,
+            )
+            return False
+
+        # Underdog guard
+        if entry_price < 0.40:
+            underdog_min_conf = adaptive_min_conf + 0.10
+            underdog_min_ev = adaptive_min_ev * 2.0
+            if confidence < underdog_min_conf:
+                logger.warning(
+                    "Skip underdog entry ws=%s dir=%s: ask=%.3f conf=%.3f < %.3f (underdog)",
+                    window_start, direction, entry_price, confidence, underdog_min_conf,
+                )
+                return False
+            if gate.expected_roi < underdog_min_ev:
+                logger.warning(
+                    "Skip underdog EV ws=%s dir=%s: ask=%.3f ev=%.3f%% < %.3f%% (underdog)",
+                    window_start, direction, entry_price,
+                    gate.expected_roi * 100, underdog_min_ev * 100,
+                )
+                return False
 
     if realized_equity <= (initial_capital * (1.0 - PAPER_MAX_DRAWDOWN_STOP_PCT)):
         logger.warning(

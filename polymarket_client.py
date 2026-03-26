@@ -1846,13 +1846,25 @@ class PolymarketClient:
                     timeout_seconds=5.0,
                     poll_interval_seconds=0.5,
                 )
-                if maker_result and maker_result.get("filled"):
+                _maker_filled_amt = float(maker_result.get("executed_notional") or 0) if maker_result else 0
+                _maker_fill_ratio = _maker_filled_amt / amount if amount > 0 else 0
+                if maker_result and maker_result.get("filled") and _maker_fill_ratio >= 0.80:
+                    # At least 80% filled as maker — accept
                     maker_result["mode"] = "MAKER_FIRST(maker)"
                     logger.info(
                         "MAKER_FIRST: filled as maker! $%.2f @ %.3f (0%% fee)",
-                        maker_result.get("executed_notional", 0),
+                        _maker_filled_amt,
                         maker_result.get("executed_price", 0),
                     )
+                    return maker_result
+                elif _maker_filled_amt > 0 and _maker_fill_ratio < 0.80:
+                    # Partial fill too small — log and fall through to FOK for remainder
+                    logger.info(
+                        "MAKER_FIRST: partial fill $%.2f/$%.2f (%.0f%%) — falling back to FOK",
+                        _maker_filled_amt, amount, _maker_fill_ratio * 100,
+                    )
+                    # Accept partial as-is (don't try FOK for remainder to avoid complexity)
+                    maker_result["mode"] = "MAKER_FIRST(partial)"
                     return maker_result
                 # Check if GTC cancel failed (order still live on exchange)
                 if maker_result and not maker_result.get("cancelled", True):
