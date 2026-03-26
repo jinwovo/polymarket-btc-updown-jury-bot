@@ -108,6 +108,7 @@ class DataCollector:
         self._last_live_trade_id: int = 0
         self._last_paper_close_id: int = 0
         self._last_live_close_id: int = 0
+        self._parity_alerted_ws: set[int] = set()
 
         # Ring buffer for recent prices (for diffusion/lag_freshness computation)
         self._recent_prices: list[float] = []
@@ -321,8 +322,71 @@ class DataCollector:
                             r["direction"], float(r.get("stake") or 0), float(r.get("entry_price") or 0), r["window_start"],
                         )
                 break  # only check first existing table
+            self._check_parity_mismatch()
         except Exception as e:
             logger.debug("Trade check error: %s", e)
+
+    def _check_parity_mismatch(self):
+        """If Paper opened but Live didn't (or vice versa) within 30s, alert via Telegram."""
+        try:
+            now = time.time()
+            # Check recent paper opens (last 60s)
+            paper_recent = fetch_all_dicts(
+                self.db,
+                "SELECT window_start, direction, opened_at FROM paper_trades WHERE opened_at > %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 3",
+                (now - 60,),
+            )
+            # Check recent live opens (last 60s)
+            live_recent = []
+            for table in ("live_trades", "trades"):
+                try:
+                    live_recent = fetch_all_dicts(
+                        self.db,
+                        f"SELECT window_start, direction, opened_at FROM {table} WHERE opened_at > %s AND status='OPEN' ORDER BY opened_at DESC LIMIT 3",
+                        (now - 60,),
+                    )
+                    break
+                except Exception:
+                    continue
+
+            paper_ws = {int(r["window_start"]) for r in paper_recent}
+            live_ws = {int(r["window_start"]) for r in live_recent}
+
+            # Paper opened but Live didn't
+            for r in paper_recent:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in live_ws and age >= 30 and ws not in self._parity_alerted_ws:
+                    self._parity_alerted_ws.add(ws)
+                    msg = f"⚠️ PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
+                    logger.warning(msg.replace("\n", " | "))
+                    try:
+                        from telegram_notifier import send_telegram_message
+                        tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+                        tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+                        if tg_token and tg_chat:
+                            send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
+                    except Exception:
+                        pass
+
+            # Live opened but Paper didn't
+            for r in live_recent:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in paper_ws and age >= 30 and ws not in self._parity_alerted_ws:
+                    self._parity_alerted_ws.add(ws)
+                    msg = f"⚠️ PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} dir={r['direction']} (age={age:.0f}s)"
+                    logger.warning(msg.replace("\n", " | "))
+                    try:
+                        from telegram_notifier import send_telegram_message
+                        tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+                        tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+                        if tg_token and tg_chat:
+                            send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug("Parity check error: %s", e)
 
     def _evaluate_and_cache_signal(self, now: float, ua, da, ub, db):
         """Run Jury with current data, write signal to DB for paper/live to read."""
