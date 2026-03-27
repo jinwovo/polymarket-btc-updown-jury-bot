@@ -4517,8 +4517,28 @@ class TradingBot:
             except Exception as e:
                 logger.debug("Polymarket settlement query failed: %s", e)
 
-            # -- FALLBACK: Use signal_cache/btc_ticks (Chainlink calibrated) --
-            # Do NOT use Binance raw price -- $30-50 offset causes wrong UP/DOWN
+            # -- FALLBACK 1: Use CLOB odds (most reliable after Polymarket API) --
+            # If UP ask <= 0.10, UP almost certainly won. If DOWN ask <= 0.10, DOWN won.
+            if actual_direction is None:
+                try:
+                    _odds = fetch_one_dict(
+                        self._ensure_state_conn(),
+                        "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE ts BETWEEN %s AND %s ORDER BY ts DESC LIMIT 1",
+                        (float(window_start_ts + 298), float(window_start_ts + 305)),
+                    )
+                    if _odds:
+                        _up_ask = float(_odds.get("up_best_ask") or 0.5)
+                        _dn_ask = float(_odds.get("down_best_ask") or 0.5)
+                        if _up_ask <= 0.10 and _dn_ask >= 0.85:
+                            actual_direction = "DOWN"
+                            logger.info("Settlement from odds: UP_ask=%.3f DOWN_ask=%.3f -> DOWN", _up_ask, _dn_ask)
+                        elif _dn_ask <= 0.10 and _up_ask >= 0.85:
+                            actual_direction = "UP"
+                            logger.info("Settlement from odds: UP_ask=%.3f DOWN_ask=%.3f -> UP", _up_ask, _dn_ask)
+                except Exception:
+                    pass
+
+            # -- FALLBACK 2: Use btc_ticks (Chainlink calibrated) --
             window_end_ts = float(window_start_ts + 300)
             end_price = None
             try:
@@ -4532,19 +4552,18 @@ class TradingBot:
             except Exception:
                 pass
             if end_price is None:
-                # Last resort: signal_cache current price
                 try:
                     _sc = fetch_one_dict(self._ensure_state_conn(), "SELECT btc_price FROM signal_cache WHERE id = 1")
                     end_price = float(_sc["btc_price"]) if _sc and _sc.get("btc_price") else None
                 except Exception:
                     pass
             if end_price is None:
-                end_price = self.price_feed.current_price  # absolute last resort
+                end_price = self.price_feed.current_price
             if actual_direction is None:
                 went_up = end_price >= self.market_start_price
                 actual_direction = "UP" if went_up else "DOWN"
                 logger.warning(
-                    "Settlement fallback to btc_ticks: start=$%.2f end=$%.2f -> %s",
+                    "Settlement fallback to btc_ticks: start=$%.2f end=$%.2f -> %s (odds unavailable)",
                     float(self.market_start_price), float(end_price), actual_direction,
                 )
             won = resolved_trade.direction == actual_direction
