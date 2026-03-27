@@ -474,6 +474,22 @@ class DataCollector:
 
             buy_sell_ratio = _bs_ratio
 
+            # -- Direction stability: once gate_allow=1 for a direction, hold 5s --
+            _now_ts = time.time()
+            _stable_dir = getattr(self, '_stable_direction', '')
+            _stable_until = getattr(self, '_stable_until', 0.0)
+            _stable_ws = getattr(self, '_stable_ws', 0)
+            if _stable_ws == int(self.current_window_start) and _now_ts < _stable_until:
+                if decision.direction != _stable_dir and decision.direction in ("UP", "DOWN"):
+                    decision = type(decision)(
+                        final_vote=decision.final_vote,
+                        direction=_stable_dir,
+                        avg_confidence=decision.avg_confidence,
+                        max_edge=decision.max_edge,
+                        verdicts=decision.verdicts,
+                        unanimous=decision.unanimous,
+                    )
+
             # -- Entry gate (same check as Paper/Live) --
             gate_allow = 0
             gate_ev = None
@@ -510,6 +526,11 @@ class DataCollector:
                     gate_allow = 1 if _gate.allow else 0
                     gate_ev = float(_gate.expected_roi) if _gate.expected_roi else None
                     gate_reason = str(_gate.reason or "")[:200]
+                    # Lock direction for 5s when gate passes
+                    if gate_allow:
+                        self._stable_direction = decision.direction
+                        self._stable_until = _now_ts + 5.0
+                        self._stable_ws = int(self.current_window_start)
                 except Exception as _ge:
                     logger.debug("Entry gate check failed: %s", _ge)
 
