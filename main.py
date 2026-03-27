@@ -1405,7 +1405,16 @@ class TradingBot:
 
             try:
                 risk_payload = json.loads(str(row.get("risk_json") or "{}"))
-                self.risk_mgr.daily_pnl = float(risk_payload.get("daily_pnl") or 0.0)
+                # Use actual DB PnL for today instead of saved state (prevents stale carry-over)
+                try:
+                    import datetime as _dt
+                    _today_start = _dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                    _db_pnl = fetch_one(conn, "SELECT COALESCE(SUM(pnl),0) FROM live_trades WHERE opened_at > %s", (_today_start,))
+                    self.risk_mgr.daily_pnl = float(_db_pnl[0]) if _db_pnl else 0.0
+                    logger.info("Risk manager daily_pnl from DB: $%.2f (saved was $%.2f)",
+                        self.risk_mgr.daily_pnl, float(risk_payload.get("daily_pnl") or 0.0))
+                except Exception:
+                    self.risk_mgr.daily_pnl = float(risk_payload.get("daily_pnl") or 0.0)
                 self.risk_mgr.consecutive_losses = int(risk_payload.get("consecutive_losses") or 0)
                 self.risk_mgr.cooldown_until = float(risk_payload.get("cooldown_until") or 0.0)
                 reset_ts = float(risk_payload.get("daily_reset_time") or 0.0)
