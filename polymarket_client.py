@@ -1420,10 +1420,10 @@ class PolymarketClient:
             for _attempt in range(max_attempts):
                 try:
                     # Limit-price FOK: cap at reference + drift tolerance
-                    _max_fok_drift = float(os.getenv("MAX_FOK_PRICE_DRIFT", "0.06"))
+                    _max_entry = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
                     _fok_limit = min(
                         float(_market_price) if _market_price else 0.99,
-                        float(reference_price or 0.99) + _max_fok_drift,
+                        _max_entry,
                     )
                     _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
                     # Size must be integer (whole shares) to avoid decimal errors
