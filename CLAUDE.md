@@ -67,6 +67,8 @@ data_collector (single process, 0.1s tick)
   ```
   Expected: MIN=0.10, MAX=0.15, timeout=2.0, conf_norm everywhere, import os present
 - **Never mix multiple file changes in one revert** — revert file-by-file, verify each
+- **NEVER use `git checkout <commit> -- <file>`** — overwrites entire file, kills all later changes. Copy needed code manually instead
+- **Post-restore verify data_collector.py**: `grep "_check_parity_mismatch\|COALESCE(stake\|OUTCOME ADJUSTED" data_collector.py` — all must exist
 
 ## Bugs Found & Fixed (don't reintroduce)
 - **DRY_RUN override** — env file override=True overwrites dashboard's DRY_RUN=false
