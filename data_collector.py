@@ -97,7 +97,7 @@ class DataCollector:
         self._window_start_official: bool = False
         self._ptb_scrape_done: bool = False
         self._running = False
-        # Shared Jury — evaluates signal for both paper and live
+        # Shared Jury -- evaluates signal for both paper and live
         self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
         # RTDS WebSocket state
         self._rtds_price: float = 0.0
@@ -108,6 +108,7 @@ class DataCollector:
         self._last_live_trade_id: int = 0
         self._last_paper_close_id: int = 0
         self._last_live_close_id: int = 0
+        self._parity_alerted_ws: set[int] = set()
 
         # Ring buffer for recent prices (for diffusion/lag_freshness computation)
         self._recent_prices: list[float] = []
@@ -217,7 +218,7 @@ class DataCollector:
                             self._recent_timestamps = self._recent_timestamps[-self._RECENT_MAX:]
 
                         # Note: btc_start_price is only set from official Price to Beat (PTB).
-                        # Binance fallback removed — wrong start price causes wrong direction.
+                        # Binance fallback removed -- wrong start price causes wrong direction.
 
                         # Buffer ticks with Chainlink-calibrated price + buy/sell split
                         bucket = round(ts, 1)
@@ -257,9 +258,9 @@ class DataCollector:
                             _ub, _ua, _db, _da,
                             _spread_up, _spread_down, _overround,
                         ))
-                        # ── Shared Jury evaluation ──
+                        # -- Shared Jury evaluation --
                         self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
-                # ── Check for new trades (display on server console) ──
+                # -- Check for new trades (display on server console) --
                 self._check_new_trades()
             except Exception as e:
                 logger.debug(f"Odds poll error: {e}")
@@ -284,7 +285,7 @@ class DataCollector:
             # Paper closes
             rows = fetch_all_dicts(
                 self.db,
-                "SELECT id, window_start, direction, pnl, close_type FROM paper_trades WHERE id > ? AND pnl IS NOT NULL AND closed_at IS NOT NULL AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
+                "SELECT id, window_start, direction, pnl, close_reason FROM paper_trades WHERE id > ? AND pnl IS NOT NULL AND closed_at IS NOT NULL AND archived_at IS NULL ORDER BY id ASC LIMIT 5",
                 (self._last_paper_close_id,),
             )
             for r in rows:
@@ -293,7 +294,7 @@ class DataCollector:
                 tag = "WIN" if pnl > 0 else "LOSS"
                 logger.warning(
                     "[PAPER %s] %s $%+.2f (%s) ws=%s",
-                    tag, r["direction"], pnl, r.get("close_type", ""), r["window_start"],
+                    tag, r["direction"], pnl, r.get("close_reason", ""), r["window_start"],
                 )
             # Live opens/closes
             for table in ("live_trades", "trades"):
@@ -321,8 +322,77 @@ class DataCollector:
                             r["direction"], float(r.get("stake") or 0), float(r.get("entry_price") or 0), r["window_start"],
                         )
                 break  # only check first existing table
+            self._check_parity_mismatch()
         except Exception as e:
             logger.debug("Trade check error: %s", e)
+
+    def _check_parity_mismatch(self):
+        """If Paper opened but Live didn't within 45s of Paper's entry (or vice versa), alert."""
+        try:
+            now = time.time()
+
+            # Recent paper trades with opened_at
+            paper_trades = fetch_all_dicts(
+                self.db,
+                "SELECT window_start, opened_at FROM paper_trades WHERE opened_at > %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 5",
+                (now - 300,),
+            )
+            # Recent live trades
+            live_trades = []
+            for table in ("live_trades", "trades"):
+                try:
+                    live_trades = fetch_all_dicts(
+                        self.db,
+                        f"SELECT window_start, opened_at FROM {table} WHERE opened_at > %s ORDER BY opened_at DESC LIMIT 5",
+                        (now - 300,),
+                    )
+                    break
+                except Exception:
+                    continue
+
+            # Need both to have recent activity
+            if not paper_trades and not live_trades:
+                return
+
+            paper_ws = {int(r["window_start"]) for r in paper_trades}
+            live_ws = {int(r["window_start"]) for r in live_trades}
+
+            # Paper opened but Live didn't -- check 45s after Paper's opened_at
+            for r in paper_trades:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                    # Verify Live has traded at least once recently (process is running)
+                    if not live_trades:
+                        continue
+                    self._parity_alerted_ws.add(ws)
+                    msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} (age={age:.0f}s after Paper entry)"
+                    logger.warning(msg.replace("\n", " | "))
+                    self._send_parity_telegram(msg)
+
+            # Live opened but Paper didn't -- check 45s after Live's opened_at
+            for r in live_trades:
+                ws = int(r["window_start"])
+                age = now - float(r["opened_at"])
+                if ws not in paper_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                    if not paper_trades:
+                        continue
+                    self._parity_alerted_ws.add(ws)
+                    msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} (age={age:.0f}s after Live entry)"
+                    logger.warning(msg.replace("\n", " | "))
+                    self._send_parity_telegram(msg)
+        except Exception as e:
+            logger.debug("Parity check error: %s", e)
+
+    def _send_parity_telegram(self, msg: str):
+        try:
+            from telegram_notifier import send_telegram_message
+            tg_token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+            tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+            if tg_token and tg_chat:
+                send_telegram_message(token=tg_token, chat_id=tg_chat, text=msg)
+        except Exception:
+            pass
 
     def _evaluate_and_cache_signal(self, now: float, ua, da, ub, db):
         """Run Jury with current data, write signal to DB for paper/live to read."""
@@ -379,61 +449,32 @@ class DataCollector:
 
             decision = self._jury.deliberate(ctx)
 
-            # ── Price guards (same as paper_trade_sim) ──
+            # -- Price guards (shared module -- same logic as backtest) --
             btc_move_pct = 0.0
-            recent_move = None
-            trend_move = None
+            recent_move_pct = None
+            trend_move_pct = None
             guards_passed = 0
 
             if decision.direction in ("UP", "DOWN") and self.window_start_price and self.window_start_price > 0:
                 btc_move_pct = ((self.btc_price_adjusted - self.window_start_price) / self.window_start_price) * 100.0
 
-                # Divergence check
-                _down_boundary = float(os.getenv("PAPER_DOWN_MIN_BOUNDARY_DIST_PCT", "0.030"))
-                _up_boundary = float(os.getenv("PAPER_MIN_BOUNDARY_DIST_PCT", "0.020"))
-                _boundary = _down_boundary if decision.direction == "DOWN" else _up_boundary
-                divergence_ok = abs(btc_move_pct) >= _boundary
-
-                # Momentum check (from DB ticks, same as paper)
-                from paper_trade_sim import _recent_move_pct as _paper_move
-                _move_lookback = float(os.getenv("PAPER_RECENT_MOVE_LOOKBACK_SEC", "20"))
-                recent_move = _paper_move(self.db, self.current_window_start, now, _move_lookback)
-                _min_move = float(os.getenv("PAPER_MIN_RECENT_MOVE_PCT", "0.004"))
-
-                # Strong start factor
-                _dir_start = btc_move_pct if decision.direction == "UP" else -btc_move_pct
-                _factor = 1.0
-                if _dir_start >= 0.06:
-                    _factor = max(0.0, 1.0 - (_dir_start - 0.06) / 0.06)
-
-                momentum_ok = True
-                if recent_move is not None:
-                    if decision.direction == "UP" and recent_move < _min_move * _factor:
-                        momentum_ok = False
-                    _down_thr = _min_move
-                    if decision.direction == "DOWN" and btc_move_pct > 0:
-                        _down_thr += float(os.getenv("PAPER_DOWN_ABOVE_START_MOMENTUM_EXTRA", "0.006"))
-                    _eff_down = _down_thr * _factor
-                    if decision.direction == "DOWN" and recent_move > -_eff_down:
-                        momentum_ok = False
-
-                # Trend check
-                _trend_lookback = float(os.getenv("PAPER_TREND_ALIGN_LOOKBACK_SEC", "75"))
-                trend_move = _paper_move(self.db, self.current_window_start, now, _trend_lookback)
-                _trend_thr = float(os.getenv("PAPER_TREND_ALIGN_MAX_OPPOSING_MOVE_PCT", "0.004"))
-                _eff_trend = _trend_thr / max(_factor, 0.05)
-                trend_ok = True
-                if trend_move is not None:
-                    if decision.direction == "UP" and trend_move < -_eff_trend:
-                        trend_ok = False
-                    if decision.direction == "DOWN" and trend_move > _eff_trend:
-                        trend_ok = False
-
-                guards_passed = 1 if (divergence_ok and momentum_ok and trend_ok) else 0
+                from entry_guards import evaluate_market_guards
+                _guard = evaluate_market_guards(
+                    direction=decision.direction,
+                    btc_price=self.btc_price_adjusted,
+                    start_price=self.window_start_price,
+                    up_ask=float(self.current_market.up_best_ask) if self.current_market and self.current_market.up_best_ask else None,
+                    down_ask=float(self.current_market.down_best_ask) if self.current_market and self.current_market.down_best_ask else None,
+                    elapsed=elapsed,
+                    db_conn=self.db,
+                    window_start=self.current_window_start,
+                    now_ts=now,
+                )
+                guards_passed = 1 if _guard.passed else 0
 
             buy_sell_ratio = _bs_ratio
 
-            # ── Entry gate (same check as Paper/Live) ──
+            # -- Entry gate (same check as Paper/Live) --
             gate_allow = 0
             gate_ev = None
             gate_reason = None
@@ -499,7 +540,7 @@ class DataCollector:
                     1 if decision.unanimous else 0, judges_json,
                     up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
                     elapsed, remaining,
-                    btc_move_pct, recent_move, trend_move, guards_passed,
+                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                 ),
             )
@@ -520,7 +561,7 @@ class DataCollector:
                     if self.current_window_start > 0 and self.btc_price_adjusted is not None:
                         self._finalize_window(self.current_window_start, self.btc_price_adjusted)
 
-                    # Start tracking new window — chainlink_adj immediately, scrape at +3s
+                    # Start tracking new window -- chainlink_adj immediately, scrape at +3s
                     self.current_window_start = window_start
                     self.window_start_price = None
                     self._window_start_official = False
@@ -543,7 +584,7 @@ class DataCollector:
                             self._chainlink.is_calibrated
                             and self.btc_price is not None
                         ):
-                            # Immediate fallback — scrape will correct in ~3s
+                            # Immediate fallback -- scrape will correct in ~3s
                             self.window_start_price = self._chainlink.adjust(self.btc_price)
                             self._window_start_official = True
                             self._window_start_source = "chainlink_adj"
@@ -775,7 +816,7 @@ class DataCollector:
                     _pw_consecutive_fail = 0
 
                     if rtds_ok:
-                        # RTDS alive — only log if diff > $10 (something wrong)
+                        # RTDS alive -- only log if diff > $10 (something wrong)
                         diff = abs(self._rtds_price - poly_price)
                         if diff > 10.0:
                             logger.warning(
@@ -783,7 +824,7 @@ class DataCollector:
                                 self._rtds_price, poly_price, diff,
                             )
                     else:
-                        # RTDS down — use Playwright as primary
+                        # RTDS down -- use Playwright as primary
                         binance_now = self.btc_price
                         if binance_now is not None and binance_now > 0:
                             new_offset = binance_now - poly_price
@@ -863,7 +904,7 @@ class DataCollector:
         if denom < 1e-8:
             return 1.0 if x > 0 else 0.0
         z = max(-8.0, min(8.0, x / denom))
-        # Φ(z) via math.erfc
+        # Phi(z) via math.erfc
         return 0.5 * math.erfc(-z / math.sqrt(2.0))
 
     @staticmethod
@@ -1053,7 +1094,7 @@ class DataCollector:
                     f"${start_price:,.2f} -> ${end_price:,.2f} ({change_pct:+.4f}%)"
                 )
 
-            # Schedule async PTB backfill — Gamma API only returns PTB after resolution
+            # Schedule async PTB backfill -- Gamma API only returns PTB after resolution
             asyncio.get_event_loop().create_task(
                 self._backfill_ptb(window_start)
             )
@@ -1089,7 +1130,7 @@ class DataCollector:
                             slug, fp,
                         )
 
-                # ── Read current DB state ──
+                # -- Read current DB state --
                 row = fetch_one(
                     self.db,
                     "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
@@ -1101,10 +1142,10 @@ class DataCollector:
                 end_price = float(row[1]) if row[1] else None
                 old_outcome = str(row[2]) if row[2] else None
 
-                # ── Determine PTB (start price) ──
+                # -- Determine PTB (start price) --
                 ptb_f = float(ptb) if ptb is not None and float(ptb) > 0 else old_start
 
-                # ── Determine best outcome ──
+                # -- Determine best outcome --
                 # Priority: 1) Polymarket oracle API  2) Final price vs PTB  3) end_price vs PTB
                 outcome = None
                 outcome_source = "unknown"
@@ -1122,7 +1163,7 @@ class DataCollector:
                     # No useful data yet, keep trying
                     continue
 
-                # ── Update market_windows ──
+                # -- Update market_windows --
                 if ptb_f is not None:
                     execute_write(
                         self.db,
@@ -1148,7 +1189,7 @@ class DataCollector:
                 )
 
                 corrected_tag = (
-                    f" [CORRECTED {old_outcome}→{outcome} via {outcome_source}]"
+                    f" [CORRECTED {old_outcome}->{outcome} via {outcome_source}]"
                     if outcome_changed else ""
                 )
                 logger.info(
@@ -1160,7 +1201,7 @@ class DataCollector:
                     corrected_tag,
                 )
 
-                # ── If outcome changed, correct trades ──
+                # -- If outcome changed, correct trades --
                 if outcome_changed:
                     self._correct_trades_for_outcome_change(
                         window_start, slug, old_outcome, outcome, outcome_source,
@@ -1186,10 +1227,10 @@ class DataCollector:
         recalculate PnL, and send Telegram alert."""
         corrections = []
 
-        # ── Correct paper_trades ──
+        # -- Correct paper_trades --
         paper_rows = fetch_all_dicts(
             self.db,
-            """SELECT id, direction, stake, entry_price, pnl, close_type
+            """SELECT id, direction, stake, entry_price, pnl, close_reason
                FROM paper_trades
                WHERE window_start = ? AND archived_at IS NULL""",
             (window_start,),
@@ -1207,31 +1248,31 @@ class DataCollector:
             execute_write(
                 self.db,
                 """UPDATE paper_trades
-                   SET pnl = ?, exit_price = ?,
-                       close_type = CONCAT(COALESCE(close_type,''), ' [adj: ', ?, '→', ?, ']')
+                   SET pnl = ?, won = ?, actual_outcome = ?,
+                       close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: ', ?, '->', ?, ']')
                    WHERE id = ?""",
-                (new_pnl, 1.0 if won else 0.0, old_outcome, new_outcome, pt["id"]),
+                (new_pnl, 1 if won else 0, new_outcome, old_outcome, new_outcome, pt["id"]),
             )
             corrections.append(
-                f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+                f"  Paper #{pt['id']} {direction}: ${old_pnl:+.2f}->${new_pnl:+.2f}"
             )
 
-        # ── Correct live_trades (trades table) ──
+        # -- Correct live_trades (trades table) --
         for table in ("trades", "live_trades"):
             try:
                 live_rows = fetch_all_dicts(
                     self.db,
-                    f"""SELECT id, direction, amount, price, pnl
+                    f"""SELECT id, direction, COALESCE(stake, amount) as stake, COALESCE(entry_price, price) as entry_price, pnl
                         FROM {table}
-                        WHERE window_start = ? AND status = 'CLOSED'""",
+                        WHERE window_start = ?""",
                     (window_start,),
                 )
             except Exception:
                 continue
             for lt in live_rows:
                 direction = str(lt.get("direction", ""))
-                stake = float(lt.get("amount") or 0)
-                entry_price = float(lt.get("price") or 0)
+                stake = float(lt.get("stake") or 0)
+                entry_price = float(lt.get("entry_price") or 0)
                 old_pnl = float(lt.get("pnl") or 0)
                 if not direction or stake <= 0 or entry_price <= 0:
                     continue
@@ -1242,22 +1283,22 @@ class DataCollector:
                     self.db,
                     f"""UPDATE {table}
                         SET actual_outcome = ?, won = ?, pnl = ?,
-                            close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}→{new_outcome}]')
+                            close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}->{new_outcome}]')
                         WHERE id = ?""",
                     (new_outcome, 1 if won else 0, new_pnl, lt["id"]),
                 )
                 corrections.append(
-                    f"  Live #{lt['id']} {direction}: ${old_pnl:+.2f}→${new_pnl:+.2f}"
+                    f"  Live #{lt['id']} {direction}: ${old_pnl:+.2f}->${new_pnl:+.2f}"
                 )
 
         self.db.commit()
         logger.warning(
-            "OUTCOME ADJUSTED %s: %s→%s (via %s)\n%s",
+            "OUTCOME ADJUSTED %s: %s->%s (via %s)\n%s",
             slug, old_outcome, new_outcome, source,
             "\n".join(corrections) if corrections else "  (no trades affected)",
         )
 
-        # ── Telegram alert ──
+        # -- Telegram alert --
         if corrections:
             try:
                 from telegram_notifier import send_telegram_message
@@ -1265,9 +1306,9 @@ class DataCollector:
                 tg_chat = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
                 if tg_token:
                     msg = (
-                        f"⚠️ OUTCOME ADJUSTED\n"
+                        f"[!] OUTCOME ADJUSTED\n"
                         f"Window: {slug}\n"
-                        f"Change: {old_outcome} → {new_outcome}\n"
+                        f"Change: {old_outcome} -> {new_outcome}\n"
                         f"Source: {source}\n"
                         f"\n"
                         + "\n".join(corrections)
