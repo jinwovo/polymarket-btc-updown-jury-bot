@@ -691,7 +691,7 @@ def _fetch_live_daily_risk() -> dict[str, Any]:
         conn.close()
         daily_pnl = float(row[0]) if row else 0.0
         daily_trades = int(row[1]) if row else 0
-        daily_loss_limit = max(1.0, balance * 0.40)
+        daily_loss_limit = float(os.getenv("LIVE_DAILY_LOSS_LIMIT", str(max(1.0, balance * 0.40))))
         return {
             "seed_capital": round(balance, 2),
             "daily_pnl": round(daily_pnl, 2),
@@ -700,7 +700,7 @@ def _fetch_live_daily_risk() -> dict[str, Any]:
             "daily_loss_remaining": round(max(0, daily_loss_limit + daily_pnl), 2),
         }
     except Exception:
-        limit = max(1.0, balance * 0.40)
+        limit = float(os.getenv("LIVE_DAILY_LOSS_LIMIT", str(max(1.0, balance * 0.40))))
         return {
             "seed_capital": round(balance, 2),
             "daily_pnl": 0.0,
@@ -2728,6 +2728,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "seed_capital": val})
             except Exception as e:
                 logger.exception("seed-capital save error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/control/live/daily-loss-limit":
+            try:
+                val = float(payload.get("daily_loss_limit", 0))
+                if val <= 0:
+                    self._send_json({"ok": False, "error": "daily_loss_limit must be > 0"}, code=400)
+                    return
+                val_str = f"{val:.2f}"
+                _set_runtime_var("LIVE_DAILY_LOSS_LIMIT", val_str)
+                _update_env_file(_PUBLIC_ENV_PATH, {"LIVE_DAILY_LOSS_LIMIT": val_str})
+                self._send_json({"ok": True, "daily_loss_limit": val})
+            except Exception as e:
+                logger.exception("daily-loss-limit save error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

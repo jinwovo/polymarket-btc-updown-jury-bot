@@ -1809,8 +1809,32 @@ export function LiveDashboard() {
                   </p>
                 </div>
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
-                  <p className="text-muted-foreground">Daily Loss Limit (40% of balance)</p>
-                  <p className={`font-mono ${(liveStatus?.daily_risk?.daily_loss_remaining ?? 50) < (liveStatus?.daily_risk?.daily_loss_limit ?? 50) * 0.3 ? "text-red-400" : ""}`}>
+                  <p className="text-muted-foreground">Daily Loss Limit</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      defaultValue={liveStatus?.daily_risk?.daily_loss_limit ?? 60}
+                      id="dailyLossLimitInput"
+                      className="w-20 rounded border border-border/70 bg-background/40 px-1 py-0.5 font-mono text-xs"
+                    />
+                    <button
+                      className="rounded bg-yellow-600 px-2 py-0.5 text-xs text-white hover:bg-yellow-500"
+                      onClick={async () => {
+                        const val = parseFloat((document.getElementById("dailyLossLimitInput") as HTMLInputElement)?.value || "0");
+                        if (val > 0) {
+                          await fetch("/api/control/live/daily-loss-limit", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ daily_loss_limit: val }),
+                          });
+                          void refreshLiveStatus();
+                        }
+                      }}
+                    >Save</button>
+                  </div>
+                  <p className={`font-mono mt-1 ${(liveStatus?.daily_risk?.daily_loss_remaining ?? 50) < (liveStatus?.daily_risk?.daily_loss_limit ?? 50) * 0.3 ? "text-red-400" : ""}`}>
                     -${(liveStatus?.daily_risk?.daily_loss_limit ?? 0).toFixed(2)} | left ${(liveStatus?.daily_risk?.daily_loss_remaining ?? 0).toFixed(2)}
                   </p>
                 </div>
