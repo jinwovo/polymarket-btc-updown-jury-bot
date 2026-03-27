@@ -3419,7 +3419,8 @@ class TradingBot:
             entry_start_sec = float(MIRROR_ENTRY_START_SEC)
             entry_end_sec = float(MIRROR_ENTRY_END_SEC)
             min_seconds_remaining = float(MIRROR_MIN_SECONDS_REMAINING)
-        if seconds_elapsed < entry_start_sec or seconds_elapsed > entry_end_sec:
+        _timing_elapsed = float(_sig_row.get("seconds_elapsed") or seconds_elapsed) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() and _sig_row else seconds_elapsed
+        if _timing_elapsed < entry_start_sec or _timing_elapsed > entry_end_sec:
             return
         if seconds_remaining < min_seconds_remaining:
             return
@@ -3483,10 +3484,11 @@ class TradingBot:
             if LIVE_MIRROR_PAPER_GATES
             else float(getattr(config.trading, "down_entry_end_seconds", 160))
         )
-        if decision.direction == "DOWN" and seconds_elapsed > down_entry_end:
+        _entry_elapsed = float(_sig_row.get("seconds_elapsed") or seconds_elapsed) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() and _sig_row else seconds_elapsed
+        if decision.direction == "DOWN" and _entry_elapsed > down_entry_end:
             self._log_rejected_live(
-                decision, ctx, seconds_elapsed, "down_late_entry",
-                f"DOWN late entry: elapsed={seconds_elapsed:.0f}s > {down_entry_end:.0f}s",
+                decision, ctx, _entry_elapsed, "down_late_entry",
+                f"DOWN late entry: elapsed={_entry_elapsed:.0f}s > {down_entry_end:.0f}s",
             )
             return
 
