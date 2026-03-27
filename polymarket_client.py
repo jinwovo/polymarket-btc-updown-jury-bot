@@ -1357,7 +1357,7 @@ class PolymarketClient:
             sim_price = _to_optional_float(reference_price) or 0.5
             sim_size = float(amount / sim_price) if sim_price > 0 else 0.0
             logger.info(
-                f"[DRY RUN] Market/FOK {side} ${amount:.2f} "
+                f"[DRY RUN] Market/FAK {side} ${amount:.2f} "
                 f"(token={token_id[:16]}..., ref={sim_price:.4f})"
             )
             return {
@@ -1437,19 +1437,19 @@ class PolymarketClient:
                     signed = await asyncio.to_thread(
                         client.create_order, order_args
                     )
-                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
+                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FAK)
                     break
                 except Exception as _net_err:
                     _last_err = _net_err
                     err_str = str(_net_err).lower()
                     if "duplicated" in err_str or "duplicate" in err_str:
-                        logger.info("FOK duplicate on attempt %d -- accepted: %s", _attempt + 1, _net_err)
+                        logger.info("FAK duplicate on attempt %d -- accepted: %s", _attempt + 1, _net_err)
                         resp = {"orderID": "duplicate-accepted", "status": "MATCHED", "transactionsHashes": []}
                         break
                     if _attempt < max_attempts - 1:
                         is_server_err = any(s in err_str for s in ("425", "429", "500", "502", "503", "not ready"))
                         wait = (2.0 if is_server_err else 0.5) * (_attempt + 1)
-                        logger.warning("FOK order error (attempt %d/%d), retry in %.1fs: %s", _attempt + 1, max_attempts, wait, _net_err)
+                        logger.warning("FAK order error (attempt %d/%d), retry in %.1fs: %s", _attempt + 1, max_attempts, wait, _net_err)
                         await asyncio.sleep(wait)
                         continue
                     raise
@@ -1467,7 +1467,7 @@ class PolymarketClient:
             if _order_likely_accepted:
                 result["uncertain_fill"] = True
             logger.info(
-                "Market/FOK order %s: status=%s filled=$%.2f%s",
+                "Market/FAK order %s: status=%s filled=$%.2f%s",
                 side,
                 result.get("status"),
                 result.get("executed_notional", 0.0),
