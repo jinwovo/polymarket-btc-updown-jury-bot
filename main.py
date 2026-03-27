@@ -2503,7 +2503,7 @@ class TradingBot:
         if attempt_idx >= len(offsets):
             logger.info("Post-settlement exit attempts exhausted; fallback to claim.")
             self._pending_settlement_exit = None
-            await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
+            # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
             return
 
         window_end = float(pending.get("window_end") or 0.0)
@@ -2525,7 +2525,7 @@ class TradingBot:
             logger.warning("Post-settlement exit odds refresh failed: %s", e)
             if int(pending.get("attempt_index") or 0) >= len(offsets):
                 self._pending_settlement_exit = None
-                await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
+                # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
             return
 
         direction = str(pending.get("direction") or "").upper()
@@ -2553,7 +2553,7 @@ class TradingBot:
             )
             if int(pending.get("attempt_index") or 0) >= len(offsets):
                 self._pending_settlement_exit = None
-                await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
+                # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
             return
 
         est_notional = float(shares * float(side_bid))
@@ -2573,7 +2573,7 @@ class TradingBot:
             )
             if int(pending.get("attempt_index") or 0) >= len(offsets):
                 self._pending_settlement_exit = None
-                await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
+                # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
             return
 
         exit_result = await self.poly_client.place_exit_order(
@@ -2627,7 +2627,7 @@ class TradingBot:
 
         if int(pending.get("attempt_index") or 0) >= len(offsets):
             self._pending_settlement_exit = None
-            await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
+            # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
 
     async def _maybe_auto_claim(self, *, now_ts: float, force: bool = False, reason: str = "periodic"):
         if config.trading.dry_run:
@@ -3113,7 +3113,7 @@ class TradingBot:
 
         await self._refresh_adaptive_balance_cap(force=True, reason="startup")
         # Auto-claim disabled: py_clob_client doesn't expose claim/redeem API
-        # await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
+        # # await self._maybe_auto_claim(now_ts=float(time.time()), force=True, reason="startup")
 
         # Price sync disabled -- data_collector handles Chromium scraping and
         # writes calibrated prices to DB. Live reads signal_cache, not own prices.
@@ -3178,14 +3178,14 @@ class TradingBot:
 
         await self._refresh_adaptive_balance_cap(reason="periodic")
         await self._maybe_run_pending_settlement_exit(now_ts=float(now))
-        await self._maybe_auto_claim(now_ts=float(now), reason="periodic")
+        # await self._maybe_auto_claim(now_ts=float(now), reason="periodic")
 
         # ---- Resolve previous trade ----
         if self.current_trade and self.current_trade.result == "PENDING":
             if self.current_trade.timestamp < (self.current_market.start_timestamp - 10):
                 await self._resolve_previous_trade()
                 await self._maybe_run_pending_settlement_exit(now_ts=float(now))
-                await self._maybe_auto_claim(now_ts=float(now), force=True, reason="post_settlement")
+                # await self._maybe_auto_claim(now_ts=float(now), force=True, reason="post_settlement")
                 if self.current_trade and self.current_trade.result == "PENDING":
                     self._set_kill_switch(
                         "Pending trade remained unresolved after rollover check; stopping for safety"
