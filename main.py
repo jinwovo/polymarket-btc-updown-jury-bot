@@ -3420,6 +3420,15 @@ class TradingBot:
                         logger.info("_tick silent return L3412: if handled or self._kill_switch_reason:")
                         return
 
+        # ---- Read signal_cache FIRST (needed for timing check) ----
+        _sig_row = None
+        if LIVE_MIRROR_PAPER_GATES:
+            conn = self._ensure_state_conn()
+            _sig_row = fetch_one_dict(
+                conn,
+                "SELECT * FROM signal_cache WHERE id = 1",
+            )
+
         # Jury timing floor/range.
         entry_start_sec = float(config.trading.live_entry_start_seconds)
         entry_end_sec = float(config.polymarket.interval_seconds - config.trading.cutoff_before_close_seconds)
@@ -3428,21 +3437,14 @@ class TradingBot:
             entry_start_sec = float(MIRROR_ENTRY_START_SEC)
             entry_end_sec = float(MIRROR_ENTRY_END_SEC)
             min_seconds_remaining = float(MIRROR_MIN_SECONDS_REMAINING)
-        _timing_elapsed = float(_sig_row.get("seconds_elapsed") or seconds_elapsed) if LIVE_MIRROR_PAPER_GATES and '_sig_row' in dir() and _sig_row else seconds_elapsed
+        _timing_elapsed = float(_sig_row.get("seconds_elapsed") or seconds_elapsed) if _sig_row else seconds_elapsed
         if _timing_elapsed < entry_start_sec or _timing_elapsed > entry_end_sec:
-            logger.info("_tick silent return L3424: if _timing_elapsed < entry_start_sec or _timing_el")
             return
         if seconds_remaining < min_seconds_remaining:
             return
 
         # ---- Jury deliberation (shared signal from data_collector) ----
         if LIVE_MIRROR_PAPER_GATES:
-            # Read from shared signal_cache (data_collector runs the Jury)
-            conn = self._ensure_state_conn()
-            _sig_row = fetch_one_dict(
-                conn,
-                "SELECT * FROM signal_cache WHERE id = 1",
-            )
             if not _sig_row:
                 logger.warning("signal_cache: EMPTY")
                 return
