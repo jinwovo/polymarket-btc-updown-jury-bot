@@ -1837,7 +1837,18 @@ class PolymarketClient:
                     maker_result["mode"] = "MAKER_FIRST(cancel_failed)"
                     maker_result["uncertain_fill"] = True
                     return maker_result
-                # Maker didn't fill -- fallback to FOK (taker)
+                # Maker didn't fill -- check drift before FOK fallback
+                _max_drift_abs = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.08"))
+                try:
+                    _current_best_ask = await self._get_best_ask(token_id)
+                    if _current_best_ask and working_ask and _current_best_ask > working_ask + _max_drift_abs:
+                        logger.warning(
+                            "MAKER_FIRST: FOK skipped -- ask drifted too far (ref=%.3f, now=%.3f, drift=+%.3f > %.3f)",
+                            working_ask, _current_best_ask, _current_best_ask - working_ask, _max_drift_abs,
+                        )
+                        return {"ok": False, "status": "rejected_drift", "mode": "MAKER_FIRST(drift_skip)", "filled_amount": 0}
+                except Exception as _drift_err:
+                    logger.warning("MAKER_FIRST: drift check failed: %s", _drift_err)
                 logger.info("MAKER_FIRST: maker not filled, falling back to FOK")
             fok_result = await self.place_market_order(
                 token_id=token_id,
