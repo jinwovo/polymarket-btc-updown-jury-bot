@@ -90,6 +90,15 @@ def evaluate_market_guards(
         result.reason = f"UP_below_start: btc_vs_start={btc_move_pct:+.4f}% <= -{_up_block_pct:.4f}%"
         return result
 
+    # --- Opposite ask too high (market strongly disagrees with entry direction) ---
+    _max_opposite = float(os.getenv("MAX_OPPOSITE_ASK", "0.65"))
+    if direction == "UP" and down_ask is not None and float(down_ask) >= _max_opposite:
+        result.reason = f"opposite_too_high: DOWN_ask={float(down_ask):.3f} >= {_max_opposite:.3f}"
+        return result
+    if direction == "DOWN" and up_ask is not None and float(up_ask) >= _max_opposite:
+        result.reason = f"opposite_too_high: UP_ask={float(up_ask):.3f} >= {_max_opposite:.3f}"
+        return result
+
     # --- Divergence (boundary distance) ---
     boundary = _down_boundary if direction == "DOWN" else _up_boundary
     result.divergence_ok = abs(btc_move_pct) >= boundary
