@@ -3,6 +3,7 @@ Polymarket client for BTC Up/Down 5-minute markets.
 Handles market discovery, real-time odds monitoring, and order placement via CLOB API.
 """
 import os
+import math
 import asyncio
 import time
 import json
@@ -1425,7 +1426,9 @@ class PolymarketClient:
                         float(reference_price or 0.99) + _max_fok_drift,
                     )
                     _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
-                    _fok_size = round(float(amount / _fok_limit), 2) if _fok_limit > 0 else 0
+                    # Ensure maker_amount (price*size) has max 2 decimals
+                    _raw_size = float(amount / _fok_limit) if _fok_limit > 0 else 0
+                    _fok_size = math.floor(_raw_size * 100) / 100  # truncate to 2dp
                     order_args = OrderArgs(
                         token_id=token_id,
                         price=_fok_limit,
