@@ -1,6 +1,7 @@
 """
 Risk Manager - controls position sizing and prevents excessive losses.
 """
+import os
 import time
 import logging
 from dataclasses import dataclass
@@ -67,8 +68,10 @@ class RiskManager:
             remaining = self.cooldown_until - self._time()
             return False, f"Cooldown active ({remaining:.0f}s remaining)"
 
-        # Daily loss limit = 40% of current equity (auto-scales with balance)
-        effective_daily_limit = self.equity * 0.40
+        # Daily loss limit = 40% of seed capital (matches dashboard display)
+        _seed = float(os.getenv("LIVE_EQUITY_SEED_CAPITAL", "0"))
+        _base = _seed if _seed > 0 else self.equity
+        effective_daily_limit = _base * 0.40
         if effective_daily_limit < 1.0:
             effective_daily_limit = 1.0  # absolute floor $1
         if self.daily_pnl <= -effective_daily_limit:
