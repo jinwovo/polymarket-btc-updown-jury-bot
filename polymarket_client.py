@@ -1425,7 +1425,7 @@ class PolymarketClient:
                         float(reference_price or 0.99) + _max_fok_drift,
                     )
                     _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
-                    _fok_size = float(amount / _fok_limit) if _fok_limit > 0 else 0
+                    _fok_size = round(float(amount / _fok_limit), 2) if _fok_limit > 0 else 0
                     order_args = OrderArgs(
                         token_id=token_id,
                         price=_fok_limit,
