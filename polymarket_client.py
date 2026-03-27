@@ -17,17 +17,17 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# ── Patch py_clob_client HTTP: increase timeout, add retry ──
-# Default is httpx.Client(http2=True) with 5s timeout — too tight for
+# -- Patch py_clob_client HTTP: increase timeout, add retry --
+# Default is httpx.Client(http2=True) with 5s timeout -- too tight for
 # Polymarket API which often takes 3-8s under load. Also add transport-
 # level retries for connection errors.
 try:
     import py_clob_client.http_helpers.helpers as _clob_http
-    # HTTP/2 causes ReadTimeout on POST /order — Polymarket's server
+    # HTTP/2 causes ReadTimeout on POST /order -- Polymarket's server
     # doesn't reliably close HTTP/2 streams. Switch to HTTP/1.1.
     _patched_transport = httpx.HTTPTransport(
         retries=3,
-        http2=False,  # HTTP/1.1 — fixes ReadTimeout on POST /order
+        http2=False,  # HTTP/1.1 -- fixes ReadTimeout on POST /order
     )
     _clob_http._http_client = httpx.Client(
         http2=False,
@@ -440,7 +440,7 @@ class PolymarketClient:
     _pw_browser = None   # Chromium browser (kept alive)
     _pw_page = None      # Reusable page
     _pw_executor = None  # Dedicated single thread for Playwright (thread-bound)
-    _pw_navigating = False  # True during page.goto/reload — sync loop should skip
+    _pw_navigating = False  # True during page.goto/reload -- sync loop should skip
 
     @classmethod
     def _ensure_browser(cls):
@@ -629,7 +629,7 @@ class PolymarketClient:
                     cls._pw_navigating = False
                     return ptb, current
 
-                # PTB not found — reload and try again
+                # PTB not found -- reload and try again
                 if attempt < 2:
                     logger.info("PTB not found for %s (attempt %d), reloading...",
                                 slug, attempt + 1)
@@ -637,7 +637,7 @@ class PolymarketClient:
 
         except Exception as e:
             logger.warning("PTB scrape failed for %s: %s", slug, e)
-            # Full reset — browser may have crashed (EPIPE)
+            # Full reset -- browser may have crashed (EPIPE)
             cls._reset_browser()
         finally:
             cls._pw_navigating = False
@@ -646,7 +646,7 @@ class PolymarketClient:
     @classmethod
     def _scrape_final_price_sync(cls, slug: str) -> Optional[float]:
         """Scrape 'Final price' from a resolved window's page using a SEPARATE TAB.
-        Main page (_pw_page) stays on the current window — price sync unaffected.
+        Main page (_pw_page) stays on the current window -- price sync unaffected.
         The Final price appears ~60s after window end as plain text.
         Returns the BTC final price or None."""
         import re
@@ -656,7 +656,7 @@ class PolymarketClient:
         url = f"https://polymarket.com/event/{slug}"
         temp_page = None
         try:
-            # Open a new tab — main _pw_page is untouched
+            # Open a new tab -- main _pw_page is untouched
             temp_page = cls._pw_browser.new_page()
             temp_page.goto(url, wait_until="domcontentloaded", timeout=12000)
             import time
@@ -753,7 +753,7 @@ class PolymarketClient:
                 else:
                     logger.error("Playwright browser restart FAILED")
         else:
-            # Page is None (was reset) — restart browser
+            # Page is None (was reset) -- restart browser
             if cls._ensure_browser():
                 logger.info("Playwright browser started (was None)")
             else:
@@ -787,7 +787,7 @@ class PolymarketClient:
         return cls._pw_executor
 
     async def scrape_price_to_beat(self, slug: str) -> Optional[float]:
-        """Async wrapper — returns only PTB (backward compatible)."""
+        """Async wrapper -- returns only PTB (backward compatible)."""
         ptb, _ = await self.scrape_prices(slug)
         return ptb
 
@@ -806,7 +806,7 @@ class PolymarketClient:
     @classmethod
     def _extract_current_price_sync(cls) -> Optional[float]:
         """Extract current BTC price from Polymarket's <number-flow-react> Shadow DOM.
-        The component is reactive — --current CSS vars update in real-time.
+        The component is reactive -- --current CSS vars update in real-time.
         No page reload needed. Returns current BTC price or None."""
         if cls._pw_page is None or cls._pw_navigating:
             return None
@@ -1418,7 +1418,7 @@ class PolymarketClient:
             _order_likely_accepted = False
             for _attempt in range(max_attempts):
                 try:
-                    # Use cached values — only signing + post are in the hot path
+                    # Use cached values -- only signing + post are in the hot path
                     order_args = MarketOrderArgs(
                         token_id=token_id, amount=float(amount),
                         side=side_const, price=_market_price,
@@ -1455,7 +1455,7 @@ class PolymarketClient:
                 raw_payload=resp,
                 default_price=_to_optional_float(reference_price),
             )
-            # Mark duplicate-accepted as uncertain — we don't know actual fill
+            # Mark duplicate-accepted as uncertain -- we don't know actual fill
             if _order_likely_accepted:
                 result["uncertain_fill"] = True
             logger.info(
@@ -1573,7 +1573,7 @@ class PolymarketClient:
                     # "Duplicated" = previous attempt with same nonce was accepted
                     if "duplicated" in err_str or "duplicate" in err_str:
                         logger.info(
-                            "Order duplicate on attempt %d — prior attempt was accepted: %s",
+                            "Order duplicate on attempt %d -- prior attempt was accepted: %s",
                             _attempt + 1, _net_err,
                         )
                         resp = {"orderID": "duplicate-accepted", "status": "LIVE", "transactionsHashes": []}
@@ -1837,7 +1837,7 @@ class PolymarketClient:
                     maker_result["mode"] = "MAKER_FIRST(cancel_failed)"
                     maker_result["uncertain_fill"] = True
                     return maker_result
-                # Maker didn't fill — fallback to FOK (taker)
+                # Maker didn't fill -- fallback to FOK (taker)
                 logger.info("MAKER_FIRST: maker not filled, falling back to FOK")
             fok_result = await self.place_market_order(
                 token_id=token_id,
@@ -2332,12 +2332,12 @@ class PolymarketClient:
 
 
 # ---------------------------------------------------------------------------
-# Synchronous CLOB fetch — used by paper_trade_sim to match live ask prices
+# Synchronous CLOB fetch -- used by paper_trade_sim to match live ask prices
 # ---------------------------------------------------------------------------
 
 def fetch_clob_book_sync(token_id: str) -> tuple[float, float, float]:
     """
-    Synchronous CLOB orderbook fetch — returns (best_bid, best_ask, mid_price).
+    Synchronous CLOB orderbook fetch -- returns (best_bid, best_ask, mid_price).
     Paper trade uses this so it sees the exact same prices as the live trading path,
     instead of reading potentially stale DB odds.
     Falls back to (0.0, 1.0, 0.5) on any error.
