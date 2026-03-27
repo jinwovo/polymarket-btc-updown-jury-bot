@@ -363,7 +363,13 @@ class DataCollector:
                 age = now - float(r["opened_at"])
                 if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
                     # Verify Live has traded at least once recently (process is running)
-                    if False:  # always check parity
+                    # Check if Live process is running (bot.log updated in last 30s)
+                    try:
+                        _bot_log = os.path.join(os.path.dirname(__file__), "bot.log")
+                        _live_active = (time.time() - os.path.getmtime(_bot_log)) < 30 if os.path.exists(_bot_log) else False
+                    except Exception:
+                        _live_active = False
+                    if not _live_active:
                         continue
                     self._parity_alerted_ws.add(ws)
                     msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} (age={age:.0f}s after Paper entry)"
@@ -375,7 +381,13 @@ class DataCollector:
                 ws = int(r["window_start"])
                 age = now - float(r["opened_at"])
                 if ws not in paper_ws and age >= 45 and ws not in self._parity_alerted_ws:
-                    if not paper_trades:
+                    # Check if Paper process is running (bot_paper.log updated in last 30s)
+                    try:
+                        _paper_log = os.path.join(os.path.dirname(__file__), "bot_paper.log")
+                        _paper_active = (time.time() - os.path.getmtime(_paper_log)) < 30 if os.path.exists(_paper_log) else False
+                    except Exception:
+                        _paper_active = False
+                    if not _paper_active:
                         continue
                     self._parity_alerted_ws.add(ws)
                     msg = f"[!] PARITY MISMATCH\nLive OPEN but Paper missing\nws={ws} (age={age:.0f}s after Live entry)"
