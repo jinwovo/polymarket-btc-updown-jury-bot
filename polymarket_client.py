@@ -1426,9 +1426,8 @@ class PolymarketClient:
                         float(reference_price or 0.99) + _max_fok_drift,
                     )
                     _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
-                    # Ensure amount has max 2 decimals, size max 4 decimals
-                    _fok_amount = math.floor(float(amount) * 100) / 100
-                    _fok_size = round(_fok_amount / _fok_limit, 4) if _fok_limit > 0 else 0
+                    # Size must be integer (whole shares) to avoid decimal errors
+                    _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
                     order_args = OrderArgs(
                         token_id=token_id,
                         price=_fok_limit,
