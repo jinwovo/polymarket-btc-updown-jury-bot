@@ -3282,8 +3282,18 @@ class TradingBot:
                 return  # either filled or still waiting for retry
 
         # ---- Block entry until Price to Beat is confirmed ----
+        # Fallback: if Playwright PTB failed, use signal_cache start_price
         if not self._market_start_official:
-            return
+            try:
+                _sc = fetch_one_dict(self._ensure_state_conn(), "SELECT start_price FROM signal_cache WHERE id = 1")
+                if _sc and _sc.get("start_price") and float(_sc["start_price"]) > 10000:
+                    self.market_start_price = float(_sc["start_price"])
+                    self._market_start_official = True
+                    self._window_start_source = "signal_cache"
+                else:
+                    return
+            except Exception:
+                return
 
         # ---- Fresh CLOB before judge evaluation ----
         # Ensures judges see the same real-time asks as paper's fetch_clob_book_sync.
