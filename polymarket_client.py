@@ -1396,36 +1396,15 @@ class PolymarketClient:
             side_const = BUY if order_side == "BUY" else SELL
             client = self._clob_client
 
-            # Pre-fetch slow API calls ONCE (each can take 5-15s).
-            # Without caching, create_market_order makes 3 API calls internally
-            # (tick_size, neg_risk, calculate_market_price) which can total 20-45s,
-            # causing "order too old" when the signed timestamp expires.
-            _tick_size = await asyncio.to_thread(
-                client._ClobClient__resolve_tick_size, token_id, None
-            )
-            _neg_risk = await asyncio.to_thread(client.get_neg_risk, token_id)
-            _market_price = await asyncio.to_thread(
-                client.calculate_market_price, token_id, side_const, float(amount), None
-            )
-            _fee_rate = await asyncio.to_thread(
-                client._ClobClient__resolve_fee_rate, token_id, None
-            )
-
-            from py_clob_client.clob_types import PartialCreateOrderOptions, CreateOrderOptions
-
+            # Direct create_order: no pre-fetch needed (0.5s vs 2s+)
             max_attempts = 5
             resp = None
             _last_err = None
             _order_likely_accepted = False
             for _attempt in range(max_attempts):
                 try:
-                    # Limit-price FOK: cap at reference + drift tolerance
                     _max_entry = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
-                    _fok_limit = min(
-                        float(_market_price) if _market_price else 0.99,
-                        _max_entry,
-                    )
-                    _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
+                    _fok_limit = round(min(max(float(reference_price or 0.50), 0.01), _max_entry), 2)
                     # Size must be integer (whole shares) to avoid decimal errors
                     _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
                     order_args = OrderArgs(
