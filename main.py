@@ -3425,7 +3425,7 @@ class TradingBot:
                 logger.warning("signal_cache: EMPTY")
                 return
             _sig_age = now - float(_sig_row.get("ts") or 0)
-            if _sig_age > 2.0:
+            if _sig_age > 5.0:
                 logger.info("signal_cache: stale (age=%.1fs)", _sig_age)
                 return  # stale
             _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
