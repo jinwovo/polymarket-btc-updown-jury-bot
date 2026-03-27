@@ -3228,14 +3228,14 @@ class TradingBot:
             logger.info("_tick silent return L3226: if seconds_remaining < config.trading.cutoff_befor")
             return
 
-        # ---- Risk check (skip in parity mode -- Paper has its own) ----
-        if not LIVE_MIRROR_PAPER_GATES:
-            can_trade, reason = self.risk_mgr.can_trade()
-            if not can_trade:
-                if "entering cooldown" in str(reason).lower():
-                    self._persist_runtime_state()
-                logger.warning("Risk manager blocked: %s", reason)
-                return
+        # ---- Risk check (Live safety: daily loss limit, cooldown) ----
+        can_trade, reason = self.risk_mgr.can_trade()
+        if not can_trade:
+            if "entering cooldown" in str(reason).lower():
+                self._persist_runtime_state()
+            logger.warning("Risk manager blocked: %s (equity=%.2f daily_pnl=%.2f consec=%d)",
+                reason, self.risk_mgr.equity, self.risk_mgr.daily_pnl, self.risk_mgr.consecutive_losses)
+            return
 
         # ---- Refresh Polymarket odds (high-frequency) ----
         # Only fetch if stale (>1s old) to avoid hammering API
