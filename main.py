@@ -3219,7 +3219,6 @@ class TradingBot:
                         wait_left,
                     )
                     self._maintenance_last_skip_log_ts = float(now)
-                logger.info("_tick silent return L3213: self._maintenance_last_skip_log_ts = float(now)")
                 return
 
             probe_ok = await self._probe_live_market_data_health(int(current_start))
@@ -3228,13 +3227,11 @@ class TradingBot:
                     reason="maintenance probe failed",
                     now_ts=float(now),
                 )
-                logger.info("_tick silent return L3221: )")
                 return
             self._record_market_data_success()
 
         # ---- Timing filters ----
         if seconds_remaining < config.trading.cutoff_before_close_seconds:
-            logger.info("_tick silent return L3226: if seconds_remaining < config.trading.cutoff_befor")
             return
 
         # ---- Risk check (Live safety: daily loss limit, cooldown) ----
@@ -3279,7 +3276,6 @@ class TradingBot:
                     reason="odds/market refresh failed",
                     now_ts=float(now),
                 )
-                logger.info("_tick silent return L3268: )")
                 return
 
         await self._maybe_sync_market_start_price(
@@ -3306,7 +3302,6 @@ class TradingBot:
                     self._market_start_official = True
                     self._window_start_source = "signal_cache"
                 else:
-                    logger.info("_tick silent return L3294: else:")
                     return
             except Exception:
                 return
@@ -3319,7 +3314,6 @@ class TradingBot:
         # ---- Build context ----
         ctx = self._build_context(seconds_elapsed, seconds_remaining)
         if ctx is None:
-            logger.info("_tick silent return L3306: if ctx is None:")
             return
 
         # ---- Quick divergence check BEFORE full jury (save CPU) ----
@@ -3331,7 +3325,6 @@ class TradingBot:
                     / self.market_start_price * 100
                 )
                 if btc_change_pct < 0.02 and seconds_elapsed < 120:
-                    logger.info("_tick silent return L3317: if btc_change_pct < 0.02 and seconds_elapsed < 120")
                     return
 
         # ---- Fast-lane: Binance lead / Polymarket lag (judge bypass) ----
@@ -3427,7 +3420,6 @@ class TradingBot:
                             signal_reason=str(fast_signal.get("reason") or "fast_lane"),
                         )
                     if handled or self._kill_switch_reason:
-                        logger.info("_tick silent return L3412: if handled or self._kill_switch_reason:")
                         return
 
         # ---- Read signal_cache FIRST (needed for timing check) ----
@@ -3464,7 +3456,6 @@ class TradingBot:
                 return  # stale
             _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
             if _sig_dir == "NO_TRADE":
-                logger.info("_tick silent return L3445: if _sig_dir == 'NO_TRADE':")
                 return
             _sig_ws = int(_sig_row.get("window_start") or 0)
             if _sig_ws != int(current_start):
@@ -3499,7 +3490,6 @@ class TradingBot:
             decision = self.jury.deliberate(ctx)
 
         if decision.direction == "NO_TRADE":
-            logger.info("_tick silent return L3479: if decision.direction == 'NO_TRADE':")
             return
 
         # DOWN-specific entry time cutoff (late DOWN entries lose money)
@@ -3514,11 +3504,9 @@ class TradingBot:
                 decision, ctx, _entry_elapsed, "down_late_entry",
                 f"DOWN late entry: elapsed={_entry_elapsed:.0f}s > {down_entry_end:.0f}s",
             )
-            logger.info("_tick silent return L3493: )")
             return
 
         if self.position_mode == "UP_ONLY" and decision.direction != "UP":
-            logger.info("_tick silent return L3496: if self.position_mode == 'UP_ONLY' and decision.di")
             return
         if self.position_mode == "DOWN_ONLY" and decision.direction != "DOWN":
             return
@@ -3537,12 +3525,10 @@ class TradingBot:
             required_support_ratio = _clamp(required_support_ratio, 0.50, 1.0)
 
             if decision.avg_confidence < required_min_edge:
-                logger.info("_tick silent return L3514: if decision.avg_confidence < required_min_edge:")
                 return
             if support_ratio < required_support_ratio:
                 return
             if config.trading.live_require_unanimous and not decision.unanimous:
-                logger.info("_tick silent return L3518: if config.trading.live_require_unanimous and not d")
                 return
 
         if decision.direction == "UP":
@@ -3551,7 +3537,6 @@ class TradingBot:
             token_id = self.current_market.down_token_id
 
         if not token_id:
-            logger.info("_tick silent return L3526: if not token_id:")
             return
 
         # -- Ask prices: use signal_cache in parity mode -------------
@@ -3570,7 +3555,6 @@ class TradingBot:
         price = up_ask if decision.direction == "UP" else down_ask
 
         if price is None or price <= 0.01 or price >= 0.99:
-            logger.info("_tick silent return L3544: if price is None or price <= 0.01 or price >= 0.99")
             return
 
         side_ask = up_ask if decision.direction == "UP" else down_ask
@@ -3580,7 +3564,6 @@ class TradingBot:
             conn = self._ensure_state_conn()
             tick_samples, odds_samples = _live_window_sample_counts(conn, int(current_start), float(now))
             if tick_samples < int(MIRROR_MIN_TICK_SAMPLES) or odds_samples < int(MIRROR_MIN_ODDS_SAMPLES):
-                logger.info("_tick silent return L3553: if tick_samples < int(MIRROR_MIN_TICK_SAMPLES) or ")
                 return
 
         min_entry_side_implied = (
@@ -3618,7 +3601,6 @@ class TradingBot:
                 effective_side_implied,
                 min_entry_side_implied,
             )
-            logger.info("_tick silent return L3590: )")
             return
         # DOWN-specific min entry price (cheap DOWN tokens are traps)
         down_min_price = (
