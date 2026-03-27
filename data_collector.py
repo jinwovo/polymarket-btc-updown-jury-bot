@@ -363,7 +363,7 @@ class DataCollector:
                 age = now - float(r["opened_at"])
                 if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
                     # Verify Live has traded at least once recently (process is running)
-                    if not live_trades:
+                    if False:  # always check parity
                         continue
                     self._parity_alerted_ws.add(ws)
                     msg = f"[!] PARITY MISMATCH\nPaper OPEN but Live missing\nws={ws} (age={age:.0f}s after Paper entry)"
