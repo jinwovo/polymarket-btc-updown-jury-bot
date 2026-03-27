@@ -41,7 +41,7 @@ from judges import Jury, MarketContext
 from telegram_notifier import send_telegram_message
 from trade_gate import apply_fee_to_pnl, evaluate_entry_gate
 
-_log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+_log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 # Console: WARNING+ only (trades, errors)

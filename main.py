@@ -41,7 +41,7 @@ from telegram_notifier import send_telegram_message
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
-_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 # Console: WARNING+ only (trades, errors)

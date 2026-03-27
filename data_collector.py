@@ -52,7 +52,7 @@ from polymarket_client import (
     market_slug_for_timestamp,
 )
 
-_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+_log_fmt = logging.Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
 # Console: WARNING+ only (trades, errors, corrections)
