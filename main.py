@@ -3306,14 +3306,15 @@ class TradingBot:
             return
 
         # ---- Quick divergence check BEFORE full jury (save CPU) ----
-        if self.market_start_price and self.market_start_price > 0:
-            btc_change_pct = abs(
-                (self.price_feed.current_price - self.market_start_price)
-                / self.market_start_price * 100
-            )
-            # If BTC hasn't moved much, no opportunity
-            if btc_change_pct < 0.02 and seconds_elapsed < 120:
-                return
+        # SKIP in parity mode -- data_collector handles this via guards_passed
+        if not LIVE_MIRROR_PAPER_GATES:
+            if self.market_start_price and self.market_start_price > 0:
+                btc_change_pct = abs(
+                    (self.price_feed.current_price - self.market_start_price)
+                    / self.market_start_price * 100
+                )
+                if btc_change_pct < 0.02 and seconds_elapsed < 120:
+                    return
 
         # ---- Fast-lane: Binance lead / Polymarket lag (judge bypass) ----
         fast_signal = None
