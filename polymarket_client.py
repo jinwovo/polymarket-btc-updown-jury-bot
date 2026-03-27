@@ -1388,7 +1388,7 @@ class PolymarketClient:
             return None
 
         try:
-            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY, SELL
 
             order_side = _normalize_order_side(side, default="BUY")
@@ -1418,16 +1418,22 @@ class PolymarketClient:
             _order_likely_accepted = False
             for _attempt in range(max_attempts):
                 try:
-                    # Use cached values -- only signing + post are in the hot path
-                    order_args = MarketOrderArgs(
-                        token_id=token_id, amount=float(amount),
-                        side=side_const, price=_market_price,
-                        fee_rate_bps=_fee_rate,
+                    # Limit-price FOK: cap at reference + drift tolerance
+                    _max_fok_drift = float(os.getenv("MAX_FOK_PRICE_DRIFT", "0.05"))
+                    _fok_limit = min(
+                        float(_market_price) if _market_price else 0.99,
+                        float(reference_price or 0.99) + _max_fok_drift,
+                    )
+                    _fok_limit = round(min(max(_fok_limit, 0.01), 0.99), 2)
+                    _fok_size = float(amount / _fok_limit) if _fok_limit > 0 else 0
+                    order_args = OrderArgs(
+                        token_id=token_id,
+                        price=_fok_limit,
+                        size=_fok_size,
+                        side=side_const,
                     )
                     signed = await asyncio.to_thread(
-                        client.builder.create_market_order,
-                        order_args,
-                        CreateOrderOptions(tick_size=_tick_size, neg_risk=_neg_risk),
+                        client.create_order, order_args
                     )
                     resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FOK)
                     break
