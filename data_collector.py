@@ -758,7 +758,7 @@ class DataCollector:
 
         while self._running:
             try:
-                async with _ws.connect("wss://ws-live-data.polymarket.com", ping_interval=None) as ws:
+                async with _ws.connect("wss://ws-live-data.polymarket.com", ping_interval=None, close_timeout=10, open_timeout=10) as ws:
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [{
