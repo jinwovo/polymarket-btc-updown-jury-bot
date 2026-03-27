@@ -334,8 +334,8 @@ class DataCollector:
             # Recent paper trades with opened_at
             paper_trades = fetch_all_dicts(
                 self.db,
-                "SELECT window_start, opened_at FROM paper_trades WHERE opened_at > %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 10",
-                (now - 600,),
+                "SELECT window_start, opened_at FROM paper_trades WHERE window_start >= %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 10",
+                (int(self.current_window_start or 0) - 300,),
             )
             # Recent live trades
             live_trades = []
@@ -343,8 +343,8 @@ class DataCollector:
                 try:
                     live_trades = fetch_all_dicts(
                         self.db,
-                        f"SELECT window_start, opened_at FROM {table} WHERE opened_at > %s ORDER BY opened_at DESC LIMIT 5",
-                        (now - 600,),
+                        f"SELECT window_start, opened_at FROM {table} WHERE window_start >= %s ORDER BY opened_at DESC LIMIT 10",
+                        (int(self.current_window_start or 0) - 300,),
                     )
                     break
                 except Exception:
