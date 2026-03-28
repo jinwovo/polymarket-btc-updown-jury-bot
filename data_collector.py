@@ -678,7 +678,7 @@ class DataCollector:
                         self.db,
                         """UPDATE market_windows
                            SET btc_start_price = ?
-                           WHERE window_start = ?""",
+                           WHERE window_start = %s""",
                         (adj_px, self.current_window_start),
                     )
                     self.db.commit()
@@ -738,7 +738,7 @@ class DataCollector:
                 self.db,
                 """UPDATE market_windows
                    SET btc_start_price = ?
-                   WHERE window_start = ?""",
+                   WHERE window_start = %s""",
                 (scraped_ptb, self.current_window_start),
             )
             self.db.commit()
@@ -987,7 +987,7 @@ class DataCollector:
         if start_price is None:
             row = fetch_one(
                 self.db,
-                "SELECT btc_start_price FROM market_windows WHERE window_start = ?",
+                "SELECT btc_start_price FROM market_windows WHERE window_start = %s",
                 (self.current_window_start,),
             )
             if row and row[0] is not None:
@@ -1100,7 +1100,7 @@ class DataCollector:
             # Get start price from DB (should be official PTB)
             row = fetch_one(
                 self.db,
-                "SELECT btc_start_price FROM market_windows WHERE window_start = ?",
+                "SELECT btc_start_price FROM market_windows WHERE window_start = %s",
                 (window_start,),
             )
 
@@ -1115,7 +1115,7 @@ class DataCollector:
                 self.db,
                 """UPDATE market_windows
                    SET btc_end_price = ?, actual_outcome = ?
-                   WHERE window_start = ?""",
+                   WHERE window_start = %s""",
                 (end_price, outcome, window_start),
             )
             self.db.commit()
@@ -1153,7 +1153,7 @@ class DataCollector:
                     if fp is not None and fp > 10000:
                         execute_write(
                             self.db,
-                            "UPDATE market_windows SET btc_end_price = ? WHERE window_start = ?",
+                            "UPDATE market_windows SET btc_end_price = ? WHERE window_start = %s",
                             (fp, window_start),
                         )
                         self.db.commit()
@@ -1166,7 +1166,7 @@ class DataCollector:
                 # -- Read current DB state --
                 row = fetch_one(
                     self.db,
-                    "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = ?",
+                    "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = %s",
                     (window_start,),
                 )
                 if row is None:
@@ -1202,7 +1202,7 @@ class DataCollector:
                         self.db,
                         """UPDATE market_windows
                            SET btc_start_price = ?, actual_outcome = COALESCE(?, actual_outcome)
-                           WHERE window_start = ?""",
+                           WHERE window_start = %s""",
                         (ptb_f, outcome, window_start),
                     )
                 elif outcome is not None:
@@ -1210,7 +1210,7 @@ class DataCollector:
                         self.db,
                         """UPDATE market_windows
                            SET actual_outcome = ?
-                           WHERE window_start = ? AND actual_outcome != ?""",
+                           WHERE window_start = %s AND actual_outcome != ?""",
                         (outcome, window_start, outcome),
                     )
                 self.db.commit()
@@ -1265,7 +1265,7 @@ class DataCollector:
             self.db,
             """SELECT id, direction, stake, entry_price, pnl, close_reason
                FROM paper_trades
-               WHERE window_start = ? AND archived_at IS NULL""",
+               WHERE window_start = %s AND archived_at IS NULL""",
             (window_start,),
         )
         for pt in paper_rows:
@@ -1283,7 +1283,7 @@ class DataCollector:
                 """UPDATE paper_trades
                    SET pnl = ?, won = ?, actual_outcome = ?,
                        close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: ', ?, '->', ?, ']')
-                   WHERE id = ?""",
+                   WHERE id = %s""",
                 (new_pnl, 1 if won else 0, new_outcome, old_outcome, new_outcome, pt["id"]),
             )
             corrections.append(
@@ -1297,7 +1297,7 @@ class DataCollector:
                     self.db,
                     f"""SELECT id, direction, COALESCE(stake, amount) as stake, COALESCE(entry_price, price) as entry_price, pnl
                         FROM {table}
-                        WHERE window_start = ?""",
+                        WHERE window_start = %s""",
                     (window_start,),
                 )
             except Exception:
@@ -1317,7 +1317,7 @@ class DataCollector:
                     f"""UPDATE {table}
                         SET actual_outcome = ?, won = ?, pnl = ?,
                             close_reason = CONCAT(COALESCE(close_reason,''), ' [adj: {old_outcome}->{new_outcome}]')
-                        WHERE id = ?""",
+                        WHERE id = %s""",
                     (new_outcome, 1 if won else 0, new_pnl, lt["id"]),
                 )
                 corrections.append(
@@ -1506,7 +1506,7 @@ def show_status():
         odds_sample = fetch_all(
             conn,
             """SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask
-               FROM poly_odds WHERE window_start = ?
+               FROM poly_odds WHERE window_start = %s
                ORDER BY ts LIMIT 5""",
             (latest_ws,),
         )
