@@ -361,7 +361,7 @@ class DataCollector:
             for r in paper_trades:
                 ws = int(r["window_start"])
                 age = now - float(r["opened_at"])
-                if ws not in live_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                if ws not in live_ws and 45 <= age <= 300 and ws not in self._parity_alerted_ws:
                     # Verify Live has traded at least once recently (process is running)
                     # Check if Live process is running (bot.log updated in last 30s)
                     try:
@@ -380,7 +380,7 @@ class DataCollector:
             for r in live_trades:
                 ws = int(r["window_start"])
                 age = now - float(r["opened_at"])
-                if ws not in paper_ws and age >= 45 and ws not in self._parity_alerted_ws:
+                if ws not in paper_ws and 45 <= age <= 300 and ws not in self._parity_alerted_ws:
                     # Check if Paper process is running (bot_paper.log updated in last 30s)
                     try:
                         _paper_log = os.path.join(os.path.dirname(__file__), "bot_paper.log")
