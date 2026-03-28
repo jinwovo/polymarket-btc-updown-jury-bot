@@ -1116,10 +1116,10 @@ class TradingBot:
         bet_pct = BET_PCT_MIN + conf_norm * (BET_PCT_MAX - BET_PCT_MIN)
         bet = equity * bet_pct
 
-        # Reduce on losing streak
-        if self.risk_mgr.consecutive_losses >= 2:
-            reduction = 0.5 ** (self.risk_mgr.consecutive_losses - 1)
-            bet *= reduction
+        # Losing streak reduction: DISABLED (auto_defense handles risk)
+        # if self.risk_mgr.consecutive_losses >= 2:
+        #     reduction = 0.5 ** (self.risk_mgr.consecutive_losses - 1)
+        #     bet *= reduction
 
         # Cap at 20% of equity (matched to paper/backtest)
         # Floor at LIVE_MIN_BET to avoid tiny bets where fees eat the edge
