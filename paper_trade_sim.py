@@ -1168,7 +1168,7 @@ def _read_signal_cache(conn) -> dict | None:
     if not row:
         return None
     age = time.time() - float(row.get("ts") or 0)
-    if age > 2.0:
+    if age > 5.0:
         return None
     return row
 
@@ -1328,7 +1328,9 @@ def open_trade_if_signal(
             logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, _gate_reason)
             return False
     else:
-        # Fallback: run gate locally (shouldn't happen with signal_cache)
+        # No signal_cache = no trade (was fallback to local gate, caused Paper/Live mismatch)
+        return False
+        # Dead code below kept for reference
         recent_ts, recent_prices = _recent_price_series(conn, now_ts, lookback_sec=600.0)
         gate = evaluate_entry_gate(
             direction=direction,
