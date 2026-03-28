@@ -1404,7 +1404,7 @@ class PolymarketClient:
             for _attempt in range(max_attempts):
                 try:
                     _max_entry = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
-                    _fok_limit = round(min(max(float(reference_price or 0.50), 0.01), _max_entry), 2)
+                    _fok_limit = round(min(max(_max_entry, 0.01), 0.99), 2)
                     # Size must be integer (whole shares) to avoid decimal errors
                     _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
                     order_args = OrderArgs(
