@@ -113,7 +113,8 @@ class RiskManager:
         bet_amount = max(config.trading.min_bet_size, min(bet_amount, config.trading.max_bet_size))
 
         # Reduce if we're on a losing streak
-        if self.consecutive_losses >= 2:
+        # Disabled: auto_defense handles risk
+        if False:  # self.consecutive_losses >= 2:
             reduction = 0.5 ** (self.consecutive_losses - 1)
             bet_amount *= reduction
             bet_amount = max(config.trading.min_bet_size, bet_amount)
