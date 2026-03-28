@@ -150,6 +150,29 @@ def evaluate_market_guards(
             if not result.reason:
                 result.reason = "trend"
 
+    # --- Auto defense: if recent 3 trades have <= 2 wins, require 30s momentum agreement ---
+    _auto_defense = os.getenv("AUTO_DEFENSE_ENABLED", "true").lower() == "true"
+    if _auto_defense and db_conn is not None:
+        try:
+            from db_config import fetch_all_dicts as _fad
+            _recent = _fad(db_conn, "SELECT won FROM paper_trades WHERE archived_at IS NULL ORDER BY opened_at DESC LIMIT 3")
+            if len(_recent) >= 3:
+                _recent_wins = sum(1 for r in _recent if r.get("won"))
+                if _recent_wins <= 2:
+                    # Bad streak -> check 30s momentum
+                    _mom30 = _recent_move_pct(db_conn, window_start, now_ts, 30.0)
+                    if _mom30 is not None:
+                        if direction == "UP" and _mom30 < 0:
+                            result.passed = False
+                            if not result.reason:
+                                result.reason = "auto_defense_mom30s"
+                        if direction == "DOWN" and _mom30 > 0:
+                            result.passed = False
+                            if not result.reason:
+                                result.reason = "auto_defense_mom30s"
+        except Exception:
+            pass
+
     # --- Implied side (thin-book normalization) ---
     entry_price = None
     opposite_ask = None
