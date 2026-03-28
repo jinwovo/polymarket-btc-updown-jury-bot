@@ -96,18 +96,21 @@ data_collector (single process, 0.1s tick)
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
-## Current Strategy (2026-03-28)
-- **Entry**: judges direction + signal_cache gate_allow + auto_defense(3t2w) + accel
+## Current Strategy (2026-03-29)
+- **Entry**: judges direction + signal_cache gate_allow + auto_defense(3t2w)
 - **Entry mode**: MAKER_FIRST (0% fee entry, 2s GTC → FAK fallback)
-- **Exit**: Dynamic profit-take at **entry_price + 0.10** (mid-trade exit)
-  - Fallback: settlement if target not reached
-  - near_certain_win still active (opp_ask <= 0.05)
-  - hard_adverse_flush still active (roi <= -70%)
-- **Sizing**: adaptive 10-15% of seed capital, conf-based
-- **Filters**: MIN_EDGE=0.08, ROI=0.030, BOUNDARY=0.020/0.030
+- **Exit**: hold-to-settlement + near_certain_win + hard_adverse_flush + manip_defense
+- **Sizing**: adaptive 10-15% of seed capital ($150), conf-based, NO streak reduction
+- **Filters**: MIN_EDGE=0.08, ROI=0.030, ENTRY_START=45s, BOUNDARY=0.010/0.030
 - **Price range**: ask 0.30-0.58, opposite ask < 0.65
-- **Backtest**: 120h 122t, 80% mid-exit success, +$2,277 (with fees)
-- **To revert**: set LIVE_PROFIT_TAKE_ENABLED=false, ENTRY_ORDER_MODE=MARKET
+- **Profit-take**: DISABLED
+- **Backtest (s45_bd01)**: 72h 125t(1.7/h) 58% +$789, 120h 192t(1.6/h) 62% +$4,038
+
+### Previous Settings (rollback reference)
+- ENTRY_START=90, BOUNDARY=0.020/0.030 → 72h 81t(1.1/h) +$401
+- ENTRY_START=150, BOUNDARY=0.020/0.030 → 72h 5t +$-101
+- e12+r07+bd03 → 72h 58t(0.8/h) 69% +$3,111 (fewer trades)
+- PROFIT_TAKE_ENABLED=true, offset=0.10 → hold better for settlement
 
 ## TODO: Pending Data Analysis (apply after sufficient data)
 
