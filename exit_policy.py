@@ -272,6 +272,26 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
                 f" roi={mtm_roi_pct:+.2f}%, hold={hold_sec:.1f}s)"
             )
 
+    # Manipulation defense: if near expiry, coinflip, and opposite strongly disagrees
+    # Someone may dump BTC in last seconds to flip the result
+    _manip_enabled = os.getenv("LIVE_MANIP_DEFENSE_ENABLED", "true").lower() == "true"
+    if (
+        reason is None
+        and _manip_enabled
+        and inp.opposite_ask is not None
+        and inp.seconds_remaining is not None
+        and float(inp.seconds_remaining) <= 20.0
+        and float(inp.opposite_ask) >= 0.70
+    ):
+        # Check if BTC is close to start (< 0.03% = manipulation zone)
+        _btc_diff_pct = abs((float(inp.current_price) - float(inp.start_price)) / float(inp.start_price) * 100) if inp.start_price and inp.start_price > 0 else 999
+        if _btc_diff_pct < 0.03:
+            reason = (
+                f"manip_defense(opp_ask={float(inp.opposite_ask):.3f} >= 0.70,"
+                f" btc_diff={_btc_diff_pct:+.4f}% < 0.03%,"
+                f" remain={float(inp.seconds_remaining):.0f}s)"
+            )
+
     # Near-certain win: our side token ~ 1 - opposite_ask.
     # When opposite is nearly worthless, we've essentially won -- sell now
     # rather than risk a late reversal for a tiny extra payout.
