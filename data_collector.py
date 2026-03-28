@@ -535,24 +535,14 @@ class DataCollector:
                         poly_up_ask=up_ask,
                         poly_down_ask=dn_ask,
                     )
-                    _new_gate = 1 if _gate.allow else 0
+                    gate_allow = 1 if _gate.allow else 0
                     gate_ev = float(_gate.expected_roi) if _gate.expected_roi else None
                     gate_reason = str(_gate.reason or "")[:200]
-                    # Sticky gate: once gate_allow=1 for this window+direction, keep for 30s
-                    if _new_gate:
-                        gate_allow = 1
+                    # Direction stability: lock for 5s when gate passes
+                    if gate_allow:
                         self._stable_direction = decision.direction
-                        self._stable_until = _now_ts + 30.0
+                        self._stable_until = _now_ts + 5.0
                         self._stable_ws = int(self.current_window_start)
-                        self._stable_gate_ev = gate_ev
-                        self._stable_gate_reason = gate_reason
-                    elif (getattr(self, '_stable_ws', 0) == int(self.current_window_start)
-                          and getattr(self, '_stable_direction', '') == decision.direction
-                          and _now_ts < getattr(self, '_stable_until', 0)):
-                        gate_allow = 1  # keep sticky
-                        gate_ev = getattr(self, '_stable_gate_ev', gate_ev)
-                    else:
-                        gate_allow = 0
                 except Exception as _ge:
                     logger.debug("Entry gate check failed: %s", _ge)
 
