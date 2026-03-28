@@ -1239,6 +1239,22 @@ class DataCollector:
                     self._correct_trades_for_outcome_change(
                         window_start, slug, old_outcome, outcome, outcome_source,
                     )
+                # -- Also check live_trades even if market_windows didn't change --
+                # (Live settlement may have judged wrong via btc_ticks)
+                elif outcome is not None:
+                    for _lt_table in ("live_trades",):
+                        try:
+                            _lt_rows = fetch_all_dicts(
+                                self.db,
+                                f"SELECT id, actual_outcome FROM {_lt_table} WHERE window_start = %s AND actual_outcome != %s",
+                                (window_start, outcome),
+                            )
+                            if _lt_rows:
+                                self._correct_trades_for_outcome_change(
+                                    window_start, slug, _lt_rows[0]["actual_outcome"], outcome, outcome_source + "(live_mismatch)",
+                                )
+                        except Exception:
+                            pass
 
                 # Done if we have definitive outcome
                 if outcome is not None and (poly_outcome or final_price_scraped):
