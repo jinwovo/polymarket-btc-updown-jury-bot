@@ -96,6 +96,19 @@ data_collector (single process, 0.1s tick)
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
+## Current Strategy (2026-03-28)
+- **Entry**: judges direction + signal_cache gate_allow + auto_defense(3t2w) + accel
+- **Entry mode**: MAKER_FIRST (0% fee entry, 2s GTC → FAK fallback)
+- **Exit**: Dynamic profit-take at **entry_price + 0.10** (mid-trade exit)
+  - Fallback: settlement if target not reached
+  - near_certain_win still active (opp_ask <= 0.05)
+  - hard_adverse_flush still active (roi <= -70%)
+- **Sizing**: adaptive 10-15% of seed capital, conf-based
+- **Filters**: MIN_EDGE=0.08, ROI=0.030, BOUNDARY=0.020/0.030
+- **Price range**: ask 0.30-0.58, opposite ask < 0.65
+- **Backtest**: 120h 122t, 80% mid-exit success, +$2,277 (with fees)
+- **To revert**: set LIVE_PROFIT_TAKE_ENABLED=false, ENTRY_ORDER_MODE=MARKET
+
 ## TODO: Pending Data Analysis (apply after sufficient data)
 
 ### Binance-RTDS Gap Arbitrage (data collecting since 2026-03-22 03:45 KST)

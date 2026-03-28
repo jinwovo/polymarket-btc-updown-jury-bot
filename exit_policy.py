@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from typing import Optional
 
 
@@ -250,6 +251,26 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
             strong_favor=strong_favor,
             severe_adverse=severe_adverse,
         )
+
+    # Dynamic profit-take: exit when our side bid reaches entry_price + offset
+    _pt_enabled = os.getenv("LIVE_PROFIT_TAKE_ENABLED", "true").lower() == "true"
+    _pt_offset = float(os.getenv("LIVE_PROFIT_TAKE_OFFSET", "0.10"))
+    if (
+        reason is None
+        and _pt_enabled
+        and inp.entry_price is not None
+        and inp.side_ask is not None
+        and hold_sec >= 10.0
+    ):
+        _side_bid = 1.0 - float(inp.opposite_ask) if inp.opposite_ask is not None else None
+        _target = float(inp.entry_price) + _pt_offset
+        if _side_bid is not None and _side_bid >= _target:
+            reason = (
+                f"profit_take(side_bid={_side_bid:.3f}"
+                f" >= target={_target:.3f},"
+                f" entry={float(inp.entry_price):.3f}+{_pt_offset:.2f},"
+                f" roi={mtm_roi_pct:+.2f}%, hold={hold_sec:.1f}s)"
+            )
 
     # Near-certain win: our side token ~ 1 - opposite_ask.
     # When opposite is nearly worthless, we've essentially won -- sell now
