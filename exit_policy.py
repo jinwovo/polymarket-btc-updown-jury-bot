@@ -292,6 +292,31 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
                 f" remain={float(inp.seconds_remaining):.0f}s)"
             )
 
+    # CLOB conviction exit: CLOB strongly disagrees with our position.
+    # Data: opp_ask >= 0.65 at 20s predicts outcome 93% accurately.
+    # Graduated: more time remaining = higher opp_ask required.
+    _clob_exit_enabled = os.getenv("CLOB_CONVICTION_EXIT_ENABLED", "true").lower() == "true"
+    if (
+        reason is None
+        and _clob_exit_enabled
+        and inp.opposite_ask is not None
+        and inp.seconds_remaining is not None
+    ):
+        _remain = float(inp.seconds_remaining)
+        _opp = float(inp.opposite_ask)
+        _clob_trigger = False
+        if _remain <= 30 and _opp >= 0.65:
+            _clob_trigger = True
+        elif _remain <= 90 and _opp >= 0.80:
+            _clob_trigger = True
+        elif _remain <= 150 and _opp >= 0.90:
+            _clob_trigger = True
+        if _clob_trigger:
+            reason = (
+                f"clob_conviction_exit(opp_ask={_opp:.3f},"
+                f" remain={_remain:.0f}s)"
+            )
+
     # Near-certain win: our side token ~ 1 - opposite_ask.
     # When opposite is nearly worthless, we've essentially won -- sell now
     # rather than risk a late reversal for a tiny extra payout.

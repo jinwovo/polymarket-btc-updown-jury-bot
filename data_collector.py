@@ -558,6 +558,15 @@ class DataCollector:
                  "confidence": v.confidence, "reason": v.reason}
                 for v in decision.verdicts
             ])
+            _sc_params = (
+                    now, self.current_window_start, decision.direction,
+                    float(decision.avg_confidence), float(decision.max_edge),
+                    1 if decision.unanimous else 0, judges_json,
+                    up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
+                    elapsed, remaining,
+                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
+            )
             execute_write(
                 self.db,
                 """REPLACE INTO signal_cache
@@ -567,15 +576,19 @@ class DataCollector:
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    now, self.current_window_start, decision.direction,
-                    float(decision.avg_confidence), float(decision.max_edge),
-                    1 if decision.unanimous else 0, judges_json,
-                    up_ask, dn_ask, self.btc_price_adjusted, self.window_start_price,
-                    elapsed, remaining,
+                _sc_params,
+            )
+            # Append to signal_cache_log for backtest parity
+            execute_write(
+                self.db,
+                """INSERT INTO signal_cache_log
+                   (ts, window_start, direction, avg_confidence, max_edge,
+                    unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
+                    seconds_elapsed, seconds_remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
-                ),
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                _sc_params,
             )
             self.db.commit()
         except Exception as e:
@@ -1246,7 +1259,7 @@ class DataCollector:
                         try:
                             _lt_rows = fetch_all_dicts(
                                 self.db,
-                                f"SELECT id, actual_outcome FROM {_lt_table} WHERE window_start = %s AND actual_outcome != %s",
+                                f"SELECT id, actual_outcome FROM {_lt_table} WHERE window_start = %s AND actual_outcome NOT IN (%s, 'EARLY_EXIT')",
                                 (window_start, outcome),
                             )
                             if _lt_rows:

@@ -2099,9 +2099,9 @@ def _python_command(script_name: str, args: list[str]) -> list[str]:
 def control_paper_start(stake: float, interval: float, sizing_mode: str = "adaptive") -> dict:
     stake = max(1.0, float(stake))
     interval = max(0.5, float(interval))
-    mode = str(sizing_mode or "adaptive").strip().lower()
-    if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
-        mode = "adaptive"
+    mode = str(sizing_mode or "fixed").strip().lower()
+    if mode not in ("adaptive", "fixed", "all_in_fixed", "all_in_equity"):
+        mode = "fixed"
     ok, msg = PAPER_SIM_PROC.start(
         _python_command(
             "paper_trade_sim.py",
@@ -2254,6 +2254,7 @@ def control_live_start(
     env_overrides = {
         "DRY_RUN": "false",
         "MAX_BET_SIZE": f"{per_trade_usd}",
+        "LIVE_FIXED_STAKE": f"{per_trade_usd}",
         "POSITION_MODE": mode,
         "LIVE_SIZING_MODE": sizing.upper(),
     }

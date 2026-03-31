@@ -458,10 +458,11 @@ export function LiveDashboard() {
 
   const [paperStake, setPaperStake] = useState("1000");
   const [paperInterval, setPaperInterval] = useState("2");
-  const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "all_in_fixed" | "all_in_equity">("adaptive");
+  const [paperSizingMode, setPaperSizingMode] = useState<"adaptive" | "fixed" | "all_in_fixed" | "all_in_equity">("fixed");
   const [paperTelegramNotify, setPaperTelegramNotify] = useState(false);
   const [liveStake, setLiveStake] = useState("5");
-  const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "adaptive_seed" | "fixed">("adaptive");
+  const [liveFixedStake, setLiveFixedStake] = useState("15");
+  const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "adaptive_seed" | "fixed">("fixed");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authPrivateKey, setAuthPrivateKey] = useState("");
@@ -724,7 +725,9 @@ export function LiveDashboard() {
   }
 
   async function startLive() {
-    const parsedStake = Number(liveStake || "0");
+    const parsedStake = liveSizingMode === "fixed"
+      ? Number(liveFixedStake || "15")
+      : Number(liveStake || "0");
     const stakeForRequest = Number.isFinite(parsedStake) ? parsedStake : 0;
     const res = await fetch("/api/control/live", {
       method: "POST",
@@ -734,6 +737,7 @@ export function LiveDashboard() {
         stake: stakeForRequest,
         sizing_mode: liveSizingMode,
         position_mode: livePositionMode,
+        fixed_stake: liveSizingMode === "fixed" ? stakeForRequest : undefined,
       }),
     });
     const json = (await res.json()) as LiveControlStatus;
@@ -1164,6 +1168,10 @@ export function LiveDashboard() {
     const rawSizing = String(meta.sizing_mode ?? "").toLowerCase();
     if (rawSizing === "adaptive" || rawSizing === "adaptive_seed" || rawSizing === "fixed") {
       setLiveSizingMode(rawSizing);
+    }
+    const savedFixedStake = Number(meta.stake_per_trade ?? 0);
+    if (savedFixedStake > 0) {
+      setLiveFixedStake(String(savedFixedStake));
     }
     const rawPos = String(meta.position_mode ?? "").toUpperCase();
     if (rawPos === "BOTH" || rawPos === "UP_ONLY" || rawPos === "DOWN_ONLY") {
@@ -1658,12 +1666,13 @@ export function LiveDashboard() {
                     value={paperSizingMode}
                     onChange={(e) =>
                       setPaperSizingMode(
-                        e.target.value as "adaptive" | "all_in_fixed" | "all_in_equity",
+                        e.target.value as "adaptive" | "fixed" | "all_in_fixed" | "all_in_equity",
                       )
                     }
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   >
-                    <option value="adaptive">adaptive (recommended)</option>
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
+                    <option value="adaptive">adaptive</option>
                     <option value="all_in_fixed">all_in_fixed (always seed amount)</option>
                     <option value="all_in_equity">all_in_equity (all available equity)</option>
                   </select>
@@ -1842,10 +1851,10 @@ export function LiveDashboard() {
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <label className="text-xs text-muted-foreground">
-                  Invest Per Trade (USD)
+                  {liveSizingMode === "fixed" ? "Fixed Invest Per Trade (USD)" : "Invest Per Trade (USD)"}
                   <input
-                    value={liveStake}
-                    onChange={(e) => setLiveStake(e.target.value)}
+                    value={liveSizingMode === "fixed" ? liveFixedStake : liveStake}
+                    onChange={(e) => liveSizingMode === "fixed" ? setLiveFixedStake(e.target.value) : setLiveStake(e.target.value)}
                     disabled={liveSizingMode === "adaptive" || liveSizingMode === "adaptive_seed"}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
                   />
@@ -1859,9 +1868,9 @@ export function LiveDashboard() {
                     }
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   >
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
                     <option value="adaptive">adaptive (balance)</option>
                     <option value="adaptive_seed">adaptive (seed capital)</option>
-                    <option value="fixed">fixed (use invest amount)</option>
                   </select>
                 </label>
                 <label className="text-xs text-muted-foreground">

@@ -286,6 +286,35 @@ def init_market_schema(conn):
         ) ENGINE=InnoDB
         """,
         """
+        CREATE TABLE IF NOT EXISTS signal_cache_log (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DOUBLE NOT NULL,
+            window_start BIGINT NOT NULL,
+            direction VARCHAR(16) NOT NULL,
+            avg_confidence DOUBLE NOT NULL,
+            max_edge DOUBLE NOT NULL,
+            unanimous TINYINT NOT NULL DEFAULT 0,
+            judges_json LONGTEXT NOT NULL,
+            up_ask DOUBLE NULL,
+            down_ask DOUBLE NULL,
+            btc_price DOUBLE NULL,
+            start_price DOUBLE NULL,
+            seconds_elapsed DOUBLE NULL,
+            seconds_remaining DOUBLE NULL,
+            btc_move_pct DOUBLE NULL,
+            recent_move_pct DOUBLE NULL,
+            trend_move_pct DOUBLE NULL,
+            guards_passed TINYINT NOT NULL DEFAULT 0,
+            buy_sell_ratio DOUBLE NULL,
+            gate_allow TINYINT NOT NULL DEFAULT 0,
+            gate_ev DOUBLE NULL,
+            gate_reason TEXT NULL,
+            binance_rtds_gap DOUBLE NULL,
+            INDEX idx_scl_ws_ts (window_start, ts),
+            INDEX idx_scl_ws_gate (window_start, gate_allow)
+        ) ENGINE=InnoDB
+        """,
+        """
         CREATE TABLE IF NOT EXISTS bot_runtime_state (
             id TINYINT PRIMARY KEY,
             updated_at DOUBLE NOT NULL,

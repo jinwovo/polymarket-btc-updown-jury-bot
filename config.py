@@ -660,6 +660,20 @@ class TradingConfig:
     feature_max_points: int = field(
         default_factory=lambda: int(os.getenv("FEATURE_MAX_POINTS", "900"))
     )
+    # Smart exit: re-evaluate jury mid-trade, exit if jury flips direction.
+    # Reduces avg loss from -83% to -22% without cutting winners (jury still agrees).
+    smart_exit_enabled: bool = field(
+        default_factory=lambda: os.getenv("SMART_EXIT_ENABLED", "false").lower() == "true"
+    )
+    smart_exit_interval_sec: float = field(
+        default_factory=lambda: float(os.getenv("SMART_EXIT_INTERVAL_SEC", "10"))
+    )
+    smart_exit_min_roi_pct: float = field(
+        default_factory=lambda: float(os.getenv("SMART_EXIT_MIN_ROI_PCT", "-80"))
+    )
+    smart_exit_min_hold_sec: float = field(
+        default_factory=lambda: float(os.getenv("SMART_EXIT_MIN_HOLD_SEC", "15"))
+    )
 
 
 @dataclass

@@ -514,6 +514,8 @@ PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_MIN_HOLD_SEC = float(
 _EARLY_EXIT_OPPOSITE_HITS: dict[int, int] = {}
 # Track peak ROI per trade for trailing stop.
 _PEAK_ROI_PER_TRADE: dict[int, float] = {}
+# Smart exit: track last jury re-evaluation time per trade.
+_SMART_EXIT_LAST_CHECK: dict[int, float] = {}
 
 
 def _paper_exit_policy_config() -> ExitPolicyConfig:
@@ -1133,15 +1135,28 @@ def _backfill_unresolved_windows(conn) -> int:
                 slug, gamma_ptb or 0, gamma_final or 0, outcome,
             )
         else:
-            # Fallback: use btc_ticks (less accurate for close calls)
-            end_price = _price_at_or_near(conn, float(we), prefer_before=True)
-            if start_price is None or end_price is None:
-                continue
-            outcome = "UP" if end_price >= start_price else "DOWN"
-            logger.info(
-                "Backfilled %d from btc_ticks (Gamma unavailable): end=$%.2f outcome=%s",
-                ws, end_price, outcome,
+            # Fallback: use last CLOB odds near expiry (93%+ accurate).
+            # Much better than btc_ticks (Binance has $10-15 offset from Chainlink).
+            _last_odds = fetch_one_dict(
+                conn,
+                """SELECT up_best_ask, down_best_ask FROM poly_odds
+                   WHERE window_start = ? AND ts >= ? AND ts <= ?
+                   ORDER BY ts DESC LIMIT 1""",
+                (ws, float(we) - 10, float(we) + 5),
             )
+            if _last_odds:
+                _lo_up = float(_last_odds.get("up_best_ask") or 0.5)
+                _lo_dn = float(_last_odds.get("down_best_ask") or 0.5)
+                # Higher ask = market thinks that side wins
+                outcome = "UP" if _lo_up > _lo_dn else "DOWN"
+                end_price = _price_at_or_near(conn, float(we), prefer_before=True) or 0
+                logger.info(
+                    "Backfilled %d from CLOB odds (Gamma unavailable): up_ask=%.3f down_ask=%.3f outcome=%s",
+                    ws, _lo_up, _lo_dn, outcome,
+                )
+            else:
+                # No odds data either - skip, data_collector will backfill later
+                continue
 
         execute_write(
             conn,
@@ -1290,6 +1305,14 @@ def open_trade_if_signal(
     if direction == "DOWN" and entry_price < PAPER_DOWN_MIN_ENTRY_PRICE:
         logger.debug("Skip cheap DOWN ws=%s: price=%.3f < %.3f", window_start, entry_price, PAPER_DOWN_MIN_ENTRY_PRICE)
         return False
+
+    # Spread filter: only enter when market is uncertain (UP/DOWN asks close)
+    _max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
+    if up_ask_val is not None and down_ask_val is not None:
+        _spread = abs(float(up_ask_val) - float(down_ask_val))
+        if _spread > _max_spread:
+            logger.debug("Skip wide spread ws=%s: spread=%.3f > %.3f", window_start, _spread, _max_spread)
+            return False
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
@@ -1552,7 +1575,64 @@ def open_trade_if_signal(
             )
             return False
 
-    if sizing_mode == "all_in_fixed":
+    if sizing_mode == "fixed":
+        _fixed_val = float(os.getenv("PAPER_FIXED_STAKE", "0"))
+        if _fixed_val > 0:
+            stake = round(_fixed_val, 2)
+        else:
+            stake = round(initial_capital * 0.15, 2)
+        # Score-based sizing: 7 signals scored, 3x when score>=5 or prev momentum
+        _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "3.0"))
+        _min_score = int(os.getenv("PAPER_MIN_ENTRY_SCORE", "3"))
+        if _mega_mult > 1.0 and cached:
+            _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
+            _prev_ws = int(window_start) - 300
+            _prev_row = fetch_one(conn, "SELECT actual_outcome FROM market_windows WHERE window_start = ?", (_prev_ws,))
+            _prev_outcome = _prev_row[0] if _prev_row else None
+            _confidence = float(cached.get("avg_confidence") or 0)
+            _ev = float(cached.get("gate_ev") or 0)
+            # Odds velocity (ask 30s ago vs now)
+            _ov = 0
+            _entry_ts = float(cached.get("ts") or 0)
+            if _entry_ts > 0:
+                _early_odds = fetch_one_dict(conn,
+                    "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT 1",
+                    (int(window_start), _entry_ts - 35, _entry_ts - 25))
+                if _early_odds:
+                    _eep = float(_early_odds.get("up_best_ask") or 0.5) if direction == "UP" else float(_early_odds.get("down_best_ask") or 0.5)
+                    _ov = entry_price - _eep
+            # BTC acceleration
+            _accel_ok = False
+            _btc_now = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 5, _entry_ts))
+            _btc_prev = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 15, _entry_ts - 10))
+            _btc_older = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 25, _entry_ts - 20))
+            if _btc_now and _btc_prev and _btc_older and float(_btc_older[0] or 0) > 0:
+                _p1 = float(_btc_now[0]); _p2 = float(_btc_prev[0]); _p3 = float(_btc_older[0])
+                _v1 = (_p1-_p2)/_p3*100; _v2 = (_p2-_p3)/_p3*100
+                _accel = _v1 - _v2
+                _accel_ok = (direction=="UP" and _accel>0) or (direction=="DOWN" and _accel<0)
+            # Calculate score
+            _score = 0
+            if _btc_move_abs >= 0.02: _score += 1
+            if _prev_outcome == direction: _score += 1
+            if entry_price <= 0.45: _score += 1
+            if _ev >= 0.20: _score += 1
+            if _confidence >= 0.7: _score += 1
+            if _ov >= 0.02: _score += 1
+            if _accel_ok: _score += 1
+            # Skip if score too low
+            if _score < _min_score:
+                logger.info("Skip low score ws=%s: score=%d < %d", window_start, _score, _min_score)
+                return False
+            # 3x when score>=5 OR prev momentum
+            _is_mega = (_score >= 5) or (_prev_outcome == direction and _btc_move_abs >= 0.02)
+            if _is_mega:
+                stake = round(stake * _mega_mult, 2)
+                logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",
+                           _score, _prev_outcome, _btc_move_abs, int(_mega_mult), stake)
+            else:
+                logger.info("Normal bet: score=%d $%.2f", _score, stake)
+    elif sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
     elif sizing_mode == "all_in_equity":
         stake = round(max(0.0, available_equity), 2)
@@ -1805,24 +1885,10 @@ def resolve_open_trades(conn) -> int:
         if not odds_row:
             continue
 
-        # Overlay real-time CLOB prices onto odds_row for mark-to-market
-        _win_row = fetch_one_dict(
-            conn,
-            "SELECT up_token_id, down_token_id FROM market_windows WHERE window_start = ? LIMIT 1",
-            (ws,),
-        )
-        if _win_row and _win_row.get("up_token_id") and _win_row.get("down_token_id"):
-            from polymarket_client import fetch_clob_book_sync
-            _ub, _ua, _ = fetch_clob_book_sync(str(_win_row["up_token_id"]))
-            _db2, _da, _ = fetch_clob_book_sync(str(_win_row["down_token_id"]))
-            if 0 < _ua < 1:
-                odds_row["up_best_ask"] = _ua
-            if 0 < _ub < 1:
-                odds_row["up_best_bid"] = _ub
-            if 0 < _da < 1:
-                odds_row["down_best_ask"] = _da
-            if 0 < _db2 < 1:
-                odds_row["down_best_bid"] = _db2
+        # Use stored poly_odds for exit decisions (same as backtest).
+        # CLOB live overlay was causing divergence: thin CLOB books show
+        # extreme bid/ask (0.05/0.95) that trigger false flush exits.
+        # Paper must match backtest for parity.
 
         _exit_px, _value, mtm_pnl, mtm_roi_pct = _mark_to_market(
             direction=direction,
@@ -1890,6 +1956,51 @@ def resolve_open_trades(conn) -> int:
             _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
         early_reason = exit_decision.reason
 
+        # --- Smart exit: jury re-evaluation mid-trade ---
+        if (
+            early_reason is None
+            and bool(config.trading.smart_exit_enabled)
+            and hold_sec >= float(config.trading.smart_exit_min_hold_sec)
+            and float(mtm_roi_pct) >= float(config.trading.smart_exit_min_roi_pct)
+        ):
+            _se_interval = float(config.trading.smart_exit_interval_sec)
+            _se_last = _SMART_EXIT_LAST_CHECK.get(trade_id, 0.0)
+            if (now_ts - _se_last) >= _se_interval:
+                _SMART_EXIT_LAST_CHECK[trade_id] = now_ts
+                try:
+                    _se_jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
+                    _se_prices, _se_ts = _recent_price_series(conn, now_ts, lookback_sec=600.0)
+                    if len(_se_prices) >= 20 and start_btc_px > 0:
+                        _se_up_ask = float(up_ask) if up_ask else 0.5
+                        _se_dn_ask = float(down_ask) if down_ask else 0.5
+                        _se_ctx = MarketContext(
+                            current_binance_price=float(current_btc_px),
+                            market_start_price=float(start_btc_px),
+                            recent_prices=list(_se_prices[-600:]),
+                            recent_timestamps=list(_se_ts[-600:]),
+                            poly_up_price=_se_up_ask,
+                            poly_down_price=_se_dn_ask,
+                            seconds_elapsed=float(now_ts - ws),
+                            seconds_remaining=float(remaining_sec),
+                            poly_up_ask=_se_up_ask,
+                            poly_down_ask=_se_dn_ask,
+                        )
+                        _se_decision = _se_jury.deliberate(_se_ctx)
+                        if _se_decision.direction != direction and _se_decision.direction != "NO_TRADE":
+                            early_reason = (
+                                f"smart_exit_jury_flip(flip={_se_decision.direction}"
+                                f", hold={hold_sec:.0f}s, roi={mtm_roi_pct:+.1f}%"
+                                f", opp_ask={float(opposite_ask or 0):.3f})"
+                            )
+                        elif _se_decision.direction == "NO_TRADE" and float(mtm_roi_pct) < -30.0:
+                            early_reason = (
+                                f"smart_exit_no_trade(hold={hold_sec:.0f}s"
+                                f", roi={mtm_roi_pct:+.1f}%"
+                                f", opp_ask={float(opposite_ask or 0):.3f})"
+                            )
+                except Exception as _se_err:
+                    logger.debug("smart_exit jury error: %s", _se_err)
+
         if early_reason:
             closed = _close_trade_early(
                 conn,
@@ -1906,6 +2017,7 @@ def resolve_open_trades(conn) -> int:
                 resolved += 1
                 _EARLY_EXIT_OPPOSITE_HITS.pop(trade_id, None)
                 _PEAK_ROI_PER_TRADE.pop(trade_id, None)
+                _SMART_EXIT_LAST_CHECK.pop(trade_id, None)
 
     if resolved:
         conn.commit()
@@ -1995,7 +2107,7 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
     initial_capital = max(50.0, float(stake))
     risk_fraction = _clamp(PAPER_RISK_FRACTION, 0.01, 1.0)
     mode = str(sizing_mode or "adaptive").strip().lower()
-    if mode not in ("adaptive", "all_in_fixed", "all_in_equity"):
+    if mode not in ("adaptive", "fixed", "all_in_fixed", "all_in_equity"):
         mode = "adaptive"
     logger.warning(
         "Paper simulator running: initial=$%.2f mode=%s risk_frac=%.2f base_ev=%.2f%% min_support=%.0f%% max_ask=%.2f "
@@ -2101,7 +2213,7 @@ def main():
         "--sizing-mode",
         type=str,
         default=PAPER_SIZING_MODE,
-        help="adaptive | all_in_fixed | all_in_equity",
+        help="adaptive | fixed | all_in_fixed | all_in_equity",
     )
     parser.add_argument("--status", action="store_true", help="Show paper trade status")
     args = parser.parse_args()

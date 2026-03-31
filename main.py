@@ -272,6 +272,8 @@ def _build_mirror_exit_policy_config() -> ExitPolicyConfig:
         break_even_force_peak_pct=float(MIRROR_EARLY_EXIT_BREAK_EVEN_FORCE_PEAK_PCT),
         profit_take_late_only_remaining_sec=float(MIRROR_EARLY_EXIT_PROFIT_TAKE_LATE_ONLY_REMAINING_SEC),
         profit_take_force_roi_pct=float(MIRROR_EARLY_EXIT_PROFIT_TAKE_FORCE_ROI_PCT),
+        near_certain_win_opposite_ask=float(os.getenv("PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_OPPOSITE_ASK", "0.05")),
+        near_certain_win_min_hold_sec=float(os.getenv("PAPER_EARLY_EXIT_NEAR_CERTAIN_WIN_MIN_HOLD_SEC", "10")),
     )
 
 
@@ -281,6 +283,7 @@ MIRROR_MIN_EXPECTED_ROI = float(os.getenv("PAPER_MIN_EXPECTED_ROI", "0.020"))
 MIRROR_MIN_SUPPORT_RATIO = float(os.getenv("PAPER_MIN_SUPPORT_RATIO", "0.70"))
 MIRROR_MIN_CONFIDENCE = float(os.getenv("PAPER_MIN_CONFIDENCE", "0.40"))
 MIRROR_MAX_ENTRY_PRICE = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.52"))
+MIRROR_MAX_ODDS_SPREAD = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
 MIRROR_ENTRY_START_SEC = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
 MIRROR_ENTRY_END_SEC = float(os.getenv("PAPER_ENTRY_END_SEC", "240"))
 MIRROR_DOWN_ENTRY_END_SEC = float(os.getenv("PAPER_DOWN_ENTRY_END_SEC", "160"))
@@ -715,6 +718,7 @@ class TradingBot:
         self._last_auto_claim_ts: float = 0.0
         self._early_exit_opposite_hits: dict[int, int] = {}
         self._early_exit_peak_roi: dict[int, float] = {}
+        self._smart_exit_last_check: dict[int, float] = {}
         self._pending_settlement_exit: Optional[dict[str, Any]] = None
         self._bg_tasks: set[asyncio.Task] = set()
         self._telegram_warned_not_ready: bool = False
@@ -1092,7 +1096,8 @@ class TradingBot:
         """Adaptive bet sizing: 5-15% of real balance based on conviction.
         Same logic as RiskManager.compute_bet_size / paper_trade_sim."""
         if self.live_sizing_mode not in ("ADAPTIVE", "ADAPTIVE_SEED"):
-            fixed = float(config.trading.max_bet_size)
+            # FIXED mode: use fixed stake amount directly
+            fixed = float(os.getenv("LIVE_FIXED_STAKE", str(config.trading.max_bet_size)))
             if fixed <= 0.0:
                 return 0.0
             return round(
@@ -2677,9 +2682,34 @@ class TradingBot:
         if hold_sec < float(exit_cfg.min_elapsed_sec):
             return False
 
-        token_id, side_bid, _side_ask, opposite_ask = self._resolve_trade_quotes(trade.direction)
+        # CLOB quotes for actual order execution
+        token_id, side_bid, _side_ask, _clob_opp_ask = self._resolve_trade_quotes(trade.direction)
         if side_bid is None or token_id is None:
             return False
+
+        # Use stored poly_odds for exit DECISIONS (parity with paper/backtest).
+        # CLOB live has thin-book spikes that cause false flush exits.
+        _db_opp_ask = _clob_opp_ask  # fallback to CLOB
+        try:
+            _ws_key = int(self.current_trade_window_start or 0)
+            if _ws_key > 0:
+                from db_config import connect_db as _cdb, fetch_one_dict as _fod
+                _exit_conn = _cdb()
+                try:
+                    _db_odds = _fod(_exit_conn,
+                        "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = %s ORDER BY ts DESC LIMIT 1",
+                        (_ws_key,))
+                    if _db_odds:
+                        _d = str(trade.direction).upper()
+                        if _d == "UP" and _db_odds.get("down_best_ask"):
+                            _db_opp_ask = float(_db_odds["down_best_ask"])
+                        elif _d == "DOWN" and _db_odds.get("up_best_ask"):
+                            _db_opp_ask = float(_db_odds["up_best_ask"])
+                finally:
+                    _exit_conn.close()
+        except Exception:
+            pass
+        opposite_ask = _db_opp_ask
 
         exit_px, mtm_pnl, mtm_roi_pct = self._mark_to_market_trade(trade, side_bid)
         if exit_px <= 0.0:
@@ -2756,6 +2786,69 @@ class TradingBot:
         else:
             self._early_exit_opposite_hits.pop(window_key, None)
         early_reason = exit_decision.reason
+
+        # --- Smart exit: jury re-evaluation mid-trade ---
+        if (
+            early_reason is None
+            and bool(config.trading.smart_exit_enabled)
+            and hold_sec >= float(config.trading.smart_exit_min_hold_sec)
+            and float(mtm_roi_pct) >= float(config.trading.smart_exit_min_roi_pct)
+        ):
+            _se_interval = float(config.trading.smart_exit_interval_sec)
+            _se_last = self._smart_exit_last_check.get(window_key, 0.0)
+            if (now_ts - _se_last) >= _se_interval:
+                self._smart_exit_last_check[window_key] = now_ts
+                try:
+                    _se_jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
+                    _se_ticks = self.price_feed.get_recent_prices(600)
+                    _se_prices = [float(t.price) for t in _se_ticks if float(t.price) > 0.0]
+                    _se_ts = [float(t.timestamp) for t in _se_ticks if float(t.price) > 0.0]
+                    if len(_se_prices) >= 20 and start_btc_px > 0:
+                        # Use stored poly_odds for parity with paper/backtest
+                        _se_up_ask = 0.5
+                        _se_dn_ask = 0.5
+                        try:
+                            _se_ws = int(self.current_trade_window_start or 0)
+                            if _se_ws > 0:
+                                from db_config import connect_db as _secdb, fetch_one_dict as _sefod
+                                _se_conn = _secdb()
+                                try:
+                                    _se_db = _sefod(_se_conn, "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = %s ORDER BY ts DESC LIMIT 1", (_se_ws,))
+                                    if _se_db:
+                                        _se_up_ask = float(_se_db.get("up_best_ask") or 0.5)
+                                        _se_dn_ask = float(_se_db.get("down_best_ask") or 0.5)
+                                finally:
+                                    _se_conn.close()
+                        except Exception:
+                            _se_up_ask = float(self.current_market.up_ask or 0.5) if self.current_market else 0.5
+                            _se_dn_ask = float(self.current_market.down_ask or 0.5) if self.current_market else 0.5
+                        _se_ctx = MarketContext(
+                            current_binance_price=float(current_btc_px),
+                            market_start_price=float(start_btc_px),
+                            recent_prices=list(_se_prices[-600:]),
+                            recent_timestamps=list(_se_ts[-600:]),
+                            poly_up_price=_se_up_ask,
+                            poly_down_price=_se_dn_ask,
+                            seconds_elapsed=float(seconds_elapsed),
+                            seconds_remaining=float(seconds_remaining),
+                            poly_up_ask=_se_up_ask,
+                            poly_down_ask=_se_dn_ask,
+                        )
+                        _se_decision = _se_jury.deliberate(_se_ctx)
+                        if _se_decision.direction != str(trade.direction) and _se_decision.direction != "NO_TRADE":
+                            early_reason = (
+                                f"smart_exit_jury_flip(flip={_se_decision.direction}"
+                                f", hold={hold_sec:.0f}s, roi={mtm_roi_pct:+.1f}%"
+                                f", opp_ask={float(opposite_ask or 0):.3f})"
+                            )
+                        elif _se_decision.direction == "NO_TRADE" and float(mtm_roi_pct) < -30.0:
+                            early_reason = (
+                                f"smart_exit_no_trade(hold={hold_sec:.0f}s"
+                                f", roi={mtm_roi_pct:+.1f}%"
+                                f", opp_ask={float(opposite_ask or 0):.3f})"
+                            )
+                except Exception as _se_err:
+                    logger.debug("smart_exit jury error: %s", _se_err)
 
         if (
             early_reason is None
@@ -2852,6 +2945,7 @@ class TradingBot:
             actual_outcome="EARLY_EXIT",
         )
         self._early_exit_peak_roi.pop(window_key, None)
+        self._smart_exit_last_check.pop(window_key, None)
         await self._refresh_adaptive_balance_cap(force=True, reason="post_early_exit")
         return True
 
@@ -3835,6 +3929,15 @@ class TradingBot:
             )
             dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
+        # Spread filter: only enter when market is uncertain (parity with Paper)
+        if LIVE_MIRROR_PAPER_GATES:
+            _sig_up = float(_sig_row.get("up_ask") or 0.5)
+            _sig_dn = float(_sig_row.get("down_ask") or 0.5)
+            _sig_spread = abs(_sig_up - _sig_dn)
+            if _sig_spread > float(MIRROR_MAX_ODDS_SPREAD):
+                logger.info("Skip wide spread: %.3f > %.3f", _sig_spread, MIRROR_MAX_ODDS_SPREAD)
+                return
+
         # Entry gate: use signal_cache result in parity mode (same as Paper)
         if LIVE_MIRROR_PAPER_GATES:
             _gate_allow = int(_sig_row.get("gate_allow") or 0)
@@ -4111,6 +4214,69 @@ class TradingBot:
             model_prob=float(gate.model_prob),
             entry_price=float(price),
         )
+        # Score-based sizing: 7 signals, skip if score<3, 3x when score>=5 or prev momentum
+        _mega_mult = float(os.getenv("LIVE_MEGA_MULTIPLIER", "3.0"))
+        _min_score = int(os.getenv("LIVE_MIN_ENTRY_SCORE", "3"))
+        if self.live_sizing_mode == "FIXED":
+            try:
+                _btc_move = abs(float(_sig_row.get("btc_move_pct") or 0)) if _sig_row else 0
+                _prev_ws = int(self.current_trade_window_start or 0) - 300
+                _prev_out = None
+                if _prev_ws > 0:
+                    _mc = connect_db()
+                    try:
+                        _pr_row = fetch_one_dict(_mc, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_prev_ws,))
+                        _prev_out = _pr_row.get("actual_outcome") if _pr_row else None
+                    finally:
+                        _mc.close()
+                _conf = float(decision.avg_confidence)
+                _ev = float(gate.expected_roi) if gate else 0
+                # Odds velocity
+                _ov = 0
+                _entry_ts = float(_sig_row.get("ts") or 0) if _sig_row else 0
+                if _entry_ts > 0 and self.current_trade_window_start:
+                    try:
+                        _mc2 = connect_db()
+                        _eo = fetch_one_dict(_mc2,
+                            "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start=%s AND ts>=%s AND ts<=%s ORDER BY ts ASC LIMIT 1",
+                            (int(self.current_trade_window_start), _entry_ts-35, _entry_ts-25))
+                        _mc2.close()
+                        if _eo:
+                            _eep = float(_eo.get("up_best_ask") or 0.5) if str(decision.direction)=="UP" else float(_eo.get("down_best_ask") or 0.5)
+                            _ov = float(price) - _eep
+                    except Exception:
+                        pass
+                # BTC acceleration
+                _accel_ok = False
+                ticks = self.price_feed.get_recent_prices(30)
+                if len(ticks) >= 3:
+                    _p1 = float(ticks[-1].price); _p2 = float(ticks[-max(len(ticks)//2,1)].price); _p3 = float(ticks[0].price)
+                    if _p3 > 0:
+                        _v1 = (_p1-_p2)/_p3*100; _v2 = (_p2-_p3)/_p3*100
+                        _a = _v1 - _v2
+                        _accel_ok = (str(decision.direction)=="UP" and _a>0) or (str(decision.direction)=="DOWN" and _a<0)
+                # Score
+                _score = 0
+                if _btc_move >= 0.02: _score += 1
+                if _prev_out == str(decision.direction): _score += 1
+                if float(price) <= 0.45: _score += 1
+                if _ev >= 0.20: _score += 1
+                if _conf >= 0.7: _score += 1
+                if _ov >= 0.02: _score += 1
+                if _accel_ok: _score += 1
+                if _score < _min_score:
+                    logger.info("Skip low score: %d < %d (dir=%s)", _score, _min_score, decision.direction)
+                    return
+                _is_mega = (_score >= 5) or (_prev_out == str(decision.direction) and _btc_move >= 0.02)
+                if _is_mega and _mega_mult > 1:
+                    bet_size = round(bet_size * _mega_mult, 2)
+                    logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",
+                               _score, _prev_out, _btc_move, int(_mega_mult), bet_size)
+                else:
+                    logger.info("Normal bet: score=%d $%.2f", _score, bet_size)
+            except Exception as _score_err:
+                logger.warning("Score check failed: %s", _score_err)
+
         if bet_size < max(float(config.trading.min_bet_size), float(MIRROR_LIVE_MIN_BET)):
             return
 
