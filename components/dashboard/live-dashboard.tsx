@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Sparkline } from "@/components/dashboard/sparkline";
-import AccountManager from "@/components/dashboard/account-manager";
+// import AccountManager from "@/components/dashboard/account-manager";
 
 type JudgeVote = "UP" | "DOWN" | "ABSTAIN";
 
@@ -465,6 +465,10 @@ export function LiveDashboard() {
   const [liveFixedStake, setLiveFixedStake] = useState("15");
   const [liveSizingMode, setLiveSizingMode] = useState<"adaptive" | "adaptive_seed" | "fixed">("fixed");
   const [livePositionMode, setLivePositionMode] = useState<"BOTH" | "UP_ONLY" | "DOWN_ONLY">("BOTH");
+  const [selectedAccountId, setSelectedAccountId] = useState(0);
+  const [accountList, setAccountList] = useState<Array<{id: number; name: string}>>([]);
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [newAccountName, setNewAccountName] = useState("");
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authPrivateKey, setAuthPrivateKey] = useState("");
   const [authFunder, setAuthFunder] = useState("");
@@ -521,6 +525,15 @@ export function LiveDashboard() {
     if (!json.ok) throw new Error(json.error || "Snapshot unavailable");
     return json;
   }
+
+  const fetchAccountList = async () => {
+    try {
+      const res = await fetch("/api/accounts");
+      const data = await res.json();
+      if (data.accounts) setAccountList(data.accounts);
+    } catch {}
+  };
+  useEffect(() => { fetchAccountList(); const iv = setInterval(fetchAccountList, 15000); return () => clearInterval(iv); }, []);
 
   useEffect(() => {
     const el = marketMotionCardRef.current;
@@ -1772,18 +1785,79 @@ export function LiveDashboard() {
 
           <Card className="xl:self-start">
             <CardHeader>
-              <CardTitle>Multi-Account Trading</CardTitle>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Live Trading Control</CardTitle>
+                  <CardDescription>Real Polymarket execution with balance guard</CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedAccountId}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === "__add__") {
+                        setShowAddAccount(true);
+                      } else {
+                        setSelectedAccountId(Number(val));
+                      }
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2 py-1 text-sm"
+                  >
+                    <option value={0}>Main Account</option>
+                    {accountList.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name || `Account ${a.id}`}</option>
+                    ))}
+                    <option value="__add__">+ Add Account</option>
+                  </select>
+                  {selectedAccountId > 0 && (
+                    <button
+                      onClick={async () => {
+                        if (!confirm("Delete this account?")) return;
+                        await fetch("/api/accounts", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ action: "delete", account_id: selectedAccountId }),
+                        });
+                        setSelectedAccountId(0);
+                        fetchAccountList();
+                      }}
+                      className="px-2 py-1 text-xs bg-red-700 text-white rounded hover:bg-red-600"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
             </CardHeader>
-            <CardContent>
-              <AccountManager />
-            </CardContent>
-          </Card>
-
-          <Card className="xl:self-start">
-            <CardHeader>
-              <CardTitle>Live Trading Control (Legacy)</CardTitle>
-              <CardDescription>Real Polymarket execution with balance guard</CardDescription>
-            </CardHeader>
+            {showAddAccount && (
+              <div className="mx-4 mb-3 p-3 rounded-lg border border-border bg-background/50">
+                <div className="flex items-center gap-2">
+                  <input
+                    placeholder="Account name"
+                    value={newAccountName}
+                    onChange={(e) => setNewAccountName(e.target.value)}
+                    className="flex-1 rounded border border-border bg-background px-2 py-1 text-sm"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!newAccountName.trim()) return;
+                      await fetch("/api/accounts", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "save", name: newAccountName.trim() }),
+                      });
+                      setNewAccountName("");
+                      setShowAddAccount(false);
+                      fetchAccountList();
+                    }}
+                    className="px-3 py-1 bg-green-600 text-white rounded text-sm"
+                  >
+                    Create
+                  </button>
+                  <button onClick={() => setShowAddAccount(false)} className="px-3 py-1 bg-muted rounded text-sm">Cancel</button>
+                </div>
+              </div>
+            )}
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">

@@ -2803,7 +2803,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 aid = int(payload.get("account_id", 0))
                 if aid in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[aid].running():
                     LIVE_ACCOUNT_PROCS[aid].stop()
-                conn = _get_db_conn()
+                conn = _connect_db()
                 execute_write(conn, "DELETE FROM accounts WHERE id=%s", (aid,))
                 conn.commit()
                 self._send_json({"ok": True})
@@ -2856,7 +2856,7 @@ def main():
 def _get_accounts() -> list[dict]:
     """Get all accounts from DB."""
     try:
-        conn = _get_db_conn()
+        conn = _connect_db()
         rows = fetch_all_dicts(conn, "SELECT * FROM accounts ORDER BY id")
         return [dict(r) for r in rows]
     except Exception:
@@ -2865,7 +2865,7 @@ def _get_accounts() -> list[dict]:
 
 def _get_account(account_id: int) -> dict | None:
     try:
-        conn = _get_db_conn()
+        conn = _connect_db()
         return fetch_one_dict(conn, "SELECT * FROM accounts WHERE id = %s", (account_id,))
     except Exception:
         return None
@@ -2873,7 +2873,7 @@ def _get_account(account_id: int) -> dict | None:
 
 def _save_account(data: dict) -> dict:
     """Create or update account."""
-    conn = _get_db_conn()
+    conn = _connect_db()
     acct_id = data.get("id")
     if acct_id:
         # Update
@@ -2959,7 +2959,7 @@ def control_account_start(account_id: int) -> dict:
 
     # Update DB status
     try:
-        conn = _get_db_conn()
+        conn = _connect_db()
         execute_write(conn, "UPDATE accounts SET status='RUNNING', pid=%s WHERE id=%s",
                      (proc._process.pid if proc._process else None, account_id))
         conn.commit()
@@ -2978,7 +2978,7 @@ def control_account_stop(account_id: int) -> dict:
         ok, msg = False, "No process found"
 
     try:
-        conn = _get_db_conn()
+        conn = _connect_db()
         execute_write(conn, "UPDATE accounts SET status='STOPPED', pid=NULL WHERE id=%s", (account_id,))
         conn.commit()
     except Exception:
@@ -2997,7 +2997,7 @@ def build_account_status(account_id: int) -> dict:
     pnl = 0.0
     trade_count = 0
     try:
-        conn = _get_db_conn()
+        conn = _connect_db()
         row = fetch_one_dict(conn, """
             SELECT COALESCE(SUM(pnl),0) as total_pnl, COUNT(*) as cnt
             FROM live_trades WHERE account_id = %s AND DATE(FROM_UNIXTIME(opened_at)) = CURDATE()
