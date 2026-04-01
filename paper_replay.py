@@ -188,22 +188,12 @@ class PaperReplay:
                     entry_price = later_price
 
             # All filters passed — enter this trade
-            available = self.equity
-            if available < 5.0:
-                return None
-
-            stake = _compute_bet_size(
-                available_equity=available,
-                initial_capital=self.initial_equity,
-                expected_roi=gate_ev,
-                risk_fraction=0.20,
-                entry_price=entry_price,
-                model_prob=None,
-                confidence=confidence,
-                max_edge=max_edge,
-                seconds_elapsed=elapsed,
-            )
-            stake = max(5.0, min(stake, available))
+            # Fixed sizing (matches paper's FIXED mode, no compound loss)
+            _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
+            if _fixed_stake > 0:
+                stake = _fixed_stake
+            else:
+                stake = round(self.initial_equity * 0.15, 2)
             shares = stake / entry_price
             opened_at = entry_ts
 

@@ -212,7 +212,7 @@ def rebuild(last_hours: float, clear: bool = False):
 
             if gate_allow:
                 gate_found = True
-                break  # One gate_allow=1 per window is enough for paper_replay
+                break  # First gate_allow=1 per window — matches paper_replay_orig
 
             t += check_interval
 
