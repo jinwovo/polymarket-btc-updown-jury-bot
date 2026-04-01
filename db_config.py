@@ -398,6 +398,13 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache ADD COLUMN gate_ev DOUBLE NULL",
         "ALTER TABLE signal_cache ADD COLUMN gate_reason TEXT NULL",
         "ALTER TABLE signal_cache ADD COLUMN binance_rtds_gap DOUBLE NULL",
+        # Pre-computed score signals for fast entry (no extra DB queries)
+        "ALTER TABLE signal_cache ADD COLUMN prev_outcome VARCHAR(16) NULL",
+        "ALTER TABLE signal_cache ADD COLUMN odds_velocity DOUBLE NULL",
+        "ALTER TABLE signal_cache ADD COLUMN btc_accel_ok TINYINT NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN prev_outcome VARCHAR(16) NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN odds_velocity DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN btc_accel_ok TINYINT NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

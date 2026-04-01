@@ -22,3 +22,4 @@ ml_artifacts/*.pkl
 feature_1s.csv
 catboost_info/
 .runtime/
+rust_order/target/

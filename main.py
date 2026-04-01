@@ -695,7 +695,7 @@ class TradingBot:
         self._kill_switch_reason: Optional[str] = None
 
         self._running = False
-        self._check_interval = 0.1  # 100ms - rate limit allows 150 req/s, we use ~20
+        self._check_interval = 0.05  # 50ms - fast enough, DB read is <1ms
         self._odds_task: Optional[asyncio.Task] = None
         self._last_odds_fetch: float = 0.0
         self._state_conn = None
@@ -2950,6 +2950,16 @@ class TradingBot:
         return True
 
     async def start(self):
+        # Preload Rust binary into OS cache
+        _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+        if os.path.isfile(_rust_bin):
+            try:
+                import subprocess
+                subprocess.run([_rust_bin], capture_output=True, timeout=2)
+                logger.info("Rust order binary preloaded: %s", _rust_bin)
+            except Exception:
+                pass
+
         logger.info("=" * 60)
         logger.info("Polymarket BTC Up/Down 5m Speed Arbitrage Bot")
         logger.info(f"Mode: {'DRY RUN' if config.trading.dry_run else '*** LIVE TRADING ***'}")
@@ -4220,54 +4230,31 @@ class TradingBot:
         if self.live_sizing_mode == "FIXED":
             try:
                 _btc_move = abs(float(_sig_row.get("btc_move_pct") or 0)) if _sig_row else 0
-                _prev_ws = int(self.current_trade_window_start or 0) - 300
-                _prev_out = None
-                if _prev_ws > 0:
-                    _mc = connect_db()
-                    try:
-                        _pr_row = fetch_one_dict(_mc, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_prev_ws,))
-                        _prev_out = _pr_row.get("actual_outcome") if _pr_row else None
-                    finally:
-                        _mc.close()
                 _conf = float(decision.avg_confidence)
                 _ev = float(gate.expected_roi) if gate else 0
-                # Odds velocity
-                _ov = 0
-                _entry_ts = float(_sig_row.get("ts") or 0) if _sig_row else 0
-                if _entry_ts > 0 and self.current_trade_window_start:
-                    try:
-                        _mc2 = connect_db()
-                        _eo = fetch_one_dict(_mc2,
-                            "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start=%s AND ts>=%s AND ts<=%s ORDER BY ts ASC LIMIT 1",
-                            (int(self.current_trade_window_start), _entry_ts-35, _entry_ts-25))
-                        _mc2.close()
-                        if _eo:
-                            _eep = float(_eo.get("up_best_ask") or 0.5) if str(decision.direction)=="UP" else float(_eo.get("down_best_ask") or 0.5)
-                            _ov = float(price) - _eep
-                    except Exception:
-                        pass
-                # BTC acceleration
-                _accel_ok = False
-                ticks = self.price_feed.get_recent_prices(30)
-                if len(ticks) >= 3:
-                    _p1 = float(ticks[-1].price); _p2 = float(ticks[-max(len(ticks)//2,1)].price); _p3 = float(ticks[0].price)
-                    if _p3 > 0:
-                        _v1 = (_p1-_p2)/_p3*100; _v2 = (_p2-_p3)/_p3*100
-                        _a = _v1 - _v2
-                        _accel_ok = (str(decision.direction)=="UP" and _a>0) or (str(decision.direction)=="DOWN" and _a<0)
+                # Read pre-computed score signals from signal_cache (no DB queries!)
+                _prev_out = str(_sig_row.get("prev_outcome") or "") if _sig_row else None
+                if _prev_out not in ("UP", "DOWN"): _prev_out = None
+                _ov = float(_sig_row.get("odds_velocity") or 0) if _sig_row else 0
+                _accel_ok = bool(int(_sig_row.get("btc_accel_ok") or 0)) if _sig_row and _sig_row.get("btc_accel_ok") is not None else False
                 # Score
-                _score = 0
-                if _btc_move >= 0.02: _score += 1
-                if _prev_out == str(decision.direction): _score += 1
-                if float(price) <= 0.45: _score += 1
-                if _ev >= 0.20: _score += 1
-                if _conf >= 0.7: _score += 1
-                if _ov >= 0.02: _score += 1
-                if _accel_ok: _score += 1
+                _s1 = _btc_move >= 0.02
+                _s2 = _prev_out == str(decision.direction)
+                _s3 = float(price) <= 0.45
+                _s4 = _ev >= 0.20
+                _s5 = _conf >= 0.7
+                _s6 = _ov >= 0.02
+                _s7 = _accel_ok
+                _score = sum([_s1, _s2, _s3, _s4, _s5, _s6, _s7])
+                logger.info(
+                    "Score detail: btc=%.3f%%(%s) prev=%s(%s) ask=%.3f(%s) ev=%.2f(%s) conf=%.2f(%s) ov=%.3f(%s) accel(%s) = %d",
+                    _btc_move, _s1, _prev_out, _s2, float(price), _s3, _ev, _s4, _conf, _s5, _ov, _s6, _s7, _score
+                )
                 if _score < _min_score:
                     logger.info("Skip low score: %d < %d (dir=%s)", _score, _min_score, decision.direction)
                     return
-                _is_mega = (_score >= 5) or (_prev_out == str(decision.direction) and _btc_move >= 0.02)
+                _mega_score = int(os.getenv("LIVE_MEGA_MIN_SCORE", "6"))
+                _is_mega = (_score >= _mega_score) or (_prev_out == str(decision.direction) and _btc_move >= 0.02)
                 if _is_mega and _mega_mult > 1:
                     bet_size = round(bet_size * _mega_mult, 2)
                     logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",

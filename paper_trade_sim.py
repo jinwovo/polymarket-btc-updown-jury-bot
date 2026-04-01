@@ -1586,31 +1586,13 @@ def open_trade_if_signal(
         _min_score = int(os.getenv("PAPER_MIN_ENTRY_SCORE", "3"))
         if _mega_mult > 1.0 and cached:
             _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
-            _prev_ws = int(window_start) - 300
-            _prev_row = fetch_one(conn, "SELECT actual_outcome FROM market_windows WHERE window_start = ?", (_prev_ws,))
-            _prev_outcome = _prev_row[0] if _prev_row else None
             _confidence = float(cached.get("avg_confidence") or 0)
             _ev = float(cached.get("gate_ev") or 0)
-            # Odds velocity (ask 30s ago vs now)
-            _ov = 0
-            _entry_ts = float(cached.get("ts") or 0)
-            if _entry_ts > 0:
-                _early_odds = fetch_one_dict(conn,
-                    "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT 1",
-                    (int(window_start), _entry_ts - 35, _entry_ts - 25))
-                if _early_odds:
-                    _eep = float(_early_odds.get("up_best_ask") or 0.5) if direction == "UP" else float(_early_odds.get("down_best_ask") or 0.5)
-                    _ov = entry_price - _eep
-            # BTC acceleration
-            _accel_ok = False
-            _btc_now = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 5, _entry_ts))
-            _btc_prev = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 15, _entry_ts - 10))
-            _btc_older = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts >= ? AND ts <= ? ORDER BY ts DESC LIMIT 1", (_entry_ts - 25, _entry_ts - 20))
-            if _btc_now and _btc_prev and _btc_older and float(_btc_older[0] or 0) > 0:
-                _p1 = float(_btc_now[0]); _p2 = float(_btc_prev[0]); _p3 = float(_btc_older[0])
-                _v1 = (_p1-_p2)/_p3*100; _v2 = (_p2-_p3)/_p3*100
-                _accel = _v1 - _v2
-                _accel_ok = (direction=="UP" and _accel>0) or (direction=="DOWN" and _accel<0)
+            # Read pre-computed score signals from signal_cache (no DB queries!)
+            _prev_outcome = str(cached.get("prev_outcome") or "")
+            if _prev_outcome not in ("UP", "DOWN"): _prev_outcome = None
+            _ov = float(cached.get("odds_velocity") or 0)
+            _accel_ok = bool(int(cached.get("btc_accel_ok") or 0)) if cached.get("btc_accel_ok") is not None else False
             # Calculate score
             _score = 0
             if _btc_move_abs >= 0.02: _score += 1
@@ -1624,8 +1606,9 @@ def open_trade_if_signal(
             if _score < _min_score:
                 logger.info("Skip low score ws=%s: score=%d < %d", window_start, _score, _min_score)
                 return False
-            # 3x when score>=5 OR prev momentum
-            _is_mega = (_score >= 5) or (_prev_outcome == direction and _btc_move_abs >= 0.02)
+            # 3x when score>=6 OR prev momentum
+            _mega_score = int(os.getenv("PAPER_MEGA_MIN_SCORE", "6"))
+            _is_mega = (_score >= _mega_score) or (_prev_outcome == direction and _btc_move_abs >= 0.02)
             if _is_mega:
                 stake = round(stake * _mega_mult, 2)
                 logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",

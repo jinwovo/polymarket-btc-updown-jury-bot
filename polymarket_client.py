@@ -1396,44 +1396,82 @@ class PolymarketClient:
             side_const = BUY if order_side == "BUY" else SELL
             client = self._clob_client
 
-            # Direct create_order: no pre-fetch needed (0.5s vs 2s+)
-            max_attempts = 5
+            _max_entry = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
+            _fok_limit = round(min(max(_max_entry, 0.01), 0.99), 2)
+            _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
+
+            # Try Rust fast-order first (saves ~300ms)
+            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+            _use_rust = os.path.isfile(_rust_bin) and os.getenv("USE_RUST_ORDER", "true").lower() == "true"
+
             resp = None
             _last_err = None
-            _order_likely_accepted = False
-            for _attempt in range(max_attempts):
+            if _use_rust:
                 try:
-                    _max_entry = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.58"))
-                    _fok_limit = round(min(max(_max_entry, 0.01), 0.99), 2)
-                    # Size must be integer (whole shares) to avoid decimal errors
-                    _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
-                    order_args = OrderArgs(
-                        token_id=token_id,
-                        price=_fok_limit,
-                        size=_fok_size,
-                        side=side_const,
+                    import subprocess, json as _json2
+                    _pk = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+                    _ak = os.getenv("POLYMARKET_API_KEY", "")
+                    _as = os.getenv("POLYMARKET_API_SECRET", "")
+                    _ap = os.getenv("POLYMARKET_API_PASSPHRASE", "")
+                    _t0 = asyncio.get_event_loop().time()
+                    _proc = await asyncio.to_thread(
+                        subprocess.run,
+                        [_rust_bin, _pk, _ak, _as, _ap, str(token_id), str(_fok_limit), str(_fok_size), order_side, "FAK"],
+                        capture_output=True, text=True, timeout=10,
                     )
-                    signed = await asyncio.to_thread(
-                        client.create_order, order_args
-                    )
-                    resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FAK)
-                    break
-                except Exception as _net_err:
-                    _last_err = _net_err
-                    err_str = str(_net_err).lower()
-                    if "duplicated" in err_str or "duplicate" in err_str:
-                        logger.info("FAK duplicate on attempt %d -- accepted: %s", _attempt + 1, _net_err)
-                        resp = {"orderID": "duplicate-accepted", "status": "MATCHED", "transactionsHashes": []}
-                        break
-                    if _attempt < max_attempts - 1:
-                        is_server_err = any(s in err_str for s in ("425", "429", "500", "502", "503", "not ready"))
-                        wait = (2.0 if is_server_err else 0.5) * (_attempt + 1)
-                        logger.warning("FAK order error (attempt %d/%d), retry in %.1fs: %s", _attempt + 1, max_attempts, wait, _net_err)
-                        await asyncio.sleep(wait)
-                        continue
-                    raise
+                    _elapsed = (asyncio.get_event_loop().time() - _t0) * 1000
+                    if _proc.returncode == 0 and _proc.stdout.strip():
+                        _rust_resp = _json2.loads(_proc.stdout.strip())
+                        logger.info("Rust FAK: %dms | filled=%s status=%s error=%s",
+                                   int(_elapsed), _rust_resp.get("filled"), _rust_resp.get("status"), _rust_resp.get("error","")[:50])
+                        if _rust_resp.get("filled"):
+                            resp = {
+                                "orderID": _rust_resp.get("order_id", ""),
+                                "status": "MATCHED",
+                                "transactionsHashes": [],
+                            }
+                        elif _rust_resp.get("ok"):
+                            resp = {"orderID": _rust_resp.get("order_id", ""), "status": _rust_resp.get("status", "UNKNOWN")}
+                        else:
+                            logger.warning("Rust order failed: %s, falling back to Python", _rust_resp.get("error",""))
+                    else:
+                        logger.warning("Rust binary error (rc=%d): %s", _proc.returncode, (_proc.stderr or "")[:100])
+                except Exception as _rust_err:
+                    logger.warning("Rust order exception: %s, falling back to Python", _rust_err)
+
+            # Fallback to Python py_clob_client
             if resp is None:
-                raise RuntimeError(f"FOK post_order failed after {max_attempts} attempts: {_last_err}")
+                max_attempts = 5
+                _order_likely_accepted = False
+                for _attempt in range(max_attempts):
+                    try:
+                        order_args = OrderArgs(
+                            token_id=token_id,
+                            price=_fok_limit,
+                            size=_fok_size,
+                            side=side_const,
+                        )
+                        signed = await asyncio.to_thread(
+                            client.create_order, order_args
+                        )
+                        resp = await asyncio.to_thread(client.post_order, signed, orderType=OrderType.FAK)
+                        break
+                    except Exception as _net_err:
+                        _last_err = _net_err
+                        err_str = str(_net_err).lower()
+                        if "duplicated" in err_str or "duplicate" in err_str:
+                            logger.info("FAK duplicate on attempt %d -- accepted: %s", _attempt + 1, _net_err)
+                            resp = {"orderID": "duplicate-accepted", "status": "MATCHED", "transactionsHashes": []}
+                            break
+                        if _attempt < max_attempts - 1:
+                            is_server_err = any(s in err_str for s in ("425", "429", "500", "502", "503", "not ready"))
+                            wait = (2.0 if is_server_err else 0.5) * (_attempt + 1)
+                            logger.warning("FAK order error (attempt %d/%d), retry in %.1fs: %s", _attempt + 1, max_attempts, wait, _net_err)
+                            await asyncio.sleep(wait)
+                            continue
+                        raise
+                if resp is None:
+                    raise RuntimeError(f"FOK post_order failed after {max_attempts} attempts: {_last_err}")
             result = self._normalize_execution_result(
                 mode="MARKET",
                 side=order_side,
@@ -1869,7 +1907,7 @@ class PolymarketClient:
                 "reason": "skip entry: no valid ask for limit order",
             }
 
-        size = float(amount / working_ask)
+        size = float(math.floor(amount / working_ask))  # integer shares, no decimal errors
         if size <= 0.0:
             return {
                 "ok": True,
@@ -1893,6 +1931,39 @@ class PolymarketClient:
             }
 
         if mode == "LIMIT_FAK":
+            # Try Rust fast-order first (~200ms vs ~1100ms Python)
+            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+            _use_rust = os.path.isfile(_rust_bin) and os.getenv("USE_RUST_ORDER", "true").lower() == "true"
+            if _use_rust:
+                try:
+                    import subprocess, json as _json_r
+                    _pk = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+                    _ak = os.getenv("POLYMARKET_API_KEY", "")
+                    _as = os.getenv("POLYMARKET_API_SECRET", "")
+                    _ap = os.getenv("POLYMARKET_API_PASSPHRASE", "")
+                    _t0 = asyncio.get_event_loop().time()
+                    _proc = await asyncio.to_thread(
+                        subprocess.run,
+                        [_rust_bin, _pk, _ak, _as, _ap, str(token_id), str(working_ask), str(int(size)), side, "FAK"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    _elapsed = (asyncio.get_event_loop().time() - _t0) * 1000
+                    if _proc.returncode == 0 and _proc.stdout.strip():
+                        _rr = _json_r.loads(_proc.stdout.strip())
+                        logger.info("Rust FAK: %dms filled=%s status=%s err=%s",
+                                   int(_elapsed), _rr.get("filled"), _rr.get("status"), str(_rr.get("error",""))[:60])
+                        if _rr.get("filled"):
+                            return self._normalize_execution_result(
+                                mode="LIMIT_FAK", side=side, token_id=token_id,
+                                amount=float(size * working_ask), ask_price=float(working_ask),
+                                resp={"orderID": _rr.get("order_id",""), "status": "MATCHED", "transactionsHashes": []},
+                            )
+                        elif not _rr.get("ok"):
+                            logger.warning("Rust FAK failed (%s), falling back to Python", _rr.get("error","")[:80])
+                except Exception as _re:
+                    logger.warning("Rust order exception: %s, falling back to Python", _re)
+
+            # Python fallback
             return await self.place_limit_order(
                 token_id=token_id,
                 side=side,

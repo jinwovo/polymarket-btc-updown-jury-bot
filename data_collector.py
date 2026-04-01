@@ -552,6 +552,37 @@ class DataCollector:
             if self.btc_price and self._rtds_price and self._rtds_price > 0:
                 binance_rtds_gap = float(self.btc_price) - float(self._rtds_price)
 
+            # Pre-compute score signals for fast entry (saves ~200ms DB queries in main.py)
+            _prev_outcome = None
+            _odds_velocity = None
+            _btc_accel_ok = None
+            try:
+                _pw = self.current_window_start - 300
+                _pr = fetch_one_dict(self.db, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_pw,))
+                _prev_outcome = _pr.get("actual_outcome") if _pr else None
+            except Exception:
+                pass
+            try:
+                _entry_ask = float(up_ask if decision.direction == "UP" else dn_ask) if (up_ask and dn_ask) else 0.5
+                _eo = fetch_one_dict(self.db,
+                    "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = %s AND ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT 1",
+                    (self.current_window_start, now - 35, now - 25))
+                if _eo:
+                    _eep = float(_eo.get("up_best_ask") or 0.5) if decision.direction == "UP" else float(_eo.get("down_best_ask") or 0.5)
+                    _odds_velocity = _entry_ask - _eep
+            except Exception:
+                pass
+            try:
+                _prices = list(self._recent_prices)
+                if len(_prices) >= 15:
+                    _p1 = _prices[-1]; _p2 = _prices[-max(len(_prices)//3, 5)]; _p3 = _prices[-max(2*len(_prices)//3, 10)]
+                    if _p3 > 0:
+                        _v1 = (_p1 - _p2) / _p3 * 100; _v2 = (_p2 - _p3) / _p3 * 100
+                        _a = _v1 - _v2
+                        _btc_accel_ok = 1 if ((decision.direction == "UP" and _a > 0) or (decision.direction == "DOWN" and _a < 0)) else 0
+            except Exception:
+                pass
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -566,6 +597,7 @@ class DataCollector:
                     elapsed, remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
+                    _prev_outcome, _odds_velocity, _btc_accel_ok,
             )
             execute_write(
                 self.db,
@@ -574,22 +606,25 @@ class DataCollector:
                     unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
                     seconds_elapsed, seconds_remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
+                    prev_outcome, odds_velocity, btc_accel_ok)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
-            # Append to signal_cache_log for backtest parity
-            execute_write(
-                self.db,
-                """INSERT INTO signal_cache_log
-                   (ts, window_start, direction, avg_confidence, max_edge,
-                    unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
-                    seconds_elapsed, seconds_remaining,
-                    btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                    buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                _sc_params,
-            )
+            # Append to signal_cache_log for backtest parity (only when relevant)
+            if gate_allow or guards_passed:
+                execute_write(
+                    self.db,
+                    """INSERT INTO signal_cache_log
+                       (ts, window_start, direction, avg_confidence, max_edge,
+                        unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
+                        seconds_elapsed, seconds_remaining,
+                        btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
+                        buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
+                        prev_outcome, odds_velocity, btc_accel_ok)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    _sc_params,
+                )
             self.db.commit()
         except Exception as e:
             logger.warning("Signal cache update failed: %s", e)
