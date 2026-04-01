@@ -63,9 +63,11 @@ async fn main() {
         }
     };
 
+    // Convert URL-safe base64 to standard base64 (Polymarket uses URL-safe)
+    let secret_std = api_secret.replace('-', "+").replace('_', "/");
     let creds = ApiKeyCreds {
         key: api_key.to_string(),
-        secret: api_secret.to_string(),
+        secret: secret_std,
         passphrase: api_passphrase.to_string(),
     };
 
