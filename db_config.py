@@ -315,6 +315,33 @@ def init_market_schema(conn):
         ) ENGINE=InnoDB
         """,
         """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(64) NOT NULL,
+            enabled TINYINT NOT NULL DEFAULT 1,
+            private_key TEXT NULL,
+            api_key VARCHAR(256) NULL,
+            api_secret VARCHAR(256) NULL,
+            api_passphrase VARCHAR(256) NULL,
+            funder VARCHAR(128) NULL,
+            telegram_token VARCHAR(256) NULL,
+            telegram_chat_id VARCHAR(64) NULL,
+            seed_capital DOUBLE NOT NULL DEFAULT 100,
+            fixed_stake DOUBLE NOT NULL DEFAULT 15,
+            sizing_mode VARCHAR(32) NOT NULL DEFAULT 'FIXED',
+            position_mode VARCHAR(16) NOT NULL DEFAULT 'BOTH',
+            daily_loss_limit DOUBLE NOT NULL DEFAULT 100,
+            mega_multiplier DOUBLE NOT NULL DEFAULT 3.0,
+            mega_min_score INT NOT NULL DEFAULT 6,
+            min_entry_score INT NOT NULL DEFAULT 3,
+            status VARCHAR(16) NOT NULL DEFAULT 'STOPPED',
+            pid INT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_account_name (name)
+        ) ENGINE=InnoDB
+        """,
+        """
         CREATE TABLE IF NOT EXISTS bot_runtime_state (
             id TINYINT PRIMARY KEY,
             updated_at DOUBLE NOT NULL,
@@ -405,6 +432,7 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache_log ADD COLUMN prev_outcome VARCHAR(16) NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN odds_velocity DOUBLE NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN btc_accel_ok TINYINT NULL",
+        "ALTER TABLE live_trades ADD COLUMN account_id INT NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

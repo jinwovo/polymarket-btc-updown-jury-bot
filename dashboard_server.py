@@ -205,7 +205,8 @@ class ManagedProcess:
 
 PAPER_SIM_PROC = ManagedProcess("paper_trade_sim")
 BACKTEST_PROC = ManagedProcess("backtest")
-LIVE_TRADING_PROC = ManagedProcess("live_trading")
+LIVE_TRADING_PROC = ManagedProcess("live_trading")  # Legacy single account
+LIVE_ACCOUNT_PROCS: dict[int, ManagedProcess] = {}  # Multi-account: {account_id: ManagedProcess}
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -2755,6 +2756,61 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
+        # ---- Multi-account API ----
+        if path == "/api/accounts":
+            try:
+                self._send_json({"ok": True, "accounts": _get_accounts()})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/accounts/save":
+            try:
+                self._send_json(_save_account(payload))
+            except Exception as e:
+                logger.exception("account save error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/accounts/start":
+            try:
+                aid = int(payload.get("account_id", 0))
+                self._send_json(control_account_start(aid))
+            except Exception as e:
+                logger.exception("account start error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/accounts/stop":
+            try:
+                aid = int(payload.get("account_id", 0))
+                self._send_json(control_account_stop(aid))
+            except Exception as e:
+                logger.exception("account stop error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/accounts/status":
+            try:
+                aid = int(payload.get("account_id", 0))
+                self._send_json(build_account_status(aid))
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        if path == "/api/accounts/delete":
+            try:
+                aid = int(payload.get("account_id", 0))
+                if aid in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[aid].running():
+                    LIVE_ACCOUNT_PROCS[aid].stop()
+                conn = _get_db_conn()
+                execute_write(conn, "DELETE FROM accounts WHERE id=%s", (aid,))
+                conn.commit()
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
         if path == "/api/control/backtest/run":
             try:
                 self._send_json(control_backtest_run(payload), code=200)
@@ -2793,6 +2849,173 @@ def main():
         logger.exception("Dashboard server crashed")
     finally:
         server.server_close()
+
+
+# ==================== Multi-Account Management ====================
+
+def _get_accounts() -> list[dict]:
+    """Get all accounts from DB."""
+    try:
+        conn = _get_db_conn()
+        rows = fetch_all_dicts(conn, "SELECT * FROM accounts ORDER BY id")
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _get_account(account_id: int) -> dict | None:
+    try:
+        conn = _get_db_conn()
+        return fetch_one_dict(conn, "SELECT * FROM accounts WHERE id = %s", (account_id,))
+    except Exception:
+        return None
+
+
+def _save_account(data: dict) -> dict:
+    """Create or update account."""
+    conn = _get_db_conn()
+    acct_id = data.get("id")
+    if acct_id:
+        # Update
+        execute_write(conn, """
+            UPDATE accounts SET name=%s, private_key=%s, api_key=%s, api_secret=%s, api_passphrase=%s,
+            funder=%s, telegram_token=%s, telegram_chat_id=%s, seed_capital=%s, fixed_stake=%s,
+            sizing_mode=%s, position_mode=%s, daily_loss_limit=%s, mega_multiplier=%s,
+            mega_min_score=%s, min_entry_score=%s, enabled=%s
+            WHERE id=%s
+        """, (
+            data.get("name",""), data.get("private_key",""), data.get("api_key",""),
+            data.get("api_secret",""), data.get("api_passphrase",""), data.get("funder",""),
+            data.get("telegram_token",""), data.get("telegram_chat_id",""),
+            float(data.get("seed_capital", 100)), float(data.get("fixed_stake", 15)),
+            data.get("sizing_mode", "FIXED"), data.get("position_mode", "BOTH"),
+            float(data.get("daily_loss_limit", 100)), float(data.get("mega_multiplier", 3)),
+            int(data.get("mega_min_score", 6)), int(data.get("min_entry_score", 3)),
+            int(data.get("enabled", 1)), acct_id,
+        ))
+        conn.commit()
+        return {"ok": True, "id": acct_id}
+    else:
+        # Create
+        execute_write(conn, """
+            INSERT INTO accounts (name, private_key, api_key, api_secret, api_passphrase,
+            funder, telegram_token, telegram_chat_id, seed_capital, fixed_stake,
+            sizing_mode, position_mode, daily_loss_limit, mega_multiplier, mega_min_score, min_entry_score)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            data.get("name",""), data.get("private_key",""), data.get("api_key",""),
+            data.get("api_secret",""), data.get("api_passphrase",""), data.get("funder",""),
+            data.get("telegram_token",""), data.get("telegram_chat_id",""),
+            float(data.get("seed_capital", 100)), float(data.get("fixed_stake", 15)),
+            data.get("sizing_mode", "FIXED"), data.get("position_mode", "BOTH"),
+            float(data.get("daily_loss_limit", 100)), float(data.get("mega_multiplier", 3)),
+            int(data.get("mega_min_score", 6)), int(data.get("min_entry_score", 3)),
+        ))
+        conn.commit()
+        new_id = fetch_one(conn, "SELECT LAST_INSERT_ID()")[0]
+        return {"ok": True, "id": int(new_id)}
+
+
+def control_account_start(account_id: int) -> dict:
+    """Start live trading for a specific account."""
+    acct = _get_account(account_id)
+    if not acct:
+        return {"ok": False, "error": f"Account {account_id} not found"}
+    if not acct.get("api_key") or not acct.get("private_key"):
+        return {"ok": False, "error": "API key or private key not configured"}
+
+    # Stop if already running
+    if account_id in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[account_id].running():
+        LIVE_ACCOUNT_PROCS[account_id].stop()
+
+    proc = ManagedProcess(f"live_account_{account_id}")
+    env_overrides = {
+        "DRY_RUN": "false",
+        "ACCOUNT_ID": str(account_id),
+        "POLYMARKET_PRIVATE_KEY": str(acct.get("private_key", "")),
+        "POLYMARKET_API_KEY": str(acct.get("api_key", "")),
+        "POLYMARKET_API_SECRET": str(acct.get("api_secret", "")),
+        "POLYMARKET_API_PASSPHRASE": str(acct.get("api_passphrase", "")),
+        "POLYMARKET_FUNDER": str(acct.get("funder", "")),
+        "LIVE_TELEGRAM_BOT_TOKEN": str(acct.get("telegram_token", "")),
+        "LIVE_TELEGRAM_CHAT_ID": str(acct.get("telegram_chat_id", "")),
+        "LIVE_EQUITY_SEED_CAPITAL": str(acct.get("seed_capital", 100)),
+        "LIVE_FIXED_STAKE": str(acct.get("fixed_stake", 15)),
+        "LIVE_SIZING_MODE": str(acct.get("sizing_mode", "FIXED")),
+        "POSITION_MODE": str(acct.get("position_mode", "BOTH")),
+        "LIVE_DAILY_LOSS_LIMIT": str(acct.get("daily_loss_limit", 100)),
+        "LIVE_MEGA_MULTIPLIER": str(acct.get("mega_multiplier", 3)),
+        "LIVE_MEGA_MIN_SCORE": str(acct.get("mega_min_score", 6)),
+        "LIVE_MIN_ENTRY_SCORE": str(acct.get("min_entry_score", 3)),
+        "MAX_BET_SIZE": str(acct.get("fixed_stake", 15)),
+    }
+
+    ok, msg = proc.start(
+        _python_command("main.py", []),
+        meta={"account_id": account_id, "account_name": acct.get("name","")},
+        env_overrides=env_overrides,
+    )
+    LIVE_ACCOUNT_PROCS[account_id] = proc
+
+    # Update DB status
+    try:
+        conn = _get_db_conn()
+        execute_write(conn, "UPDATE accounts SET status='RUNNING', pid=%s WHERE id=%s",
+                     (proc._process.pid if proc._process else None, account_id))
+        conn.commit()
+    except Exception:
+        pass
+
+    return {"ok": ok, "message": msg, "account_id": account_id}
+
+
+def control_account_stop(account_id: int) -> dict:
+    """Stop live trading for a specific account."""
+    proc = LIVE_ACCOUNT_PROCS.get(account_id)
+    if proc:
+        ok, msg = proc.stop()
+    else:
+        ok, msg = False, "No process found"
+
+    try:
+        conn = _get_db_conn()
+        execute_write(conn, "UPDATE accounts SET status='STOPPED', pid=NULL WHERE id=%s", (account_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+    return {"ok": ok, "message": msg, "account_id": account_id}
+
+
+def build_account_status(account_id: int) -> dict:
+    """Get status for a specific account."""
+    acct = _get_account(account_id) or {}
+    proc = LIVE_ACCOUNT_PROCS.get(account_id)
+    running = proc.running() if proc else False
+
+    # Get account PnL from live_trades
+    pnl = 0.0
+    trade_count = 0
+    try:
+        conn = _get_db_conn()
+        row = fetch_one_dict(conn, """
+            SELECT COALESCE(SUM(pnl),0) as total_pnl, COUNT(*) as cnt
+            FROM live_trades WHERE account_id = %s AND DATE(FROM_UNIXTIME(opened_at)) = CURDATE()
+        """, (account_id,))
+        if row:
+            pnl = float(row.get("total_pnl", 0))
+            trade_count = int(row.get("cnt", 0))
+    except Exception:
+        pass
+
+    return {
+        "account": acct,
+        "running": running,
+        "pid": proc._process.pid if proc and proc._process else None,
+        "today_pnl": pnl,
+        "today_trades": trade_count,
+        "log_lines": list(proc._output_lines) if proc else [],
+    }
 
 
 if __name__ == "__main__":

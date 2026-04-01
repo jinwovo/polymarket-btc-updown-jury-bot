@@ -1629,11 +1629,12 @@ class TradingBot:
             close = str(close_reason or "").strip() or None
 
             conn = self._ensure_state_conn()
+            _account_id = int(os.getenv("ACCOUNT_ID", "0")) or None
             sql = (
                 "INSERT INTO live_trades "
                 "(window_start, window_end, direction, stake, entry_price, payout_multiple, shares, "
-                "potential_win_pnl, status, opened_at, closed_at, actual_outcome, won, pnl, roi_pct, close_reason) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', ?, ?, ?, ?, ?, ?, ?) "
+                "potential_win_pnl, status, opened_at, closed_at, actual_outcome, won, pnl, roi_pct, close_reason, account_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON DUPLICATE KEY UPDATE "
                 "window_end=VALUES(window_end), "
                 "direction=VALUES(direction), "
@@ -1669,6 +1670,7 @@ class TradingBot:
                     float(pnl),
                     float(roi_pct),
                     close,
+                    _account_id,
                 ),
             )
             conn.commit()

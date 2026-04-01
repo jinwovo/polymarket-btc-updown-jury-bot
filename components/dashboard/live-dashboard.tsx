@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Sparkline } from "@/components/dashboard/sparkline";
+import AccountManager from "@/components/dashboard/account-manager";
 
 type JudgeVote = "UP" | "DOWN" | "ABSTAIN";
 
@@ -1771,7 +1772,16 @@ export function LiveDashboard() {
 
           <Card className="xl:self-start">
             <CardHeader>
-              <CardTitle>Live Trading Control</CardTitle>
+              <CardTitle>Multi-Account Trading</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <AccountManager />
+            </CardContent>
+          </Card>
+
+          <Card className="xl:self-start">
+            <CardHeader>
+              <CardTitle>Live Trading Control (Legacy)</CardTitle>
               <CardDescription>Real Polymarket execution with balance guard</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
