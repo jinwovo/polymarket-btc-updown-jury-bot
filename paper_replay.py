@@ -90,7 +90,8 @@ class PaperReplay:
         return fetch_all_dicts(self.conn, """
             SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                    btc_price, start_price, seconds_elapsed, seconds_remaining,
-                   gate_allow, gate_ev, gate_reason
+                   gate_allow, gate_ev, gate_reason,
+                   prev_outcome, odds_velocity, btc_accel_ok
             FROM signal_cache_log
             WHERE window_start = %s AND gate_allow = 1
             ORDER BY ts ASC
@@ -106,87 +107,118 @@ class PaperReplay:
         """, (ws, ts))
 
     def _simulate_entry(self, ws: int, scl_entries: list[dict]) -> ReplayTrade | None:
-        """Try to enter a trade using the FIRST valid signal_cache_log entry."""
+        """Try to enter: scan ALL scl entries, find first that passes all filters."""
         if not scl_entries:
             return None
 
-        # Use the first gate_allow=1 entry (same as paper picks up the signal)
-        entry = scl_entries[0]
-        direction = str(entry["direction"])
-        elapsed = float(entry.get("seconds_elapsed") or 0)
-        remaining = float(entry.get("seconds_remaining") or 0)
-        confidence = float(entry.get("avg_confidence") or 0.5)
-        max_edge = float(entry.get("max_edge") or 0.1)
-        gate_ev = float(entry.get("gate_ev") or 0)
+        # Paper reads signal_cache repeatedly. gate_allow=1 at elapsed=2 gets read
+        # later when paper's own elapsed >= 80. So we need to find any gate_allow=1
+        # entry, then check if odds at elapsed >= entry_start_sec still work.
+        #
+        # Strategy: for each gate_allow=1 entry, if its elapsed < entry_start_sec,
+        # look ahead in poly_odds at elapsed=entry_start_sec to get actual entry price.
 
-        # Same timing filters as paper
-        if elapsed < self.entry_start_sec or elapsed > self.entry_end_sec:
-            return None
-        if remaining < self.min_seconds_remaining:
-            return None
-        if direction == "DOWN" and elapsed > self.down_entry_end_sec:
-            return None
+        for entry in scl_entries:
+            direction = str(entry["direction"])
+            scl_elapsed = float(entry.get("seconds_elapsed") or 0)
+            gate_ev = float(entry.get("gate_ev") or 0)
+            confidence = float(entry.get("avg_confidence") or 0.5)
+            max_edge = float(entry.get("max_edge") or 0.1)
 
-        # Entry price from signal
-        up_ask = float(entry.get("up_ask") or 0.5)
-        down_ask = float(entry.get("down_ask") or 0.5)
-        entry_price = up_ask if direction == "UP" else down_ask
+            # If signal came early, paper would read it when elapsed >= entry_start_sec
+            if scl_elapsed < self.entry_start_sec:
+                # Look up odds at entry_start_sec
+                check_ts = ws + self.entry_start_sec
+                odds_at = fetch_one_dict(self.conn, """
+                    SELECT up_best_ask, down_best_ask FROM poly_odds
+                    WHERE window_start = %s AND ts >= %s AND ts <= %s
+                    ORDER BY ts ASC LIMIT 1
+                """, (ws, check_ts - 2, check_ts + 2))
+                if not odds_at:
+                    continue
+                up_ask = float(odds_at.get("up_best_ask") or 0.5)
+                down_ask = float(odds_at.get("down_best_ask") or 0.5)
+                elapsed = self.entry_start_sec
+                remaining = 300 - elapsed
+            else:
+                up_ask = float(entry.get("up_ask") or 0.5)
+                down_ask = float(entry.get("down_ask") or 0.5)
+                elapsed = scl_elapsed
+                remaining = float(entry.get("seconds_remaining") or (300 - elapsed))
 
-        if entry_price <= 0.01 or entry_price >= 0.99:
-            return None
-        if entry_price > self.max_entry_price:
-            return None
-        if direction == "DOWN" and entry_price < self.down_min_entry_price:
-            return None
+            # Timing filters
+            if elapsed > self.entry_end_sec:
+                continue
+            if remaining < self.min_seconds_remaining:
+                continue
+            if direction == "DOWN" and elapsed > self.down_entry_end_sec:
+                continue
 
-        # Spread filter: only enter when market is uncertain (UP/DOWN close)
-        spread = abs(up_ask - down_ask)
-        if spread > self.max_spread:
-            return None
+            entry_price = up_ask if direction == "UP" else down_ask
 
-        # Drift simulation: check odds 2s later for realistic fill price
-        later_odds = fetch_all_dicts(self.conn, """
-            SELECT up_best_ask, down_best_ask FROM poly_odds
-            WHERE window_start = %s AND ts >= %s AND ts <= %s
-            ORDER BY ts ASC LIMIT 1
-        """, (ws, float(entry["ts"]) + 1.5, float(entry["ts"]) + 3.0))
-        if later_odds:
-            later_price = float(later_odds[0].get("up_best_ask") or entry_price) if direction == "UP" \
-                else float(later_odds[0].get("down_best_ask") or entry_price)
-            if abs(later_price - entry_price) > self.drift_max:
-                return None  # Order would be cancelled due to drift
-            if 0.01 < later_price < 0.99:
-                entry_price = later_price  # Use realistic fill price
+            if entry_price <= 0.01 or entry_price >= 0.99:
+                continue
+            if entry_price > self.max_entry_price:
+                continue
+            if direction == "DOWN" and entry_price < self.down_min_entry_price:
+                continue
 
-        # Sizing (simplified adaptive)
-        available = self.equity
-        if available < 5.0:
-            return None
+            # Spread filter
+            spread = abs(up_ask - down_ask)
+            if spread > self.max_spread:
+                continue
 
-        stake = _compute_bet_size(
-            available_equity=available,
-            initial_capital=self.initial_equity,
-            expected_roi=gate_ev,
-            risk_fraction=0.20,
-            entry_price=entry_price,
-            model_prob=None,
-            confidence=confidence,
-            max_edge=max_edge,
-            seconds_elapsed=elapsed,
-        )
-        stake = max(5.0, min(stake, available))
-        shares = stake / entry_price
-        opened_at = float(entry["ts"])
+            # Score filter — skip if pre-computed signals are NULL (old rebuild data)
+            # Paper doesn't have this score filter on entry; it's only for sizing.
+            # So don't block entry based on score — just use it for mega sizing later.
 
-        return ReplayTrade(
-            window_start=ws,
-            direction=direction,
-            entry_price=entry_price,
-            stake=stake,
-            shares=shares,
-            opened_at=opened_at,
-            confidence=confidence,
-        )
+            # Drift simulation
+            entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
+            later_odds = fetch_all_dicts(self.conn, """
+                SELECT up_best_ask, down_best_ask FROM poly_odds
+                WHERE window_start = %s AND ts >= %s AND ts <= %s
+                ORDER BY ts ASC LIMIT 1
+            """, (ws, entry_ts + 1.5, entry_ts + 3.0))
+            if later_odds:
+                later_price = float(later_odds[0].get("up_best_ask") or entry_price) if direction == "UP" \
+                    else float(later_odds[0].get("down_best_ask") or entry_price)
+                if abs(later_price - entry_price) > self.drift_max:
+                    continue
+                if 0.01 < later_price < 0.99:
+                    entry_price = later_price
+
+            # All filters passed — enter this trade
+            available = self.equity
+            if available < 5.0:
+                return None
+
+            stake = _compute_bet_size(
+                available_equity=available,
+                initial_capital=self.initial_equity,
+                expected_roi=gate_ev,
+                risk_fraction=0.20,
+                entry_price=entry_price,
+                model_prob=None,
+                confidence=confidence,
+                max_edge=max_edge,
+                seconds_elapsed=elapsed,
+            )
+            stake = max(5.0, min(stake, available))
+            shares = stake / entry_price
+            opened_at = entry_ts
+
+            return ReplayTrade(
+                window_start=ws,
+                direction=direction,
+                entry_price=entry_price,
+                stake=stake,
+                shares=shares,
+                opened_at=opened_at,
+                confidence=confidence,
+            )
+
+        # No valid entry found in any scl entry
+        return None
 
     def _simulate_exit(self, trade: ReplayTrade, outcome: str | None) -> None:
         """Run the SAME exit logic as paper_trade_sim.resolve_open_trades()."""
