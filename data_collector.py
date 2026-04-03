@@ -727,11 +727,11 @@ class DataCollector:
             _lag_arb_entry_price = None
             _lag_btc_thr = float(os.getenv("LAG_ARB_BTC_THRESHOLD_PCT", "0.04"))
             _lag_max_ask = float(os.getenv("LAG_ARB_MAX_ASK", "0.50"))
-            if self.btc_price_adjusted and self.window_start_price and self.window_start_price > 0:
+            if self.btc_price_adjusted and self.window_start_price and self.window_start_price > 0 and up_ask and dn_ask:
                 _lag_move = ((self.btc_price_adjusted - self.window_start_price) / self.window_start_price) * 100
                 if abs(_lag_move) >= _lag_btc_thr:
                     _lag_dir = "UP" if _lag_move > 0 else "DOWN"
-                    _lag_ask = float(up_ask if _lag_dir == "UP" else dn_ask) if up_ask and dn_ask else 0.5
+                    _lag_ask = float(up_ask if _lag_dir == "UP" else dn_ask)
                     if 0.01 < _lag_ask <= _lag_max_ask:
                         _lag_arb_allow = 1
                         _lag_arb_direction = _lag_dir
