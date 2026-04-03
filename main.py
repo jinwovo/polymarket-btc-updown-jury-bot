@@ -3978,15 +3978,33 @@ class TradingBot:
                 _gate_dir = _lock["dir"]
                 _gate_ev = _lock["ev"]
                 _gate_reason = _lock["reason"]
-            if not _gate_allow:
-                logger.info("Skip trade by entry gate (signal_cache): %s", _gate_reason)
+            # Lag Arb: if BTC moved 0.04%+ but CLOB hasn't repriced → enter
+            _lag_allow = int(_sig_row.get("lag_arb_allow") or 0)
+            _lag_dir = str(_sig_row.get("lag_arb_direction") or "")
+            _lag_ep = float(_sig_row.get("lag_arb_entry_price") or 0)
+
+            if not _gate_allow and not _lag_allow:
+                logger.info("Skip: no gate_allow and no lag_arb (gate: %s)", _gate_reason)
                 return
+
+            # If lag arb triggered but gate didn't, use lag arb direction
+            if _lag_allow and not _gate_allow:
+                decision = type(decision)(
+                    final_vote=decision.final_vote,
+                    direction=_lag_dir,
+                    avg_confidence=decision.avg_confidence,
+                    max_edge=decision.max_edge,
+                    verdicts=decision.verdicts,
+                    unanimous=decision.unanimous,
+                )
+                logger.info("Lag arb entry: %s @%.3f (gate_allow=0, lag_arb=1)", _lag_dir, _lag_ep)
+
             # Create proxy gate object for downstream code
             class _GateProxy:
                 allow = True
-                expected_roi = _gate_ev
+                expected_roi = _gate_ev if _gate_allow else 0.10
                 model_prob = 0.5
-                reason = _gate_reason
+                reason = _gate_reason if _gate_allow else f"lag_arb({_lag_dir}@{_lag_ep:.3f})"
                 win_prob = 0.6
                 prob_floor = 0.5
                 fee_rate = 0.01

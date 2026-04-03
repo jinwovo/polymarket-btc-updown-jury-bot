@@ -1369,9 +1369,16 @@ def open_trade_if_signal(
         _gate_allow = int(cached.get("gate_allow") or 0)
         _gate_reason = str(cached.get("gate_reason") or "")
         _gate_ev = float(cached.get("gate_ev") or 0)
-        if not _gate_allow:
-            logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, _gate_reason)
+        # Lag Arb: BTC moved 0.04%+ but CLOB hasn't repriced
+        _lag_allow = int(cached.get("lag_arb_allow") or 0)
+        _lag_dir = str(cached.get("lag_arb_direction") or "")
+        if not _gate_allow and not _lag_allow:
+            logger.debug("Entry blocked ws=%s: no gate_allow and no lag_arb (%s)", window_start, _gate_reason)
             return False
+        # If lag arb triggered, use lag arb direction
+        if _lag_allow and not _gate_allow and _lag_dir in ("UP", "DOWN"):
+            direction = _lag_dir
+            logger.info("Lag arb entry ws=%s: %s (gate_allow=0)", window_start, _lag_dir)
     else:
         # No signal_cache = no trade (was fallback to local gate, caused Paper/Live mismatch)
         return False

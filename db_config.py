@@ -433,6 +433,13 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache_log ADD COLUMN odds_velocity DOUBLE NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN btc_accel_ok TINYINT NULL",
         "ALTER TABLE live_trades ADD COLUMN account_id INT NULL",
+        # Lag arb signal: BTC moved 0.04%+ but CLOB hasn't repriced
+        "ALTER TABLE signal_cache ADD COLUMN lag_arb_allow TINYINT NOT NULL DEFAULT 0",
+        "ALTER TABLE signal_cache ADD COLUMN lag_arb_direction VARCHAR(16) NULL",
+        "ALTER TABLE signal_cache ADD COLUMN lag_arb_entry_price DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_allow TINYINT NOT NULL DEFAULT 0",
+        "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_direction VARCHAR(16) NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_entry_price DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

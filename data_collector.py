@@ -720,6 +720,23 @@ class DataCollector:
                 except Exception as _ge:
                     logger.debug("Entry gate check failed: %s", _ge)
 
+            # Lag Arb detection: BTC moved 0.04%+ but CLOB hasn't repriced (ask still >= threshold)
+            # This exploits the Binance->Chainlink oracle lag (~30s average)
+            _lag_arb_allow = 0
+            _lag_arb_direction = None
+            _lag_arb_entry_price = None
+            _lag_btc_thr = float(os.getenv("LAG_ARB_BTC_THRESHOLD_PCT", "0.04"))
+            _lag_max_ask = float(os.getenv("LAG_ARB_MAX_ASK", "0.50"))
+            if self.btc_price_adjusted and self.window_start_price and self.window_start_price > 0:
+                _lag_move = ((self.btc_price_adjusted - self.window_start_price) / self.window_start_price) * 100
+                if abs(_lag_move) >= _lag_btc_thr:
+                    _lag_dir = "UP" if _lag_move > 0 else "DOWN"
+                    _lag_ask = float(up_ask if _lag_dir == "UP" else dn_ask) if up_ask and dn_ask else 0.5
+                    if 0.01 < _lag_ask <= _lag_max_ask:
+                        _lag_arb_allow = 1
+                        _lag_arb_direction = _lag_dir
+                        _lag_arb_entry_price = _lag_ask
+
             # Write to signal_cache table (single row, always overwritten)
             # Binance-RTDS gap: positive = Binance above Chainlink = BTC rising
             binance_rtds_gap = None
@@ -775,6 +792,7 @@ class DataCollector:
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
+                    _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
             )
             execute_write(
                 self.db,
@@ -784,14 +802,14 @@ class DataCollector:
                     seconds_elapsed, seconds_remaining,
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
-                    prev_outcome, odds_velocity, btc_accel_ok)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    prev_outcome, odds_velocity, btc_accel_ok,
+                    lag_arb_allow, lag_arb_direction, lag_arb_entry_price)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
-            # Always record gate_allow=1 so paper_replay can match paper exactly.
-            # Also record guards_passed=1 for future parameter sweeps.
-            if gate_allow or guards_passed:
+            # Record when gate_allow=1 OR lag_arb_allow=1 OR guards_passed=1
+            if gate_allow or guards_passed or _lag_arb_allow:
                 execute_write(
                     self.db,
                     """INSERT INTO signal_cache_log
@@ -800,8 +818,9 @@ class DataCollector:
                         seconds_elapsed, seconds_remaining,
                         btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
-                        prev_outcome, odds_velocity, btc_accel_ok)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        prev_outcome, odds_velocity, btc_accel_ok,
+                        lag_arb_allow, lag_arb_direction, lag_arb_entry_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()
