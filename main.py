@@ -3972,7 +3972,7 @@ class TradingBot:
             _lock = getattr(self, '_gate_lock', None)
             if _gate_allow and _gate_dir in ("UP", "DOWN"):
                 self._gate_lock = {"ts": _now, "dir": _gate_dir, "ev": _gate_ev, "reason": _gate_reason, "ws": int(_sig_row.get("window_start") or 0)}
-            elif _lock and _lock.get("ws") == int(_sig_row.get("window_start") or 0) and (_now - _lock["ts"]) < 5.0:
+            elif _lock and _lock.get("ws") == int(_sig_row.get("window_start") or 0) and (_now - _lock["ts"]) < 2.0:
                 # Use locked gate values
                 _gate_allow = 1
                 _gate_dir = _lock["dir"]
