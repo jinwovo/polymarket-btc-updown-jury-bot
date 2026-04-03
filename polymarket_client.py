@@ -1948,6 +1948,9 @@ class PolymarketClient:
                     # Saves ~500ms per trade (2 API calls eliminated)
                     if not hasattr(self, '_rust_cache'):
                         self._rust_cache = {}
+                    # Keep cache small (5min tokens rotate)
+                    if len(self._rust_cache) > 20:
+                        self._rust_cache.clear()
                     _cache_key = str(token_id)[:20]
                     if _cache_key not in self._rust_cache:
                         _neg_risk = "false"
@@ -1970,10 +1973,16 @@ class PolymarketClient:
                                 _fee_bps = str(int(_fee_resp.json().get("base_fee", 0)))
                         except Exception:
                             pass
-                        self._rust_cache[_cache_key] = {"neg_risk": _neg_risk, "fee_bps": _fee_bps}
-                        logger.info("Rust cache: token=%s fee=%s neg_risk=%s", _cache_key, _fee_bps, _neg_risk)
-                    _neg_risk = self._rust_cache[_cache_key]["neg_risk"]
-                    _fee_bps = self._rust_cache[_cache_key]["fee_bps"]
+                        # Only cache if fee was successfully fetched (0 = API failed)
+                        if _fee_bps != "0":
+                            self._rust_cache[_cache_key] = {"neg_risk": _neg_risk, "fee_bps": _fee_bps}
+                            logger.info("Rust cache: token=%s fee=%s neg_risk=%s", _cache_key, _fee_bps, _neg_risk)
+                        else:
+                            logger.warning("Rust cache skip: fee=0 for %s (API may have failed)", _cache_key)
+                    _cached = self._rust_cache.get(_cache_key)
+                    if _cached:
+                        _neg_risk = _cached["neg_risk"]
+                        _fee_bps = _cached["fee_bps"]
                     _funder = os.getenv("POLYMARKET_FUNDER", "")
                     # FAK limit = max entry price (not exact ask). Fills at best available.
                     # This prevents "no liquidity" when exact ask has no orders but nearby does.
