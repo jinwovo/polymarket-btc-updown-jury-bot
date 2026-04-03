@@ -3960,10 +3960,24 @@ class TradingBot:
                     return
 
         # Entry gate: use signal_cache result in parity mode (same as Paper)
+        # gate_allow flips 0↔1 every 0.1s. Once we see gate_allow=1, lock it for 5s
+        # to prevent missing trades due to timing mismatch with paper.
         if LIVE_MIRROR_PAPER_GATES:
             _gate_allow = int(_sig_row.get("gate_allow") or 0)
             _gate_reason = str(_sig_row.get("gate_reason") or "")
             _gate_ev = float(_sig_row.get("gate_ev") or 0)
+            _gate_dir = str(_sig_row.get("direction") or "")
+            # Lock: once gate_allow=1, remember for 5 seconds
+            _now = time.time()
+            _lock = getattr(self, '_gate_lock', None)
+            if _gate_allow and _gate_dir in ("UP", "DOWN"):
+                self._gate_lock = {"ts": _now, "dir": _gate_dir, "ev": _gate_ev, "reason": _gate_reason, "ws": int(_sig_row.get("window_start") or 0)}
+            elif _lock and _lock.get("ws") == int(_sig_row.get("window_start") or 0) and (_now - _lock["ts"]) < 5.0:
+                # Use locked gate values
+                _gate_allow = 1
+                _gate_dir = _lock["dir"]
+                _gate_ev = _lock["ev"]
+                _gate_reason = _lock["reason"]
             if not _gate_allow:
                 logger.info("Skip trade by entry gate (signal_cache): %s", _gate_reason)
                 return

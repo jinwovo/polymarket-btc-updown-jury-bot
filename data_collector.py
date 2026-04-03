@@ -1506,7 +1506,7 @@ class DataCollector:
         # -- Correct paper_trades --
         paper_rows = fetch_all_dicts(
             self.db,
-            """SELECT id, direction, stake, entry_price, pnl, close_reason
+            """SELECT id, direction, stake, entry_price, pnl, close_reason, actual_outcome
                FROM paper_trades
                WHERE window_start = %s AND archived_at IS NULL""",
             (window_start,),
@@ -1517,6 +1517,10 @@ class DataCollector:
             entry_price = float(pt.get("entry_price") or 0)
             old_pnl = float(pt.get("pnl") or 0)
             if not direction or stake <= 0 or entry_price <= 0:
+                continue
+            # Skip if already corrected to this outcome
+            _pt_outcome = str(pt.get("actual_outcome", ""))
+            if _pt_outcome == new_outcome:
                 continue
             won = direction == new_outcome
             shares = stake / entry_price
@@ -1538,7 +1542,7 @@ class DataCollector:
             try:
                 live_rows = fetch_all_dicts(
                     self.db,
-                    f"""SELECT id, direction, COALESCE(stake, amount) as stake, COALESCE(entry_price, price) as entry_price, pnl
+                    f"""SELECT id, direction, COALESCE(stake, amount) as stake, COALESCE(entry_price, price) as entry_price, pnl, actual_outcome
                         FROM {table}
                         WHERE window_start = %s""",
                     (window_start,),
@@ -1550,7 +1554,11 @@ class DataCollector:
                 stake = float(lt.get("stake") or 0)
                 entry_price = float(lt.get("entry_price") or 0)
                 old_pnl = float(lt.get("pnl") or 0)
+                _lt_outcome = str(lt.get("actual_outcome", ""))
                 if not direction or stake <= 0 or entry_price <= 0:
+                    continue
+                # Skip if already corrected to this outcome
+                if _lt_outcome == new_outcome:
                     continue
                 won = direction == new_outcome
                 shares = stake / entry_price
