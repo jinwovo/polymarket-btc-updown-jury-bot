@@ -3934,8 +3934,11 @@ class TradingBot:
             )
             dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
-        # Spread filter: only enter when market is uncertain (parity with Paper)
-        if LIVE_MIRROR_PAPER_GATES:
+        # Check lag_arb early — if lag_arb_allow=1, skip judge-specific filters
+        _lag_allow_early = int(_sig_row.get("lag_arb_allow") or 0) if _sig_row else 0
+
+        # Spread/momentum/max_btc filters: only for JUDGE entries (not lag arb)
+        if LIVE_MIRROR_PAPER_GATES and not _lag_allow_early:
             _sig_up = float(_sig_row.get("up_ask") or 0.5)
             _sig_dn = float(_sig_row.get("down_ask") or 0.5)
             _sig_spread = abs(_sig_up - _sig_dn)
@@ -3943,7 +3946,6 @@ class TradingBot:
                 logger.info("Skip wide spread: %.3f > %.3f", _sig_spread, MIRROR_MAX_ODDS_SPREAD)
                 return
             # Max BTC move filter: skip overextended entries (mean reversion risk)
-            # BTC >= 0.10% from start = 43% WR historically. Skip.
             _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
             _sig_btc_move_raw = float(_sig_row.get("btc_move_pct") or 0)
             _sig_btc_move = abs(_sig_btc_move_raw)

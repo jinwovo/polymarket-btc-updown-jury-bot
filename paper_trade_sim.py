@@ -1306,35 +1306,33 @@ def open_trade_if_signal(
         logger.debug("Skip cheap DOWN ws=%s: price=%.3f < %.3f", window_start, entry_price, PAPER_DOWN_MIN_ENTRY_PRICE)
         return False
 
-    # Spread filter: only enter when market is uncertain (UP/DOWN asks close)
-    _max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
-    if up_ask_val is not None and down_ask_val is not None:
-        _spread = abs(float(up_ask_val) - float(down_ask_val))
-        if _spread > _max_spread:
-            logger.debug("Skip wide spread ws=%s: spread=%.3f > %.3f", window_start, _spread, _max_spread)
-            return False
+    # Check lag_arb early — if lag_arb_allow=1, skip judge-specific filters
+    _lag_early = int(cached.get("lag_arb_allow") or 0) if cached else 0
 
-    # Max BTC move filter: skip overextended entries (mean reversion risk)
-    _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
-    if _max_btc_move > 0 and cached:
-        _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
-        if _btc_move_abs > _max_btc_move:
-            logger.debug("Skip overextended ws=%s: btc_move=%.4f%% > %.2f%%", window_start, _btc_move_abs, _max_btc_move)
-            return False
+    # Spread/momentum/max_btc filters: only for JUDGE entries (not lag arb)
+    if not _lag_early:
+        _max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
+        if up_ask_val is not None and down_ask_val is not None:
+            _spread = abs(float(up_ask_val) - float(down_ask_val))
+            if _spread > _max_spread:
+                logger.debug("Skip wide spread ws=%s: spread=%.3f > %.3f", window_start, _spread, _max_spread)
+                return False
 
-    # Momentum agreement: 30s BTC trend must match bet direction
-    # CONFLICT (bet UP but BTC falling) = 48% WR vs AGREE = 55% WR
-    if os.getenv("PAPER_REQUIRE_MOMENTUM_AGREE", "true").lower() == "true" and cached:
-        _btc_move = float(cached.get("btc_move_pct") or 0)
-        _ov = float(cached.get("odds_velocity") or 0)
-        # btc_move > 0 = BTC above start, odds_velocity > 0 = ask rising (our dir getting expensive)
-        # Simple check: if direction is UP, BTC should be rising (btc_move > 0)
-        if direction == "UP" and _btc_move < -0.005:
-            logger.debug("Skip momentum conflict ws=%s: UP but btc_move=%.4f%%", window_start, _btc_move)
-            return False
-        if direction == "DOWN" and _btc_move > 0.005:
-            logger.debug("Skip momentum conflict ws=%s: DOWN but btc_move=+%.4f%%", window_start, _btc_move)
-            return False
+        _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
+        if _max_btc_move > 0 and cached:
+            _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
+            if _btc_move_abs > _max_btc_move:
+                logger.debug("Skip overextended ws=%s: btc_move=%.4f%% > %.2f%%", window_start, _btc_move_abs, _max_btc_move)
+                return False
+
+        if os.getenv("PAPER_REQUIRE_MOMENTUM_AGREE", "true").lower() == "true" and cached:
+            _btc_move = float(cached.get("btc_move_pct") or 0)
+            if direction == "UP" and _btc_move < -0.005:
+                logger.debug("Skip momentum conflict ws=%s: UP but btc_move=%.4f%%", window_start, _btc_move)
+                return False
+            if direction == "DOWN" and _btc_move > 0.005:
+                logger.debug("Skip momentum conflict ws=%s: DOWN but btc_move=+%.4f%%", window_start, _btc_move)
+                return False
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
