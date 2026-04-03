@@ -2858,7 +2858,15 @@ def _get_accounts() -> list[dict]:
     try:
         conn = _connect_db()
         rows = fetch_all_dicts(conn, "SELECT * FROM accounts ORDER BY id")
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            # Convert datetime to string for JSON serialization
+            for k, v in d.items():
+                if hasattr(v, 'isoformat'):
+                    d[k] = v.isoformat()
+            result.append(d)
+        return result
     except Exception:
         return []
 
