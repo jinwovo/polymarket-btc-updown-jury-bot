@@ -737,6 +737,16 @@ class DataCollector:
                         _lag_arb_direction = _lag_dir
                         _lag_arb_entry_price = _lag_ask
 
+            # Lag arb lock: once triggered, hold for 5s (same window only)
+            # Prevents paper/live missing the signal due to 0.1s tick overwrite
+            _lag_lock = getattr(self, '_lag_arb_lock', None)
+            if _lag_arb_allow:
+                self._lag_arb_lock = {"ts": now, "dir": _lag_arb_direction, "ep": _lag_arb_entry_price, "ws": int(self.current_window_start)}
+            elif _lag_lock and _lag_lock.get("ws") == int(self.current_window_start) and (now - _lag_lock["ts"]) < 2.0:
+                _lag_arb_allow = 1
+                _lag_arb_direction = _lag_lock["dir"]
+                _lag_arb_entry_price = _lag_lock["ep"]
+
             # Write to signal_cache table (single row, always overwritten)
             # Binance-RTDS gap: positive = Binance above Chainlink = BTC rising
             binance_rtds_gap = None
