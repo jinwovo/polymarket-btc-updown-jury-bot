@@ -1944,28 +1944,36 @@ class PolymarketClient:
                     _ak = os.getenv("POLYMARKET_API_KEY", "")
                     _as = os.getenv("POLYMARKET_API_SECRET", "")
                     _ap = os.getenv("POLYMARKET_API_PASSPHRASE", "")
-                    # Fetch neg_risk + fee_rate for this token
-                    _neg_risk = "false"
-                    _fee_bps = "0"
-                    try:
-                        _nr_resp = await self._http.get(
-                            f"{config.polymarket.clob_url}/neg-risk",
-                            params={"token_id": str(token_id)},
-                        )
-                        if _nr_resp.status_code == 200:
-                            _neg_risk = "true" if _nr_resp.json().get("neg_risk") else "false"
-                    except Exception:
-                        pass
-                    try:
-                        _fee_resp = await self._http.get(
-                            f"{config.polymarket.clob_url}/fee-rate",
-                            params={"token_id": str(token_id)},
-                        )
-                        if _fee_resp.status_code == 200:
-                            _fee_bps = str(int(_fee_resp.json().get("base_fee", 0)))
-                            logger.info("Rust FAK fee_rate: %s bps, neg_risk: %s", _fee_bps, _neg_risk)
-                    except Exception:
-                        pass
+                    # Cached neg_risk + fee_rate (fetched once, reused for all trades)
+                    # Saves ~500ms per trade (2 API calls eliminated)
+                    if not hasattr(self, '_rust_cache'):
+                        self._rust_cache = {}
+                    _cache_key = str(token_id)[:20]
+                    if _cache_key not in self._rust_cache:
+                        _neg_risk = "false"
+                        _fee_bps = "0"
+                        try:
+                            _nr_resp = await self._http.get(
+                                f"{config.polymarket.clob_url}/neg-risk",
+                                params={"token_id": str(token_id)},
+                            )
+                            if _nr_resp.status_code == 200:
+                                _neg_risk = "true" if _nr_resp.json().get("neg_risk") else "false"
+                        except Exception:
+                            pass
+                        try:
+                            _fee_resp = await self._http.get(
+                                f"{config.polymarket.clob_url}/fee-rate",
+                                params={"token_id": str(token_id)},
+                            )
+                            if _fee_resp.status_code == 200:
+                                _fee_bps = str(int(_fee_resp.json().get("base_fee", 0)))
+                        except Exception:
+                            pass
+                        self._rust_cache[_cache_key] = {"neg_risk": _neg_risk, "fee_bps": _fee_bps}
+                        logger.info("Rust cache: token=%s fee=%s neg_risk=%s", _cache_key, _fee_bps, _neg_risk)
+                    _neg_risk = self._rust_cache[_cache_key]["neg_risk"]
+                    _fee_bps = self._rust_cache[_cache_key]["fee_bps"]
                     _funder = os.getenv("POLYMARKET_FUNDER", "")
                     # FAK limit = max entry price (not exact ask). Fills at best available.
                     # This prevents "no liquidity" when exact ask has no orders but nearby does.
