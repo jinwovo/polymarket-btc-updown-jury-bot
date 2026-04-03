@@ -231,15 +231,18 @@ class PaperReplay:
             # Paper doesn't have this score filter on entry; it's only for sizing.
             # So don't block entry based on score — just use it for mega sizing later.
 
-            # Drift simulation: check ask ~2s after entry (FAK execution window)
-            # If ask rose past max_entry_price -> FAK limit exceeded -> skip
+            # Drift simulation: check ask after entry (FAK execution window)
+            # Rust FAK takes ~300ms. Check 0.2-0.5s after signal for realistic fill.
+            # If ask rose past max_entry_price -> FAK limit exceeded -> no fill -> skip
             # If ask rose but still valid -> fill at worse (later) price
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
+            _drift_start = float(os.getenv("REPLAY_DRIFT_START_SEC", "0.2"))
+            _drift_end = float(os.getenv("REPLAY_DRIFT_END_SEC", "0.5"))
             later_odds = fetch_all_dicts(self.conn, """
                 SELECT up_best_ask, down_best_ask FROM poly_odds
                 WHERE window_start = %s AND ts >= %s AND ts <= %s
                 ORDER BY ts ASC LIMIT 1
-            """, (ws, entry_ts + 0.5, entry_ts + 2.5))
+            """, (ws, entry_ts + _drift_start, entry_ts + _drift_end))
             if later_odds:
                 later_price = float(later_odds[0].get("up_best_ask") or entry_price) if direction == "UP" \
                     else float(later_odds[0].get("down_best_ask") or entry_price)
