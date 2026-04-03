@@ -1314,6 +1314,28 @@ def open_trade_if_signal(
             logger.debug("Skip wide spread ws=%s: spread=%.3f > %.3f", window_start, _spread, _max_spread)
             return False
 
+    # Max BTC move filter: skip overextended entries (mean reversion risk)
+    _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
+    if _max_btc_move > 0 and cached:
+        _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
+        if _btc_move_abs > _max_btc_move:
+            logger.debug("Skip overextended ws=%s: btc_move=%.4f%% > %.2f%%", window_start, _btc_move_abs, _max_btc_move)
+            return False
+
+    # Momentum agreement: 30s BTC trend must match bet direction
+    # CONFLICT (bet UP but BTC falling) = 48% WR vs AGREE = 55% WR
+    if os.getenv("PAPER_REQUIRE_MOMENTUM_AGREE", "true").lower() == "true" and cached:
+        _btc_move = float(cached.get("btc_move_pct") or 0)
+        _ov = float(cached.get("odds_velocity") or 0)
+        # btc_move > 0 = BTC above start, odds_velocity > 0 = ask rising (our dir getting expensive)
+        # Simple check: if direction is UP, BTC should be rising (btc_move > 0)
+        if direction == "UP" and _btc_move < -0.005:
+            logger.debug("Skip momentum conflict ws=%s: UP but btc_move=%.4f%%", window_start, _btc_move)
+            return False
+        if direction == "DOWN" and _btc_move > 0.005:
+            logger.debug("Skip momentum conflict ws=%s: DOWN but btc_move=+%.4f%%", window_start, _btc_move)
+            return False
+
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
     # All market guards (implied-side, divergence, momentum, trend, price range)
@@ -1581,40 +1603,28 @@ def open_trade_if_signal(
             stake = round(_fixed_val, 2)
         else:
             stake = round(initial_capital * 0.15, 2)
-        # Score-based sizing: 7 signals scored, 3x when score>=5 or prev momentum
-        _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "3.0"))
+        # score>=3 filter: skip low-quality signals (best WR across all periods)
         _min_score = int(os.getenv("PAPER_MIN_ENTRY_SCORE", "3"))
-        if _mega_mult > 1.0 and cached:
-            _btc_move_abs = abs(float(cached.get("btc_move_pct") or 0))
-            _confidence = float(cached.get("avg_confidence") or 0)
+        if _min_score > 0 and cached:
+            _btc_move = abs(float(cached.get("btc_move_pct") or 0))
+            _conf = float(cached.get("avg_confidence") or 0)
             _ev = float(cached.get("gate_ev") or 0)
-            # Read pre-computed score signals from signal_cache (no DB queries!)
-            _prev_outcome = str(cached.get("prev_outcome") or "")
-            if _prev_outcome not in ("UP", "DOWN"): _prev_outcome = None
+            _prev = str(cached.get("prev_outcome") or "")
+            if _prev not in ("UP", "DOWN"): _prev = None
             _ov = float(cached.get("odds_velocity") or 0)
-            _accel_ok = bool(int(cached.get("btc_accel_ok") or 0)) if cached.get("btc_accel_ok") is not None else False
-            # Calculate score
+            _accel = bool(int(cached.get("btc_accel_ok") or 0)) if cached.get("btc_accel_ok") is not None else False
             _score = 0
-            if _btc_move_abs >= 0.02: _score += 1
-            if _prev_outcome == direction: _score += 1
+            if _btc_move >= 0.02: _score += 1
+            if _prev == direction: _score += 1
             if entry_price <= 0.45: _score += 1
             if _ev >= 0.20: _score += 1
-            if _confidence >= 0.7: _score += 1
+            if _conf >= 0.7: _score += 1
             if _ov >= 0.02: _score += 1
-            if _accel_ok: _score += 1
-            # Skip if score too low
+            if _accel: _score += 1
             if _score < _min_score:
-                logger.info("Skip low score ws=%s: score=%d < %d", window_start, _score, _min_score)
+                logger.info("Skip low score ws=%s: score=%d < %d (dir=%s)", window_start, _score, _min_score, direction)
                 return False
-            # 3x when score>=6 OR prev momentum
-            _mega_score = int(os.getenv("PAPER_MEGA_MIN_SCORE", "6"))
-            _is_mega = (_score >= _mega_score) or (_prev_outcome == direction and _btc_move_abs >= 0.02)
-            if _is_mega:
-                stake = round(stake * _mega_mult, 2)
-                logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",
-                           _score, _prev_outcome, _btc_move_abs, int(_mega_mult), stake)
-            else:
-                logger.info("Normal bet: score=%d $%.2f", _score, stake)
+            logger.info("Score OK: %d/%d $%.2f (btc=%.3f%% conf=%.2f ev=%.2f prev=%s)", _score, _min_score, stake, _btc_move, _conf, _ev, _prev)
     elif sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
     elif sizing_mode == "all_in_equity":

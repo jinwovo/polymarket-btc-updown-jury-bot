@@ -346,7 +346,13 @@ def evaluate_entry_gate(
         )
 
     fee_rate = max(0.0, float(config.trading.fee_rate))
-    min_roi = float(config.trading.min_expected_roi)
+    _base_min_roi = float(config.trading.min_expected_roi)
+    # Time-weighted gate: later in window = direction more certain = lower ROI bar
+    # At 60s remaining: min_roi = base * 0.4 (BTC direction is ~85% decided)
+    # At 240s remaining: min_roi = base * 1.0 (still early, need high conviction)
+    _remaining = max(1.0, float(seconds_remaining)) if seconds_remaining else 240.0
+    _time_factor = max(0.4, min(1.0, _remaining / 300.0))
+    min_roi = _base_min_roi * _time_factor
 
     # -- Spread cost awareness (from RL article insight) --
     # The overround (up_ask + down_ask - 1.0) represents the book's spread tax.

@@ -39,6 +39,7 @@ from db_config import (
     fetch_all,
     fetch_all_dicts,
     fetch_one,
+    fetch_one_dict,
     init_market_schema,
     upsert_btc_ticks_sql,
     upsert_feature_1s_sql,
@@ -156,10 +157,11 @@ class DataCollector:
         except Exception:
             pass
 
-        # Run in parallel: Binance WS + CLOB polling + flush + window + Chainlink + RTDS + Playwright fallback
+        # Run in parallel: Binance WS + CLOB polling + CLOB WS + flush + window + Chainlink + RTDS + Playwright
         await asyncio.gather(
             self._binance_ws_loop(),
-            self._polymarket_poll_loop(),
+            self._polymarket_poll_loop(),         # REST fallback (runs when WS stale >3s)
+            self._clob_ws_loop(),                 # WebSocket orderbook (primary)
             self._flush_loop(),
             self._window_tracker_loop(),
             self._chainlink.poll_loop(
@@ -234,38 +236,190 @@ class DataCollector:
                 logger.error(f"Binance WS error: {e}")
                 await asyncio.sleep(5)
 
+    # -- WebSocket orderbook (primary) + REST polling (fallback) --
+    _clob_ws_alive: bool = False
+    _clob_ws_subscribed_tokens: tuple[str, str] = ("", "")
+    _clob_ws_last_update: float = 0.0
+
     async def _polymarket_poll_loop(self):
-        """Poll Polymarket orderbook + run Jury every tick."""
+        """Jury evaluation loop + REST fallback when WS stale."""
         while self._running:
             try:
-                if self.current_market and self.current_market.up_token_id:
+                ws_fresh = self._clob_ws_alive and (time.time() - self._clob_ws_last_update) < 3.0
+                if not ws_fresh and self.current_market and self.current_market.up_token_id:
+                    # WS stale -> REST poll to get fresh orderbook
                     updated = await self.poly_client.refresh_odds(self.current_market)
-                    if updated:
-                        now = time.time()
-                        _ub = self.current_market.up_best_bid
-                        _ua = self.current_market.up_best_ask
-                        _db = self.current_market.down_best_bid
-                        _da = self.current_market.down_best_ask
-                        _spread_up = (float(_ua) - float(_ub)) if (_ua and _ub) else None
-                        _spread_down = (float(_da) - float(_db)) if (_da and _db) else None
-                        _overround = (float(_ua) + float(_da) - 1.0) if (_ua and _da) else None
-                        self._odds_buffer.append((
-                            now,
-                            self.current_window_start,
-                            self.current_market.slug,
-                            self.current_market.up_price,
-                            self.current_market.down_price,
-                            _ub, _ua, _db, _da,
-                            _spread_up, _spread_down, _overround,
-                        ))
-                        # -- Shared Jury evaluation --
-                        self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
-                # -- Check for new trades (display on server console) --
+
+                # Always run jury if market has data (WS or REST updated it)
+                if self.current_market and self.current_market.last_odds_update:
+                    self._process_odds_update(time.time())
+
                 self._check_new_trades()
             except Exception as e:
-                logger.debug(f"Odds poll error: {e}")
+                logger.debug("Odds poll error: %s", e)
+            await asyncio.sleep(0.1)
 
-            await asyncio.sleep(0.1)  # rate limit: 150 req/s, we use ~20
+    async def _clob_ws_loop(self):
+        """WebSocket connection to Polymarket CLOB market channel."""
+        import websockets
+        url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        _reconnect_delay = 1.0
+        _last_ping = 0.0
+
+        while self._running:
+            try:
+                async with websockets.connect(url, ping_interval=None, close_timeout=5) as ws:
+                    self._clob_ws_alive = True
+                    _reconnect_delay = 1.0
+                    logger.info("CLOB WS connected")
+
+                    # Subscribe to current market tokens
+                    await self._clob_ws_subscribe(ws)
+
+                    while self._running:
+                        now = time.time()
+                        # Send PING every 8s (server requires <10s)
+                        if now - _last_ping > 8.0:
+                            await ws.send("PING")
+                            _last_ping = now
+
+                        # Check if market changed -> resubscribe
+                        m = self.current_market
+                        if m and (m.up_token_id, m.down_token_id) != self._clob_ws_subscribed_tokens:
+                            await self._clob_ws_subscribe(ws)
+
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            continue
+                        if raw == "PONG":
+                            continue
+
+                        try:
+                            parsed = json.loads(raw)
+                        except Exception:
+                            continue
+
+                        items = parsed if isinstance(parsed, list) else [parsed]
+                        for data in items:
+                            if not isinstance(data, dict):
+                                continue
+                            self._handle_clob_ws_message(data)
+
+            except Exception as e:
+                self._clob_ws_alive = False
+                logger.warning("CLOB WS error: %s (reconnect in %.0fs)", e, _reconnect_delay)
+                await asyncio.sleep(_reconnect_delay)
+                _reconnect_delay = min(_reconnect_delay * 2, 15.0)
+
+    async def _clob_ws_subscribe(self, ws):
+        """Subscribe to current market's UP/DOWN tokens."""
+        m = self.current_market
+        if not m or not m.up_token_id or not m.down_token_id:
+            return
+        # Unsubscribe old tokens if different
+        old_up, old_down = self._clob_ws_subscribed_tokens
+        if old_up and old_up != m.up_token_id:
+            try:
+                await ws.send(json.dumps({
+                    "assets_ids": [old_up, old_down],
+                    "operation": "unsubscribe",
+                }))
+            except Exception:
+                pass
+
+        await ws.send(json.dumps({
+            "assets_ids": [m.up_token_id, m.down_token_id],
+            "type": "market",
+            "custom_feature_enabled": True,
+        }))
+        self._clob_ws_subscribed_tokens = (m.up_token_id, m.down_token_id)
+        logger.info("CLOB WS subscribed: UP=%s... DOWN=%s...",
+                     m.up_token_id[:20], m.down_token_id[:20])
+
+    def _handle_clob_ws_message(self, data: dict):
+        """Process a single WebSocket message and update market state."""
+        m = self.current_market
+        if not m:
+            return
+        try:
+            self._handle_clob_ws_message_inner(data)
+        except Exception as e:
+            logger.warning("CLOB WS message handler error: %s", e)
+
+    def _handle_clob_ws_message_inner(self, data: dict):
+        m = self.current_market
+        if not m:
+            return
+        evt = data.get("event_type", "")
+        asset = data.get("asset_id", "")
+        is_up = asset == m.up_token_id
+        is_down = asset == m.down_token_id
+
+        if evt == "book":
+            bids = data.get("bids", [])
+            asks = data.get("asks", [])
+            best_bid = max((float(b["price"]) for b in bids), default=0.0) if bids else 0.0
+            best_ask = min((float(a["price"]) for a in asks), default=1.0) if asks else 1.0
+            mid = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask < 1 else 0.5
+            if is_up:
+                m.up_best_bid, m.up_best_ask, m.up_price = best_bid, best_ask, mid
+                m.up_ask_levels, m.up_bid_levels = asks, bids
+            elif is_down:
+                m.down_best_bid, m.down_best_ask, m.down_price = best_bid, best_ask, mid
+                m.down_ask_levels, m.down_bid_levels = asks, bids
+            m.last_odds_update = time.time()
+            self._clob_ws_last_update = time.time()
+
+        elif evt == "best_bid_ask":
+            bb = float(data.get("best_bid", 0))
+            ba = float(data.get("best_ask", 1))
+            mid = (bb + ba) / 2.0 if bb > 0 and ba < 1 else 0.5
+            if is_up:
+                m.up_best_bid, m.up_best_ask, m.up_price = bb, ba, mid
+            elif is_down:
+                m.down_best_bid, m.down_best_ask, m.down_price = bb, ba, mid
+            m.last_odds_update = time.time()
+            self._clob_ws_last_update = time.time()
+
+        elif evt == "price_change":
+            for c in data.get("price_changes", []):
+                c_asset = c.get("asset_id", "")
+                c_is_up = c_asset == m.up_token_id
+                c_is_down = c_asset == m.down_token_id
+                bb = float(c.get("best_bid", 0))
+                ba = float(c.get("best_ask", 1))
+                if bb > 0 and ba < 1:
+                    mid = (bb + ba) / 2.0
+                    if c_is_up:
+                        m.up_best_bid, m.up_best_ask, m.up_price = bb, ba, mid
+                    elif c_is_down:
+                        m.down_best_bid, m.down_best_ask, m.down_price = bb, ba, mid
+            m.last_odds_update = time.time()
+            self._clob_ws_last_update = time.time()
+
+    def _process_odds_update(self, now: float):
+        """Process updated odds: buffer for DB + run jury. Shared by WS and REST."""
+        m = self.current_market
+        if not m:
+            return
+        _ub = m.up_best_bid
+        _ua = m.up_best_ask
+        _db = m.down_best_bid
+        _da = m.down_best_ask
+        _spread_up = (float(_ua) - float(_ub)) if (_ua and _ub) else None
+        _spread_down = (float(_da) - float(_db)) if (_da and _db) else None
+        _overround = (float(_ua) + float(_da) - 1.0) if (_ua and _da) else None
+        self._odds_buffer.append((
+            now,
+            self.current_window_start,
+            m.slug,
+            m.up_price,
+            m.down_price,
+            _ub, _ua, _db, _da,
+            _spread_up, _spread_down, _overround,
+        ))
+        self._evaluate_and_cache_signal(now, _ua, _da, _ub, _db)
 
     def _check_new_trades(self):
         """Poll paper_trades and live_trades for new entries, log to server console."""
@@ -459,6 +613,26 @@ class DataCollector:
             except Exception:
                 pass
 
+            # VPIN: Volume-synchronized Probability of Informed Trading
+            # Unlike raw buy/sell ratio, VPIN normalizes by total volume
+            # High VPIN (>0.6) = informed trading = direction is reliable
+            _vpin = None
+            try:
+                if _bs_ratio is not None:
+                    _vol_row2 = fetch_one(
+                        self.db,
+                        "SELECT SUM(buy_volume), SUM(sell_volume) FROM btc_ticks WHERE ts > ?",
+                        (now - 60,),
+                    )
+                    if _vol_row2 and _vol_row2[0] is not None and _vol_row2[1] is not None:
+                        _bv2 = float(_vol_row2[0])
+                        _sv2 = float(_vol_row2[1])
+                        _total = _bv2 + _sv2
+                        if _total > 0:
+                            _vpin = abs(_bv2 - _sv2) / _total  # 0 to 1
+            except Exception:
+                pass
+
             decision = self._jury.deliberate(ctx)
 
             # -- Price guards (shared module -- same logic as backtest) --
@@ -559,19 +733,22 @@ class DataCollector:
             try:
                 _pw = self.current_window_start - 300
                 _pr = fetch_one_dict(self.db, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_pw,))
-                _prev_outcome = _pr.get("actual_outcome") if _pr else None
-            except Exception:
-                pass
+                if _pr and _pr.get("actual_outcome"):
+                    _prev_outcome = str(_pr["actual_outcome"])
+            except Exception as _e:
+                logger.warning("prev_outcome fetch err: %s", _e)
             try:
-                _entry_ask = float(up_ask if decision.direction == "UP" else dn_ask) if (up_ask and dn_ask) else 0.5
+                _dir_ask = up_ask if decision.direction == "UP" else dn_ask
+                _entry_ask = float(_dir_ask) if _dir_ask else 0.5
+                # Compare current ask vs 30s ago ask
                 _eo = fetch_one_dict(self.db,
                     "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = %s AND ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT 1",
                     (self.current_window_start, now - 35, now - 25))
                 if _eo:
                     _eep = float(_eo.get("up_best_ask") or 0.5) if decision.direction == "UP" else float(_eo.get("down_best_ask") or 0.5)
-                    _odds_velocity = _entry_ask - _eep
-            except Exception:
-                pass
+                    _odds_velocity = round(_entry_ask - _eep, 6)
+            except Exception as _e:
+                logger.warning("odds_velocity fetch err: %s", _e)
             try:
                 _prices = list(self._recent_prices)
                 if len(_prices) >= 15:
@@ -580,8 +757,8 @@ class DataCollector:
                         _v1 = (_p1 - _p2) / _p3 * 100; _v2 = (_p2 - _p3) / _p3 * 100
                         _a = _v1 - _v2
                         _btc_accel_ok = 1 if ((decision.direction == "UP" and _a > 0) or (decision.direction == "DOWN" and _a < 0)) else 0
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning("btc_accel fetch err: %s", _e)
 
             import json as _json
             judges_json = _json.dumps([
@@ -611,7 +788,9 @@ class DataCollector:
                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
-            # Append to signal_cache_log for backtest parity (only when relevant)
+            # Append to signal_cache_log for backtest parity
+            # Always record gate_allow=1 so paper_replay can match paper exactly.
+            # Also record guards_passed=1 for future parameter sweeps.
             if gate_allow or guards_passed:
                 execute_write(
                     self.db,

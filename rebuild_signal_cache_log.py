@@ -190,6 +190,51 @@ def rebuild(last_hours: float, clear: bool = False):
                 for v in decision.verdicts
             ])
 
+            # Compute score signals (prev_outcome, odds_velocity, btc_accel_ok)
+            _prev_outcome = None
+            _odds_velocity = None
+            _btc_accel_ok = None
+            # 1) prev_outcome: previous window's result
+            try:
+                _pw = ws - 300
+                _pr = fetch_one(conn, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_pw,))
+                if _pr and _pr[0]:
+                    _prev_outcome = str(_pr[0])
+            except Exception:
+                pass
+            # 2) odds_velocity: current ask vs 30s ago ask
+            try:
+                _dir_ask = up_ask if decision.direction == "UP" else dn_ask
+                _eo = fetch_one(conn,
+                    "SELECT up_best_ask, down_best_ask FROM poly_odds WHERE window_start = %s AND ts >= %s AND ts <= %s ORDER BY ts ASC LIMIT 1",
+                    (ws, t - 35, t - 25))
+                if _eo:
+                    _old_ask = float(_eo[0] or 0.5) if decision.direction == "UP" else float(_eo[1] or 0.5)
+                    _odds_velocity = round(float(_dir_ask) - _old_ask, 6)
+            except Exception:
+                pass
+            # 3) btc_accel_ok: BTC acceleration matches direction
+            try:
+                if len(tick_px) >= 15:
+                    # Find prices at current, 1/3 ago, 2/3 ago
+                    _idx = len(tick_px) - 1
+                    for i in range(len(tick_ts) - 1, -1, -1):
+                        if tick_ts[i] <= t:
+                            _idx = i
+                            break
+                    _n = min(_idx + 1, 60)
+                    if _n >= 15:
+                        _p1 = tick_px[_idx]
+                        _p2 = tick_px[_idx - max(_n // 3, 5)]
+                        _p3 = tick_px[_idx - max(2 * _n // 3, 10)]
+                        if _p3 > 0:
+                            _v1 = (_p1 - _p2) / _p3 * 100
+                            _v2 = (_p2 - _p3) / _p3 * 100
+                            _a = _v1 - _v2
+                            _btc_accel_ok = 1 if ((decision.direction == "UP" and _a > 0) or (decision.direction == "DOWN" and _a < 0)) else 0
+            except Exception:
+                pass
+
             # Insert to signal_cache_log
             execute_write(conn, """
                 INSERT INTO signal_cache_log
@@ -197,8 +242,9 @@ def rebuild(last_hours: float, clear: bool = False):
                  unanimous, judges_json, up_ask, down_ask, btc_price, start_price,
                  seconds_elapsed, seconds_remaining,
                  btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
-                 buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
+                 prev_outcome, odds_velocity, btc_accel_ok)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
                 t, ws, decision.direction,
                 float(decision.avg_confidence), float(decision.max_edge),
@@ -207,6 +253,7 @@ def rebuild(last_hours: float, clear: bool = False):
                 elapsed, remaining,
                 btc_move_pct, None, None, guards_passed,
                 None, gate_allow, gate_ev, gate_reason, None,
+                _prev_outcome, _odds_velocity, _btc_accel_ok,
             ))
             inserted += 1
 

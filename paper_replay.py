@@ -84,12 +84,19 @@ class PaperReplay:
         self.max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
         self.drift_max = float(os.getenv("MAX_ENTRY_PRICE_DRIFT_ABS", "0.080"))
         self.taker_fee_rate = float(os.getenv("TAKER_FEE_RATE", "0.03"))
+        self.min_edge_filter = float(os.getenv("REPLAY_MIN_EDGE", "0"))
+        self.min_conf_filter = float(os.getenv("REPLAY_MIN_CONF", "0"))
+        self.min_btc_move = float(os.getenv("REPLAY_MIN_BTC_MOVE", "0"))
+        self.max_btc_move = float(os.getenv("REPLAY_MAX_BTC_MOVE", "0"))
+        self.require_momentum_agree = os.getenv("REPLAY_REQUIRE_MOMENTUM_AGREE", "0") == "1"
+        self.min_score = int(os.getenv("REPLAY_MIN_SCORE", "0"))
 
     def _get_scl_entries(self, ws: int) -> list[dict]:
         """Get all signal_cache_log entries with gate_allow=1 for a window."""
         return fetch_all_dicts(self.conn, """
             SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                    btc_price, start_price, seconds_elapsed, seconds_remaining,
+                   btc_move_pct,
                    gate_allow, gate_ev, gate_reason,
                    prev_outcome, odds_velocity, btc_accel_ok
             FROM signal_cache_log
@@ -124,6 +131,58 @@ class PaperReplay:
             gate_ev = float(entry.get("gate_ev") or 0)
             confidence = float(entry.get("avg_confidence") or 0.5)
             max_edge = float(entry.get("max_edge") or 0.1)
+
+            # Edge/confidence quality filters
+            if self.min_edge_filter > 0 and max_edge < self.min_edge_filter:
+                continue
+            if self.min_conf_filter > 0 and confidence < self.min_conf_filter:
+                continue
+            # BTC move filter: only enter when BTC moved enough in the right direction
+            btc_move = float(entry.get("btc_move_pct") or 0)
+            if self.min_btc_move > 0:
+                if abs(btc_move) < self.min_btc_move:
+                    continue
+                # Direction must match the move
+                if direction == "UP" and btc_move < 0:
+                    continue
+                if direction == "DOWN" and btc_move > 0:
+                    continue
+            # Max BTC move filter: skip overextended entries (mean reversion risk)
+            if self.max_btc_move > 0 and abs(btc_move) > self.max_btc_move:
+                continue
+
+            # Momentum agreement: 30s BTC trend must match bet direction
+            if self.require_momentum_agree:
+                _check_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
+                _prev_tick = fetch_one_dict(self.conn, """
+                    SELECT price FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts DESC LIMIT 1
+                """, (_check_ts - 35, _check_ts - 25))
+                if _prev_tick:
+                    _btc_now = float(entry.get("btc_price") or 0)
+                    _btc_30s = float(_prev_tick.get("price") or 0)
+                    if _btc_now > 0 and _btc_30s > 0:
+                        _rising = _btc_now > _btc_30s
+                        _conflict = (direction == "UP" and not _rising) or (direction == "DOWN" and _rising)
+                        if _conflict:
+                            continue
+
+            # Score filter: count how many signals are positive
+            if self.min_score > 0:
+                _prev = str(entry.get("prev_outcome") or "")
+                _ov = float(entry.get("odds_velocity") or 0)
+                _accel = bool(int(entry.get("btc_accel_ok") or 0)) if entry.get("btc_accel_ok") is not None else False
+                _score = 0
+                if abs(btc_move) >= 0.02: _score += 1          # 1. BTC moved
+                if _prev == direction: _score += 1               # 2. prev won same dir
+                # entry_price not yet final here, use ask from scl
+                _ep = float(entry.get("up_ask") or 0.5) if direction == "UP" else float(entry.get("down_ask") or 0.5)
+                if _ep <= 0.45: _score += 1                      # 3. cheap entry
+                if gate_ev >= 0.20: _score += 1                  # 4. high EV
+                if confidence >= 0.7: _score += 1                # 5. high conf
+                if _ov >= 0.02: _score += 1                      # 6. odds velocity
+                if _accel: _score += 1                           # 7. BTC accel
+                if _score < self.min_score:
+                    continue
 
             # If signal came early, paper would read it when elapsed >= entry_start_sec
             if scl_elapsed < self.entry_start_sec:
@@ -172,28 +231,66 @@ class PaperReplay:
             # Paper doesn't have this score filter on entry; it's only for sizing.
             # So don't block entry based on score — just use it for mega sizing later.
 
-            # Drift simulation
+            # Drift simulation: check ask ~2s after entry (FAK execution window)
+            # If ask rose past max_entry_price -> FAK limit exceeded -> skip
+            # If ask rose but still valid -> fill at worse (later) price
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
             later_odds = fetch_all_dicts(self.conn, """
                 SELECT up_best_ask, down_best_ask FROM poly_odds
                 WHERE window_start = %s AND ts >= %s AND ts <= %s
                 ORDER BY ts ASC LIMIT 1
-            """, (ws, entry_ts + 1.5, entry_ts + 3.0))
+            """, (ws, entry_ts + 0.5, entry_ts + 2.5))
             if later_odds:
                 later_price = float(later_odds[0].get("up_best_ask") or entry_price) if direction == "UP" \
                     else float(later_odds[0].get("down_best_ask") or entry_price)
-                if abs(later_price - entry_price) > self.drift_max:
-                    continue
                 if 0.01 < later_price < 0.99:
+                    # Ask rose past max -> FAK limit exceeded, order won't fill
+                    if later_price > self.max_entry_price:
+                        continue
+                    # Ask rose past drift tolerance -> skip
+                    if later_price - entry_price > self.drift_max:
+                        continue
+                    # Use actual fill price (later price = what live would get)
                     entry_price = later_price
+            # Re-check price filters after drift adjustment
+            if entry_price > self.max_entry_price:
+                continue
 
-            # All filters passed — enter this trade
-            # Fixed sizing (matches paper's FIXED mode, no compound loss)
+            # Fixed sizing (matches paper's FIXED mode)
             _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
             if _fixed_stake > 0:
                 stake = _fixed_stake
             else:
                 stake = round(self.initial_equity * 0.15, 2)
+
+            # conf2x sizing: 2x when jury confidence >= 0.7
+            _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "2.0"))
+            _min_score = int(os.getenv("PAPER_MIN_ENTRY_SCORE", "0"))  # 0 = disabled
+            if _min_score > 0:
+                # Optional score filter (7 signals)
+                _btc_move_abs = abs(float(entry.get("btc_move_pct") or 0))
+                if _btc_move_abs == 0 and float(entry.get("start_price") or 0) > 0:
+                    _btc_move_abs = abs((float(entry.get("btc_price") or 0) - float(entry["start_price"])) / float(entry["start_price"]) * 100)
+                _prev_outcome = str(entry.get("prev_outcome") or "")
+                if _prev_outcome not in ("UP", "DOWN"):
+                    _prev_outcome = None
+                _ov = float(entry.get("odds_velocity") or 0)
+                _accel_ok = bool(int(entry.get("btc_accel_ok") or 0)) if entry.get("btc_accel_ok") is not None else False
+                _score = 0
+                if _btc_move_abs >= 0.02: _score += 1
+                if _prev_outcome == direction: _score += 1
+                if entry_price <= 0.45: _score += 1
+                if gate_ev >= 0.20: _score += 1
+                if confidence >= 0.7: _score += 1
+                if _ov >= 0.02: _score += 1
+                if _accel_ok: _score += 1
+                if _score < _min_score:
+                    continue
+
+            # conf2x: 2x when confidence >= 0.7
+            if confidence >= 0.7 and _mega_mult > 1.0:
+                stake = round(stake * _mega_mult, 2)
+
             shares = stake / entry_price
             opened_at = entry_ts
 
@@ -433,7 +530,48 @@ def main():
     parser = argparse.ArgumentParser(description="Paper trade replay (exact parity)")
     parser.add_argument("--last-hours", type=float, required=True)
     parser.add_argument("--equity", type=float, default=1000.0)
+    parser.add_argument("--entry-start", type=float, default=None, help="Override PAPER_ENTRY_START_SEC")
+    parser.add_argument("--max-ask", type=float, default=None, help="Override PAPER_MAX_ENTRY_PRICE")
+    parser.add_argument("--min-roi", type=float, default=None, help="Override MIN_EXPECTED_ROI (gate level)")
+    parser.add_argument("--boundary", type=float, default=None, help="Override PAPER_MIN_BOUNDARY_DIST_PCT")
+    parser.add_argument("--max-spread", type=float, default=None, help="Override PAPER_MAX_ODDS_SPREAD")
+    parser.add_argument("--mega-mult", type=float, default=None, help="Override PAPER_MEGA_MULTIPLIER")
+    parser.add_argument("--stake", type=float, default=None, help="Override PAPER_FIXED_STAKE")
+    parser.add_argument("--min-edge", type=float, default=None, help="Min max_edge to enter (filters noisy signals)")
+    parser.add_argument("--min-conf", type=float, default=None, help="Min avg_confidence to enter")
+    parser.add_argument("--min-btc-move", type=float, default=None, help="Min abs(btc_move_pct) + direction match")
+    parser.add_argument("--max-btc-move", type=float, default=None, help="Max abs(btc_move_pct) — skip overextended")
+    parser.add_argument("--require-momentum-agree", action="store_true", help="Skip when 30s BTC trend conflicts with bet direction")
+    parser.add_argument("--min-score", type=int, default=None, help="Min signal score to enter")
     args = parser.parse_args()
+
+    # CLI overrides (bypass config.py load_dotenv override=True)
+    if args.entry_start is not None:
+        os.environ["PAPER_ENTRY_START_SEC"] = str(args.entry_start)
+    if args.max_ask is not None:
+        os.environ["PAPER_MAX_ENTRY_PRICE"] = str(args.max_ask)
+    if args.min_roi is not None:
+        os.environ["MIN_EXPECTED_ROI"] = str(args.min_roi)
+    if args.boundary is not None:
+        os.environ["PAPER_MIN_BOUNDARY_DIST_PCT"] = str(args.boundary)
+    if args.max_spread is not None:
+        os.environ["PAPER_MAX_ODDS_SPREAD"] = str(args.max_spread)
+    if args.mega_mult is not None:
+        os.environ["PAPER_MEGA_MULTIPLIER"] = str(args.mega_mult)
+    if args.stake is not None:
+        os.environ["PAPER_FIXED_STAKE"] = str(args.stake)
+    if args.min_edge is not None:
+        os.environ["REPLAY_MIN_EDGE"] = str(args.min_edge)
+    if args.min_conf is not None:
+        os.environ["REPLAY_MIN_CONF"] = str(args.min_conf)
+    if args.min_btc_move is not None:
+        os.environ["REPLAY_MIN_BTC_MOVE"] = str(args.min_btc_move)
+    if args.max_btc_move is not None:
+        os.environ["REPLAY_MAX_BTC_MOVE"] = str(args.max_btc_move)
+    if args.require_momentum_agree:
+        os.environ["REPLAY_REQUIRE_MOMENTUM_AGREE"] = "1"
+    if args.min_score is not None:
+        os.environ["REPLAY_MIN_SCORE"] = str(args.min_score)
 
     conn = connect_db()
     end_ts = _time_mod.time()

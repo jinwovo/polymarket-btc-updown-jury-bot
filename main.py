@@ -2089,16 +2089,9 @@ class TradingBot:
             self._pending_entry_retry = None
             return False
 
-        # Clear if signal direction changed (e.g. UP->DOWN or NO_TRADE)
-        try:
-            _retry_sig = fetch_one_dict(self._ensure_state_conn(), "SELECT direction FROM signal_cache WHERE id = 1")
-            _sig_dir = str((_retry_sig or {}).get("direction", "NO_TRADE"))
-            if _sig_dir != retry["direction"]:
-                logger.info("Entry retry cancelled: signal flipped %s->%s", retry["direction"], _sig_dir)
-                self._pending_entry_retry = None
-                return False
-        except Exception:
-            pass
+        # Signal flip check DISABLED: judges flip direction every second (noise).
+        # Once we decided to enter, keep the direction for the retry window.
+        # The original gate_allow decision was valid — don't second-guess it.
 
         # Clear if older than 30 seconds
         age = now - float(retry["created_ts"])
@@ -3949,6 +3942,22 @@ class TradingBot:
             if _sig_spread > float(MIRROR_MAX_ODDS_SPREAD):
                 logger.info("Skip wide spread: %.3f > %.3f", _sig_spread, MIRROR_MAX_ODDS_SPREAD)
                 return
+            # Max BTC move filter: skip overextended entries (mean reversion risk)
+            # BTC >= 0.10% from start = 43% WR historically. Skip.
+            _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
+            _sig_btc_move_raw = float(_sig_row.get("btc_move_pct") or 0)
+            _sig_btc_move = abs(_sig_btc_move_raw)
+            if _max_btc_move > 0 and _sig_btc_move > _max_btc_move:
+                logger.info("Skip overextended: btc_move=%.4f%% > %.2f%%", _sig_btc_move, _max_btc_move)
+                return
+            # Momentum agreement: skip when BTC trend conflicts with bet direction
+            if os.getenv("PAPER_REQUIRE_MOMENTUM_AGREE", "true").lower() == "true":
+                if decision.direction == "UP" and _sig_btc_move_raw < -0.005:
+                    logger.info("Skip momentum conflict: UP but btc_move=%.4f%%", _sig_btc_move_raw)
+                    return
+                if decision.direction == "DOWN" and _sig_btc_move_raw > 0.005:
+                    logger.info("Skip momentum conflict: DOWN but btc_move=+%.4f%%", _sig_btc_move_raw)
+                    return
 
         # Entry gate: use signal_cache result in parity mode (same as Paper)
         if LIVE_MIRROR_PAPER_GATES:
@@ -4227,42 +4236,30 @@ class TradingBot:
             entry_price=float(price),
         )
         # Score-based sizing: 7 signals, skip if score<3, 3x when score>=5 or prev momentum
-        _mega_mult = float(os.getenv("LIVE_MEGA_MULTIPLIER", "3.0"))
+        # score>=3 filter: skip low-quality signals
         _min_score = int(os.getenv("LIVE_MIN_ENTRY_SCORE", "3"))
-        if self.live_sizing_mode == "FIXED":
+        if self.live_sizing_mode == "FIXED" and _min_score > 0:
             try:
                 _btc_move = abs(float(_sig_row.get("btc_move_pct") or 0)) if _sig_row else 0
                 _conf = float(decision.avg_confidence)
                 _ev = float(gate.expected_roi) if gate else 0
-                # Read pre-computed score signals from signal_cache (no DB queries!)
-                _prev_out = str(_sig_row.get("prev_outcome") or "") if _sig_row else None
-                if _prev_out not in ("UP", "DOWN"): _prev_out = None
+                _prev = str(_sig_row.get("prev_outcome") or "") if _sig_row else None
+                if _prev not in ("UP", "DOWN"): _prev = None
                 _ov = float(_sig_row.get("odds_velocity") or 0) if _sig_row else 0
-                _accel_ok = bool(int(_sig_row.get("btc_accel_ok") or 0)) if _sig_row and _sig_row.get("btc_accel_ok") is not None else False
-                # Score
-                _s1 = _btc_move >= 0.02
-                _s2 = _prev_out == str(decision.direction)
-                _s3 = float(price) <= 0.45
-                _s4 = _ev >= 0.20
-                _s5 = _conf >= 0.7
-                _s6 = _ov >= 0.02
-                _s7 = _accel_ok
-                _score = sum([_s1, _s2, _s3, _s4, _s5, _s6, _s7])
-                logger.info(
-                    "Score detail: btc=%.3f%%(%s) prev=%s(%s) ask=%.3f(%s) ev=%.2f(%s) conf=%.2f(%s) ov=%.3f(%s) accel(%s) = %d",
-                    _btc_move, _s1, _prev_out, _s2, float(price), _s3, _ev, _s4, _conf, _s5, _ov, _s6, _s7, _score
-                )
+                _accel = bool(int(_sig_row.get("btc_accel_ok") or 0)) if _sig_row and _sig_row.get("btc_accel_ok") is not None else False
+                _score = 0
+                if _btc_move >= 0.02: _score += 1
+                if _prev == str(decision.direction): _score += 1
+                if float(price) <= 0.45: _score += 1
+                if _ev >= 0.20: _score += 1
+                if _conf >= 0.7: _score += 1
+                if _ov >= 0.02: _score += 1
+                if _accel: _score += 1
+                logger.info("Score: %d (btc=%.3f%% conf=%.2f ev=%.2f prev=%s ov=%.3f accel=%s)",
+                           _score, _btc_move, _conf, _ev, _prev, _ov, _accel)
                 if _score < _min_score:
                     logger.info("Skip low score: %d < %d (dir=%s)", _score, _min_score, decision.direction)
                     return
-                _mega_score = int(os.getenv("LIVE_MEGA_MIN_SCORE", "6"))
-                _is_mega = (_score >= _mega_score) or (_prev_out == str(decision.direction) and _btc_move >= 0.02)
-                if _is_mega and _mega_mult > 1:
-                    bet_size = round(bet_size * _mega_mult, 2)
-                    logger.info("MEGA bet: score=%d prev=%s btc=%.3f%% -> %dx $%.2f",
-                               _score, _prev_out, _btc_move, int(_mega_mult), bet_size)
-                else:
-                    logger.info("Normal bet: score=%d $%.2f", _score, bet_size)
             except Exception as _score_err:
                 logger.warning("Score check failed: %s", _score_err)
 
@@ -4537,7 +4534,9 @@ class TradingBot:
                 else:
                     _consecutive_none += 1
                     if _consecutive_none == 30:
-                        logger.warning("Price sync: no Polymarket price for 30s")
+                        logger.warning("Price sync: no Polymarket price for 30s, enabling Chainlink RPC fallback")
+                        if self.price_feed.calibrator is not None:
+                            self.price_feed.calibrator.polymarket_sync_active = False
                         _consecutive_none = 0
             except Exception as e:
                 logger.debug("Price sync error: %s", e)

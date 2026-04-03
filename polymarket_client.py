@@ -486,13 +486,13 @@ class PolymarketClient:
                 const body = document.body.innerText;
                 const result = {};
 
-                // --- PTB: plain text, easy to parse ---
-                const ptbIdx = body.indexOf('Price to beat');
+                // --- PTB: plain text (case-insensitive: "Price to beat" or "Price To Beat") ---
+                const bodyLower = body.toLowerCase();
+                const ptbIdx = bodyLower.indexOf('price to beat');
                 if (ptbIdx !== -1) {
                     const after = body.substring(ptbIdx + 13);
-                    const cpBoundary = after.indexOf('Current price');
-                    const cpLower = after.toLowerCase().indexOf('current price');
-                    const boundary = cpBoundary > 0 ? cpBoundary : (cpLower > 0 ? cpLower : 100);
+                    const cpBoundary = bodyLower.indexOf('current price', ptbIdx + 13) - ptbIdx - 13;
+                    const boundary = cpBoundary > 0 ? cpBoundary : 100;
                     result.ptb = after.substring(0, boundary);
                 }
 
@@ -1441,7 +1441,7 @@ class PolymarketClient:
 
             # Fallback to Python py_clob_client
             if resp is None:
-                max_attempts = 5
+                max_attempts = 1
                 _order_likely_accepted = False
                 for _attempt in range(max_attempts):
                     try:
@@ -1580,9 +1580,9 @@ class PolymarketClient:
             client = self._clob_client
 
             # Robust order submission with fresh-nonce retry.
-            # Each attempt creates a NEW signed order (new nonce) to avoid
-            # "Duplicated" errors that confused the old code.
-            max_attempts = 5
+            # FAK: 1 attempt only. If no liquidity, retrying same price won't help.
+            # Saves 8+ seconds of useless retries.
+            max_attempts = 1
             resp = None
             _last_err = None
             _order_likely_accepted = False
@@ -1791,22 +1791,25 @@ class PolymarketClient:
                 poll_interval_seconds=float(config.trading.order_poll_interval_seconds),
             )
 
-        # Protect against stale UI/model ask when the live orderbook has already moved.
-        drift_ok, live_ask, drift_reason = await self._check_entry_price_drift(token_id, reference_ask)
-        if not drift_ok:
-            logger.info(drift_reason)
-            return {
-                "ok": True,
-                "mode": mode,
-                "side": str(side),
-                "token_id": str(token_id),
-                "order_id": None,
-                "status": "rejected_drift",
-                "requested_amount": float(amount),
-                "requested_size": None,
-                "requested_price": _to_optional_float(reference_ask),
-                "executed_notional": 0.0,
-                "executed_size": 0.0,
+        # Drift check: skip for LIMIT_FAK (FAK limit price already protects).
+        # Only check for MARKET/MAKER_FIRST where we might overpay.
+        live_ask = None
+        if mode != "LIMIT_FAK":
+            drift_ok, live_ask, drift_reason = await self._check_entry_price_drift(token_id, reference_ask)
+            if not drift_ok:
+                logger.info(drift_reason)
+                return {
+                    "ok": True,
+                    "mode": mode,
+                    "side": str(side),
+                    "token_id": str(token_id),
+                    "order_id": None,
+                    "status": "rejected_drift",
+                    "requested_amount": float(amount),
+                    "requested_size": None,
+                    "requested_price": _to_optional_float(reference_ask),
+                    "executed_notional": 0.0,
+                    "executed_size": 0.0,
                 "executed_price": None,
                 "filled": False,
                 "accepted": False,
@@ -1941,10 +1944,39 @@ class PolymarketClient:
                     _ak = os.getenv("POLYMARKET_API_KEY", "")
                     _as = os.getenv("POLYMARKET_API_SECRET", "")
                     _ap = os.getenv("POLYMARKET_API_PASSPHRASE", "")
+                    # Fetch neg_risk + fee_rate for this token
+                    _neg_risk = "false"
+                    _fee_bps = "0"
+                    try:
+                        _nr_resp = await self._http.get(
+                            f"{config.polymarket.clob_url}/neg-risk",
+                            params={"token_id": str(token_id)},
+                        )
+                        if _nr_resp.status_code == 200:
+                            _neg_risk = "true" if _nr_resp.json().get("neg_risk") else "false"
+                    except Exception:
+                        pass
+                    try:
+                        _fee_resp = await self._http.get(
+                            f"{config.polymarket.clob_url}/fee-rate",
+                            params={"token_id": str(token_id)},
+                        )
+                        if _fee_resp.status_code == 200:
+                            _fee_bps = str(int(_fee_resp.json().get("base_fee", 0)))
+                            logger.info("Rust FAK fee_rate: %s bps, neg_risk: %s", _fee_bps, _neg_risk)
+                    except Exception:
+                        pass
+                    _funder = os.getenv("POLYMARKET_FUNDER", "")
+                    # FAK limit = max entry price (not exact ask). Fills at best available.
+                    # This prevents "no liquidity" when exact ask has no orders but nearby does.
+                    _fak_limit = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.54"))
+                    _fak_limit = round(min(max(_fak_limit, working_ask), 0.99), 2)
+                    _fak_size = max(1, int(amount / _fak_limit))  # size based on max price
+                    logger.info("Rust FAK: limit=%.3f (ask=%.3f, max=%.3f) size=%d", _fak_limit, working_ask, _fak_limit, _fak_size)
                     _t0 = asyncio.get_event_loop().time()
                     _proc = await asyncio.to_thread(
                         subprocess.run,
-                        [_rust_bin, _pk, _ak, _as, _ap, str(token_id), str(working_ask), str(int(size)), side, "FAK"],
+                        [_rust_bin, _pk, _ak, _as, _ap, str(token_id), str(_fak_limit), str(_fak_size), side, "FAK", _fee_bps, _neg_risk, _funder],
                         capture_output=True, text=True, timeout=10,
                     )
                     _elapsed = (asyncio.get_event_loop().time() - _t0) * 1000
@@ -1955,20 +1987,28 @@ class PolymarketClient:
                         if _rr.get("filled"):
                             return self._normalize_execution_result(
                                 mode="LIMIT_FAK", side=side, token_id=token_id,
-                                amount=float(size * working_ask), ask_price=float(working_ask),
-                                resp={"orderID": _rr.get("order_id",""), "status": "MATCHED", "transactionsHashes": []},
+                                requested_amount=float(size * working_ask),
+                                default_price=float(working_ask),
+                                requested_size=float(size),
+                                raw_payload={"orderID": _rr.get("order_id",""), "status": "MATCHED", "transactionsHashes": []},
+                                order_id_hint=_rr.get("order_id",""),
+                                status_hint="matched",
                             )
                         elif not _rr.get("ok"):
-                            logger.warning("Rust FAK failed (%s), falling back to Python", _rr.get("error","")[:80])
+                            _rust_err = str(_rr.get("error", ""))[:120]
+                            logger.warning("Rust FAK failed (%s), falling back to Python", _rust_err[:80])
                 except Exception as _re:
                     logger.warning("Rust order exception: %s, falling back to Python", _re)
 
-            # Python fallback
+            # Python fallback — also use max entry price as limit
+            _py_limit = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.54"))
+            _py_limit = round(min(max(_py_limit, working_ask), 0.99), 2)
+            _py_size = max(1, int(amount / _py_limit))
             return await self.place_limit_order(
                 token_id=token_id,
                 side=side,
-                price=float(working_ask),
-                size=float(size),
+                price=float(_py_limit),
+                size=float(_py_size),
                 order_type="FAK",
             )
 

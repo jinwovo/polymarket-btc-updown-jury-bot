@@ -315,6 +315,8 @@ class StatisticalJudge:
         jump_ratio = jump_var / max(rv, 1e-12)
 
         elapsed = max(1.0, float(ctx.seconds_elapsed))
+
+        # HAR-RV tested 2026-04-03: WORSE than single sigma (54.4%->52.7%). Reverted.
         sigma = math.sqrt(max(bv, 1e-12) / elapsed)
         if sigma <= 1e-9:
             _mu_alt, sigma_alt = _estimate_diffusion_params(ctx, min_samples=20)
@@ -393,7 +395,23 @@ class StatisticalJudge:
         trend = float(meta.get("trend", 0.0))
         jumpy = bool(meta.get("jumpy", False))
 
-        min_edge = self.base_min_edge + (0.008 if jumpy else 0.0)
+        # Time-weighted min_edge: later in window = direction more certain = lower bar
+        # At 60s elapsed (240s remaining): min_edge = base (full threshold)
+        # At 240s elapsed (60s remaining): min_edge = base * 0.4 (much lower bar)
+        remaining = max(1.0, float(ctx.seconds_remaining))
+        time_factor = _clamp(remaining / 300.0, 0.4, 1.0)  # 0.4 at end, 1.0 at start
+        min_edge = (self.base_min_edge + (0.008 if jumpy else 0.0)) * time_factor
+
+        # CLOB velocity boost: if ask is moving in our predicted direction, lower the bar
+        clob_up_ask = float(ctx.poly_up_ask) if ctx.poly_up_ask else None
+        clob_down_ask = float(ctx.poly_down_ask) if ctx.poly_down_ask else None
+        if clob_up_ask and clob_down_ask and clob_up_ask > 0 and clob_down_ask > 0:
+            # If UP is cheap (ask < 0.45) and getting cheaper = market agrees with UP
+            # If DOWN is cheap (ask < 0.45) and getting cheaper = market agrees with DOWN
+            clob_skew = clob_down_ask - clob_up_ask  # positive = UP favored
+            if (p_up > 0.5 and clob_skew > 0.05) or (p_up < 0.5 and clob_skew < -0.05):
+                min_edge *= 0.7  # CLOB agrees with our direction, lower bar 30%
+
         vote, edge, up_edge, down_edge = _edge_vote(
             p_up,
             up_px,
@@ -524,11 +542,20 @@ class ArbitrageJudge:
                 self.name,
             )
 
+        # Time-weighted min_edge for ArbitrageJudge too
+        remaining = max(1.0, float(ctx.seconds_remaining))
+        time_factor = _clamp(remaining / 300.0, 0.4, 1.0)
+        arb_min_edge = self.min_edge * time_factor
+
+        # Fresh lag + late window = very high conviction -> lower bar further
+        if freshness > 0.6 and remaining < 120:
+            arb_min_edge *= 0.6
+
         vote, edge, up_edge, down_edge = _edge_vote(
             fair_prob_up,
             up_px,
             down_px,
-            min_edge=self.min_edge,
+            min_edge=arb_min_edge,
             tie_margin=0.003,
         )
         if vote == Vote.ABSTAIN:
@@ -536,7 +563,7 @@ class ArbitrageJudge:
                 Vote.ABSTAIN,
                 0.0,
                 f"p_up={fair_prob_up:.3f}, no edge: up={up_edge:+.3f}, down={down_edge:+.3f}, "
-                f"fresh={freshness:.2f}",
+                f"fresh={freshness:.2f}, min_e={arb_min_edge:.4f}",
                 self.name,
             )
 

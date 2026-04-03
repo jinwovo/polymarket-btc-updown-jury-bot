@@ -96,20 +96,41 @@ data_collector (single process, 0.1s tick)
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
-## Current Strategy (2026-03-29)
-- **Entry**: judges direction + signal_cache gate_allow + auto_defense(3t2w)
-- **Entry mode**: MAKER_FIRST (0% fee entry, 2s GTC → FAK fallback)
-- **Exit**: hold-to-settlement + near_certain_win + hard_adverse_flush + manip_defense
-- **Sizing**: adaptive 10-15% of seed capital ($150), conf-based, NO streak reduction
-- **Filters**: MIN_EDGE=0.08, ROI=0.030, ENTRY_START=45s, BOUNDARY=0.010/0.030
-- **Price range**: ask 0.30-0.58, opposite ask < 0.65
-- **Profit-take**: DISABLED
-- **Backtest (s45_bd01)**: 72h 125t(1.7/h) 58% +$789, 120h 192t(1.6/h) 62% +$4,038
+## Current Strategy (2026-04-02)
+- **Entry**: judges direction + signal_cache gate_allow + **score>=3 filter**
+- **Score signals** (7): btc_move>=0.02%, prev_won, ask<=0.45, ev>=20%, conf>=0.7, odds_vel>=0.02, btc_accel
+- **Entry mode**: LIMIT_FAK via Rust binary (fallback Python). Rust v2: correct EIP-712 signing, normal exchange (not neg-risk)
+- **Exit**: hold-to-settlement (all early exits disabled)
+- **Sizing**: FIXED flat (Paper $100, Live = seed*LIVE_FIXED_SEED_PCT). No mega multiplier.
+- **Filters**: MIN_EDGE=0.12, ROI=0.150 (time-weighted: 0.06 at 60s remaining), ENTRY_START=60s
+- **Price range**: ask 0.30-0.58, spread < 0.20, opposite ask < 0.78
+- **Orderbook**: WebSocket primary (wss://ws-subscriptions-clob.polymarket.com/ws/market), REST fallback
+- **Backtest (score>=3)**: 72h 31t 68% PF2.39, 120h 51t 65% PF2.10, 240h 89t 62% PF1.83
+
+### Strategy Sweep Results (2026-04-02, $10 fixed, 20 days)
+- baseline (no filter): 489t 54.4% PF1.29 +$652
+- conf>=0.7: 273t 56% PF1.45 +$532
+- conf+btc: 228t 57% PF1.48 +$469
+- **score>=3: 301t 56% PF1.46 +$607 (BEST across all periods)**
+- Pure momentum 0.10%+20s: 42t 62% PF1.62 (too few trades)
+- Judge min_edge tuning: no effect (gate is the bottleneck)
+
+### Key Learnings (2026-04-02)
+- Judge min_edge 0.018->0.10: NO effect (gate MIN_ROI already filters)
+- Gate time-weighted MIN_ROI: minimal effect (+12 gate_allow entries)
+- CLOB WebSocket: works perfectly, 15s = hundreds of messages
+- BTC 5min is NOT neg-risk (neg_risk=false) — Rust was using wrong exchange address
+- Oracle lag ~55s: CLOB repricing takes ~55s after Chainlink update
+- CLOB is LEADING indicator: DOWN spike to 0.80 preceded BTC drop by 1-2s
+- Polymarket "Price To Beat" changed to capital T/B — PTB scraper case-sensitivity fix
+- Ankr RPC requires API key since 2026-04 — removed from Chainlink RPC list
+- conf>=0.7 trades: 56.9% WR vs conf<0.7: 50.5% WR (meaningful difference)
 
 ### Previous Settings (rollback reference)
+- 2026-03-29: ENTRY_START=45s, BOUNDARY=0.010/0.030, MAKER_FIRST
+- 2026-04-01: conf2x (2x when conf>=0.7), s80, ask0.50
 - ENTRY_START=90, BOUNDARY=0.020/0.030 → 72h 81t(1.1/h) +$401
-- ENTRY_START=150, BOUNDARY=0.020/0.030 → 72h 5t +$-101
-- e12+r07+bd03 → 72h 58t(0.8/h) 69% +$3,111 (fewer trades)
+- prev3x (3x when prev momentum): 20d +$5,015 but unstable (48h +$72)
 - PROFIT_TAKE_ENABLED=true, offset=0.10 → hold better for settlement
 
 ## TODO: Pending Data Analysis (apply after sufficient data)
