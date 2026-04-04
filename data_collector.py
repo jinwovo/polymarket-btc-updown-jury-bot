@@ -1916,9 +1916,11 @@ async def _extra_market_poll(self):
     """Poll odds + record windows for extra markets (data collection only, no trading)."""
     import httpx
     _http = httpx.AsyncClient(timeout=10)
-    _current = {}  # slug_prefix -> {ws, up_token, down_token, start_price}
+    await asyncio.sleep(10)  # let main system start first
 
-    await asyncio.sleep(30)  # let main system start first
+    # Start extra markets WebSocket in parallel with REST fallback
+    asyncio.get_event_loop().create_task(self._extra_markets_ws())
+
     # Create eth_ticks table if needed
     try:
         execute_write(self.db, """
@@ -2057,8 +2059,108 @@ async def _extra_market_poll(self):
 
         await asyncio.sleep(2.0)  # poll every 2s (low frequency, no impact)
 
+async def _extra_markets_ws_loop(self):
+    """WebSocket for extra markets (BTC 15min + ETH 5min)."""
+    import websockets as _ws
+    url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    _subscribed_tokens = set()
+    _token_map = {}  # token_id -> {prefix, side, ws}
+    _reconnect_delay = 1.0
+    _last_ping = 0.0
+
+    while self._running:
+        try:
+            async with _ws.connect(url, ping_interval=None, close_timeout=5) as ws:
+                _reconnect_delay = 1.0
+                logger.info("Extra markets WS connected")
+
+                while self._running:
+                    now = time.time()
+                    if now - _last_ping > 8.0:
+                        await ws.send("PING")
+                        _last_ping = now
+
+                    # Check for new tokens to subscribe
+                    for prefix in list(_current.keys()):
+                        info = _current[prefix]
+                        up_t = info.get("up_token", "")
+                        dn_t = info.get("down_token", "")
+                        if up_t and up_t not in _subscribed_tokens:
+                            await ws.send(json.dumps({
+                                "assets_ids": [up_t, dn_t],
+                                "type": "market",
+                                "custom_feature_enabled": True,
+                            }))
+                            _subscribed_tokens.add(up_t)
+                            _subscribed_tokens.add(dn_t)
+                            _token_map[up_t] = {"prefix": prefix, "side": "up"}
+                            _token_map[dn_t] = {"prefix": prefix, "side": "down"}
+                            logger.info("Extra WS subscribed: %s", info.get("slug", prefix))
+
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    if raw == "PONG":
+                        continue
+                    try:
+                        parsed = json.loads(raw)
+                    except Exception:
+                        continue
+                    items = parsed if isinstance(parsed, list) else [parsed]
+                    for data in items:
+                        if not isinstance(data, dict):
+                            continue
+                        evt = data.get("event_type", "")
+                        asset = data.get("asset_id", "")
+                        tinfo = _token_map.get(asset)
+                        if not tinfo:
+                            continue
+                        prefix = tinfo["prefix"]
+                        side = tinfo["side"]
+                        info = _current.get(prefix)
+                        if not info:
+                            continue
+
+                        if evt in ("book", "best_bid_ask"):
+                            bb = ba = 0
+                            if evt == "book":
+                                bids = data.get("bids", [])
+                                asks = data.get("asks", [])
+                                bb = max((float(b["price"]) for b in bids), default=0) if bids else 0
+                                ba = min((float(a["price"]) for a in asks), default=1) if asks else 1
+                            else:
+                                bb = float(data.get("best_bid", 0))
+                                ba = float(data.get("best_ask", 1))
+                            if side == "up":
+                                info["up_bid"] = bb; info["up_ask"] = ba
+                            else:
+                                info["dn_bid"] = bb; info["dn_ask"] = ba
+                            # Store to poly_odds
+                            if "up_ask" in info and "dn_ask" in info:
+                                ws_val = info["ws"]
+                                self._odds_buffer.append((
+                                    now, ws_val, info.get("slug", ""),
+                                    (info.get("up_bid",0)+info["up_ask"])/2,
+                                    (info.get("dn_bid",0)+info["dn_ask"])/2,
+                                    info.get("up_bid",0), info["up_ask"],
+                                    info.get("dn_bid",0), info["dn_ask"],
+                                    info["up_ask"]-info.get("up_bid",0),
+                                    info["dn_ask"]-info.get("dn_bid",0),
+                                    info["up_ask"]+info["dn_ask"]-1.0,
+                                ))
+
+        except Exception as e:
+            logger.debug("Extra WS error: %s (reconnect %.0fs)", e, _reconnect_delay)
+            await asyncio.sleep(_reconnect_delay)
+            _reconnect_delay = min(_reconnect_delay * 2, 15.0)
+
+# Need _current accessible from both methods
+_current = {}
+
 # Attach to DataCollector class
 DataCollector._extra_markets_collector = _extra_market_poll
+DataCollector._extra_markets_ws = _extra_markets_ws_loop
 
 
 if __name__ == "__main__":
