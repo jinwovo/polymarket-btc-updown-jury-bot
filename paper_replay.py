@@ -92,15 +92,16 @@ class PaperReplay:
         self.min_score = int(os.getenv("REPLAY_MIN_SCORE", "0"))
 
     def _get_scl_entries(self, ws: int) -> list[dict]:
-        """Get all signal_cache_log entries with gate_allow=1 for a window."""
+        """Get all signal_cache_log entries with gate_allow=1 OR lag_arb_allow=1."""
         return fetch_all_dicts(self.conn, """
             SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                    btc_price, start_price, seconds_elapsed, seconds_remaining,
                    btc_move_pct,
                    gate_allow, gate_ev, gate_reason,
-                   prev_outcome, odds_velocity, btc_accel_ok
+                   prev_outcome, odds_velocity, btc_accel_ok,
+                   lag_arb_allow, lag_arb_direction, lag_arb_entry_price
             FROM signal_cache_log
-            WHERE window_start = %s AND gate_allow = 1
+            WHERE window_start = %s AND (gate_allow = 1 OR lag_arb_allow = 1)
             ORDER BY ts ASC
         """, (ws,))
 
@@ -131,7 +132,29 @@ class PaperReplay:
             gate_ev = float(entry.get("gate_ev") or 0)
             confidence = float(entry.get("avg_confidence") or 0.5)
             max_edge = float(entry.get("max_edge") or 0.1)
+            _is_lag_arb = int(entry.get("lag_arb_allow") or 0) == 1
+            _is_gate = int(entry.get("gate_allow") or 0) == 1
 
+            # Lag arb: use lag_arb_direction, skip judge filters
+            if _is_lag_arb and not _is_gate:
+                _lag_dir = str(entry.get("lag_arb_direction") or "")
+                _lag_ep = float(entry.get("lag_arb_entry_price") or 0)
+                if _lag_dir in ("UP", "DOWN") and 0.01 < _lag_ep < 0.99:
+                    direction = _lag_dir
+                    # Use lag_arb entry price, skip all judge filters below
+                    entry_ts = float(entry["ts"])
+                    stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
+                    if stake <= 0:
+                        stake = round(self.initial_equity * 0.15, 2)
+                    shares = stake / _lag_ep
+                    return ReplayTrade(
+                        window_start=ws, direction=direction,
+                        entry_price=_lag_ep, stake=stake, shares=shares,
+                        opened_at=entry_ts, confidence=confidence,
+                    )
+                continue
+
+            # Judge entry: apply all filters
             # Edge/confidence quality filters
             if self.min_edge_filter > 0 and max_edge < self.min_edge_filter:
                 continue

@@ -235,6 +235,22 @@ def rebuild(last_hours: float, clear: bool = False):
             except Exception:
                 pass
 
+            # Lag Arb: BTC moved 0.04%+ but CLOB hasn't repriced
+            _lag_arb_allow = 0
+            _lag_arb_direction = None
+            _lag_arb_entry_price = None
+            _lag_btc_thr = float(os.getenv("LAG_ARB_BTC_THRESHOLD_PCT", "0.04"))
+            _lag_max_ask = float(os.getenv("LAG_ARB_MAX_ASK", "0.50"))
+            if start_price > 0 and btc_price > 0 and up_ask and dn_ask:
+                _lag_move = btc_move_pct if btc_move_pct else ((btc_price - start_price) / start_price * 100)
+                if abs(_lag_move) >= _lag_btc_thr:
+                    _lag_dir = "UP" if _lag_move > 0 else "DOWN"
+                    _lag_ask = float(up_ask if _lag_dir == "UP" else dn_ask)
+                    if 0.01 < _lag_ask <= _lag_max_ask:
+                        _lag_arb_allow = 1
+                        _lag_arb_direction = _lag_dir
+                        _lag_arb_entry_price = _lag_ask
+
             # Insert to signal_cache_log
             execute_write(conn, """
                 INSERT INTO signal_cache_log
@@ -243,8 +259,9 @@ def rebuild(last_hours: float, clear: bool = False):
                  seconds_elapsed, seconds_remaining,
                  btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                  buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
-                 prev_outcome, odds_velocity, btc_accel_ok)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 prev_outcome, odds_velocity, btc_accel_ok,
+                 lag_arb_allow, lag_arb_direction, lag_arb_entry_price)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
                 t, ws, decision.direction,
                 float(decision.avg_confidence), float(decision.max_edge),
@@ -254,12 +271,13 @@ def rebuild(last_hours: float, clear: bool = False):
                 btc_move_pct, None, None, guards_passed,
                 None, gate_allow, gate_ev, gate_reason, None,
                 _prev_outcome, _odds_velocity, _btc_accel_ok,
+                _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
             ))
             inserted += 1
 
-            if gate_allow:
+            if gate_allow or _lag_arb_allow:
                 gate_found = True
-                break  # First gate_allow=1 per window — matches paper_replay_orig
+                break  # First gate_allow=1 or lag_arb=1 per window
 
             t += check_interval
 
