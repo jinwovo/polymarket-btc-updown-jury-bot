@@ -1100,10 +1100,17 @@ class TradingBot:
             fixed = float(os.getenv("LIVE_FIXED_STAKE", str(config.trading.max_bet_size)))
             if fixed <= 0.0:
                 return 0.0
-            return round(
-                max(float(config.trading.min_bet_size), fixed),
-                2,
-            )
+            base = round(max(float(config.trading.min_bet_size), fixed), 2)
+            # Kelly sizing: adjust by conviction score ($0.5x ~ $2x of base)
+            if os.getenv("LIVE_KELLY_SIZING", "true").lower() == "true":
+                _k_score = getattr(self, '_last_kelly_score', 3)
+                if _k_score >= 4:
+                    base = round(base * 2.0, 2)
+                elif _k_score >= 3:
+                    base = round(base * 1.5, 2)
+                elif _k_score <= 1:
+                    base = round(base * 0.5, 2)
+            return base
 
         # Adaptive equity: balance-based or seed-capital-based
         if self.live_sizing_mode == "ADAPTIVE_SEED":
@@ -4261,6 +4268,24 @@ class TradingBot:
             except Exception as e:
                 logger.warning("Live parity gate metrics unavailable; skip entry for safety: %s", e)
                 return
+
+        # Compute Kelly conviction score before sizing
+        if os.getenv("LIVE_KELLY_SIZING", "true").lower() == "true" and _sig_row:
+            _k_conf = float(_sig_row.get("avg_confidence") or 0.5)
+            _k_move = abs(float(_sig_row.get("btc_move_pct") or 0))
+            _k_ua = float(_sig_row.get("up_ask") or 0.5)
+            _k_da = float(_sig_row.get("down_ask") or 0.5)
+            _k_spread = abs(_k_ua - _k_da)
+            _k_ep = _k_ua if decision.direction == "UP" else _k_da
+            _k_score = 0
+            if _k_conf >= 0.7: _k_score += 1
+            if _k_move >= 0.03: _k_score += 1
+            if _k_spread <= 0.10: _k_score += 1
+            if _k_ep <= 0.48: _k_score += 1
+            if _k_move <= 0.10: _k_score += 1
+            self._last_kelly_score = _k_score
+            logger.info("Kelly score: %d (conf=%.2f move=%.3f%% spread=%.2f ask=%.3f)",
+                        _k_score, _k_conf, _k_move, _k_spread, _k_ep)
 
         bet_size = self._compute_entry_bet_size(
             decision.avg_confidence,

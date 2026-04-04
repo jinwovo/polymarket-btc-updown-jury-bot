@@ -1630,6 +1630,27 @@ def open_trade_if_signal(
                 logger.info("Skip low score ws=%s: score=%d < %d (dir=%s)", window_start, _score, _min_score, direction)
                 return False
             logger.info("Score OK: %d/%d $%.2f (btc=%.3f%% conf=%.2f ev=%.2f prev=%s)", _score, _min_score, stake, _btc_move, _conf, _ev, _prev)
+        # Kelly sizing: adjust stake based on conviction score
+        # Higher score = more conditions met = higher WR = bet more
+        if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true" and cached:
+            _k_conf = float(cached.get("avg_confidence") or 0.5)
+            _k_move = abs(float(cached.get("btc_move_pct") or 0))
+            _k_ua = float(cached.get("up_ask") or 0.5)
+            _k_da = float(cached.get("down_ask") or 0.5)
+            _k_spread = abs(_k_ua - _k_da)
+            _k_score = 0
+            if _k_conf >= 0.7: _k_score += 1
+            if _k_move >= 0.03: _k_score += 1
+            if _k_spread <= 0.10: _k_score += 1
+            if entry_price <= 0.48: _k_score += 1
+            if _k_move <= 0.10: _k_score += 1
+            if _k_score >= 4:
+                stake = round(stake * 2.0, 2)
+            elif _k_score >= 3:
+                stake = round(stake * 1.5, 2)
+            elif _k_score <= 1:
+                stake = round(stake * 0.5, 2)
+            logger.info("Kelly: score=%d stake=$%.2f (base=$%.2f)", _k_score, stake, _fixed_val)
     elif sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
     elif sizing_mode == "all_in_equity":

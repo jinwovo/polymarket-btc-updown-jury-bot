@@ -62,8 +62,63 @@ class ReplayTrade:
         self.closed_at = 0.0
 
 
+class _RamCache:
+    """Preload btc_ticks + poly_odds into RAM for fast lookup."""
+
+    def __init__(self, conn, start_ts: float, end_ts: float):
+        import bisect as _bisect
+        self._bisect = _bisect
+        logger.info("Preloading data into RAM...")
+        t0 = _time_mod.time()
+
+        cur = conn.cursor()
+        cur.execute("SELECT ts, price FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts",
+                    (int(start_ts) - 600, int(end_ts) + 300))
+        rows = cur.fetchall()
+        self.btc_ts = [float(r[0]) for r in rows]
+        self.btc_px = [float(r[1]) for r in rows]
+
+        cur.execute("SELECT ts, window_start, up_best_bid, up_best_ask, down_best_bid, down_best_ask, up_mid, down_mid "
+                    "FROM poly_odds WHERE ts >= %s AND ts <= %s ORDER BY ts",
+                    (int(start_ts) - 60, int(end_ts) + 300))
+        rows2 = cur.fetchall()
+        self.odds_ts = [float(r[0]) for r in rows2]
+        self.odds_ws = [int(r[1]) for r in rows2]
+        self.odds_data = [{
+            "up_best_bid": r[2], "up_best_ask": r[3],
+            "down_best_bid": r[4], "down_best_ask": r[5],
+            "up_mid": r[6], "down_mid": r[7],
+        } for r in rows2]
+
+        t1 = _time_mod.time()
+        logger.info("RAM loaded: %d btc_ticks, %d poly_odds in %.1fs",
+                     len(self.btc_ts), len(self.odds_ts), t1 - t0)
+
+    def price_at(self, ts: float):
+        idx = self._bisect.bisect_right(self.btc_ts, ts) - 1
+        if idx < 0:
+            return None
+        return self.btc_px[idx]
+
+    def prices_range(self, ts_start: float, ts_end: float):
+        i0 = self._bisect.bisect_left(self.btc_ts, ts_start)
+        i1 = self._bisect.bisect_right(self.btc_ts, ts_end)
+        return self.btc_ts[i0:i1], self.btc_px[i0:i1]
+
+    def odds_at(self, ws: int, ts: float):
+        # Walk backward from bisect point to find matching window_start
+        idx = self._bisect.bisect_right(self.odds_ts, ts) - 1
+        while idx >= 0:
+            if self.odds_ws[idx] == ws:
+                return self.odds_data[idx]
+            if self.odds_ts[idx] < ts - 300:
+                break
+            idx -= 1
+        return None
+
+
 class PaperReplay:
-    def __init__(self, conn, equity: float = 1000.0):
+    def __init__(self, conn, equity: float = 1000.0, start_ts: float = 0, end_ts: float = 0):
         self.conn = conn
         self.initial_equity = equity
         self.equity = equity
@@ -73,6 +128,11 @@ class PaperReplay:
         self.smart_exit_last: dict[int, float] = {}
         self.exit_cfg = _paper_exit_policy_config()
         self.smart_exit_enabled = os.getenv("SMART_EXIT_ENABLED", "true").lower() == "true"
+        # RAM cache for fast lookups
+        if start_ts > 0 and end_ts > 0:
+            self._cache = _RamCache(conn, start_ts, end_ts)
+        else:
+            self._cache = None
 
         # Paper entry config
         self.entry_start_sec = float(os.getenv("PAPER_ENTRY_START_SEC", "45"))
@@ -90,9 +150,22 @@ class PaperReplay:
         self.max_btc_move = float(os.getenv("REPLAY_MAX_BTC_MOVE", "0"))
         self.require_momentum_agree = os.getenv("REPLAY_REQUIRE_MOMENTUM_AGREE", "0") == "1"
         self.min_score = int(os.getenv("REPLAY_MIN_SCORE", "0"))
+        self.no_lag_arb = os.getenv("REPLAY_NO_LAG_ARB", "0") == "1"
 
     def _get_scl_entries(self, ws: int) -> list[dict]:
-        """Get all signal_cache_log entries with gate_allow=1 OR lag_arb_allow=1."""
+        """Get signal_cache_log entries for this window."""
+        if self.no_lag_arb:
+            return fetch_all_dicts(self.conn, """
+                SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
+                       btc_price, start_price, seconds_elapsed, seconds_remaining,
+                       btc_move_pct,
+                       gate_allow, gate_ev, gate_reason,
+                       prev_outcome, odds_velocity, btc_accel_ok,
+                       lag_arb_allow, lag_arb_direction, lag_arb_entry_price
+                FROM signal_cache_log
+                WHERE window_start = %s AND gate_allow = 1
+                ORDER BY ts ASC
+            """, (ws,))
         return fetch_all_dicts(self.conn, """
             SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                    btc_price, start_price, seconds_elapsed, seconds_remaining,
@@ -106,7 +179,9 @@ class PaperReplay:
         """, (ws,))
 
     def _get_odds_at(self, ws: int, ts: float) -> dict | None:
-        """Get latest poly_odds at or before timestamp."""
+        """Get latest poly_odds at or before timestamp. Uses RAM cache if available."""
+        if self._cache:
+            return self._cache.odds_at(ws, ts)
         return fetch_one_dict(self.conn, """
             SELECT up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask
             FROM poly_odds
@@ -177,9 +252,13 @@ class PaperReplay:
             # Momentum agreement: 30s BTC trend must match bet direction
             if self.require_momentum_agree:
                 _check_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
-                _prev_tick = fetch_one_dict(self.conn, """
-                    SELECT price FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts DESC LIMIT 1
-                """, (_check_ts - 35, _check_ts - 25))
+                if self._cache:
+                    _btc_30s_price = self._cache.price_at(_check_ts - 30)
+                    _prev_tick = {"price": _btc_30s_price} if _btc_30s_price else None
+                else:
+                    _prev_tick = fetch_one_dict(self.conn, """
+                        SELECT price FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts DESC LIMIT 1
+                    """, (_check_ts - 35, _check_ts - 25))
                 if _prev_tick:
                     _btc_now = float(entry.get("btc_price") or 0)
                     _btc_30s = float(_prev_tick.get("price") or 0)
@@ -211,11 +290,14 @@ class PaperReplay:
             if scl_elapsed < self.entry_start_sec:
                 # Look up odds at entry_start_sec
                 check_ts = ws + self.entry_start_sec
-                odds_at = fetch_one_dict(self.conn, """
-                    SELECT up_best_ask, down_best_ask FROM poly_odds
-                    WHERE window_start = %s AND ts >= %s AND ts <= %s
-                    ORDER BY ts ASC LIMIT 1
-                """, (ws, check_ts - 2, check_ts + 2))
+                if self._cache:
+                    odds_at = self._cache.odds_at(ws, check_ts)
+                else:
+                    odds_at = fetch_one_dict(self.conn, """
+                        SELECT up_best_ask, down_best_ask FROM poly_odds
+                        WHERE window_start = %s AND ts >= %s AND ts <= %s
+                        ORDER BY ts ASC LIMIT 1
+                    """, (ws, check_ts - 2, check_ts + 2))
                 if not odds_at:
                     continue
                 up_ask = float(odds_at.get("up_best_ask") or 0.5)
@@ -261,14 +343,19 @@ class PaperReplay:
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
             _drift_start = float(os.getenv("REPLAY_DRIFT_START_SEC", "0.2"))
             _drift_end = float(os.getenv("REPLAY_DRIFT_END_SEC", "0.5"))
-            later_odds = fetch_all_dicts(self.conn, """
-                SELECT up_best_ask, down_best_ask FROM poly_odds
-                WHERE window_start = %s AND ts >= %s AND ts <= %s
-                ORDER BY ts ASC LIMIT 1
-            """, (ws, entry_ts + _drift_start, entry_ts + _drift_end))
-            if later_odds:
-                later_price = float(later_odds[0].get("up_best_ask") or entry_price) if direction == "UP" \
-                    else float(later_odds[0].get("down_best_ask") or entry_price)
+            _drift_odds = None
+            if self._cache:
+                _drift_odds = self._cache.odds_at(ws, entry_ts + _drift_end)
+            else:
+                _drift_rows = fetch_all_dicts(self.conn, """
+                    SELECT up_best_ask, down_best_ask FROM poly_odds
+                    WHERE window_start = %s AND ts >= %s AND ts <= %s
+                    ORDER BY ts ASC LIMIT 1
+                """, (ws, entry_ts + _drift_start, entry_ts + _drift_end))
+                _drift_odds = _drift_rows[0] if _drift_rows else None
+            if _drift_odds:
+                later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
+                    else float(_drift_odds.get("down_best_ask") or entry_price)
                 if 0.01 < later_price < 0.99:
                     # Ask rose past max -> FAK limit exceeded, order won't fill
                     if later_price > self.max_entry_price:
@@ -288,6 +375,26 @@ class PaperReplay:
                 stake = _fixed_stake
             else:
                 stake = round(self.initial_equity * 0.15, 2)
+
+            # Kelly sizing: adjust stake based on conviction score
+            if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true":
+                _k_conf = confidence
+                _k_move = abs(float(entry.get("btc_move_pct") or 0))
+                _k_ua = float(entry.get("up_ask") or 0.5)
+                _k_da = float(entry.get("down_ask") or 0.5)
+                _k_spread = abs(_k_ua - _k_da)
+                _k_score = 0
+                if _k_conf >= 0.7: _k_score += 1
+                if _k_move >= 0.03: _k_score += 1
+                if _k_spread <= 0.10: _k_score += 1
+                if entry_price <= 0.48: _k_score += 1
+                if _k_move <= 0.10: _k_score += 1
+                if _k_score >= 4:
+                    stake = round(stake * 2.0, 2)
+                elif _k_score >= 3:
+                    stake = round(stake * 1.5, 2)
+                elif _k_score <= 1:
+                    stake = round(stake * 0.5, 2)
 
             # conf2x sizing: 2x when jury confidence >= 0.7
             _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "2.0"))
@@ -569,6 +676,7 @@ def main():
     parser.add_argument("--max-btc-move", type=float, default=None, help="Max abs(btc_move_pct) — skip overextended")
     parser.add_argument("--require-momentum-agree", action="store_true", help="Skip when 30s BTC trend conflicts with bet direction")
     parser.add_argument("--min-score", type=int, default=None, help="Min signal score to enter")
+    parser.add_argument("--no-lag-arb", action="store_true", help="Disable lag_arb entries (gate_allow only)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -598,12 +706,14 @@ def main():
         os.environ["REPLAY_REQUIRE_MOMENTUM_AGREE"] = "1"
     if args.min_score is not None:
         os.environ["REPLAY_MIN_SCORE"] = str(args.min_score)
+    if args.no_lag_arb:
+        os.environ["REPLAY_NO_LAG_ARB"] = "1"
 
     conn = connect_db()
     end_ts = _time_mod.time()
     start_ts = end_ts - args.last_hours * 3600
 
-    replay = PaperReplay(conn, equity=args.equity)
+    replay = PaperReplay(conn, equity=args.equity, start_ts=start_ts, end_ts=end_ts)
     trades = replay.run(start_ts, end_ts)
 
     if not trades:
