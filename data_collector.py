@@ -170,6 +170,7 @@ class DataCollector:
             ),
             self._rtds_price_loop(),              # primary: RTDS WebSocket
             self._polymarket_price_sync_loop(),    # fallback: Playwright (only when RTDS down)
+            self._extra_markets_collector(),       # BTC 15min + ETH 5min data collection
         )
 
     def _get_raw_price_at(self, ts: float):
@@ -1898,6 +1899,166 @@ def main():
     except KeyboardInterrupt:
         collector.stop()
         logger.info("Stopped by user")
+
+
+# ---------------------------------------------------------------------------
+# Extra markets data collector (BTC 15min + ETH 5min)
+# Runs as separate polling loop, no impact on main BTC 5min trading
+# ---------------------------------------------------------------------------
+_EXTRA_MARKETS = [
+    {"slug_prefix": "btc-updown-15m", "interval": 900, "price_source": "btc", "label": "BTC15m"},
+    {"slug_prefix": "eth-updown-5m", "interval": 300, "price_source": "eth", "label": "ETH5m"},
+]
+# ETH price from Binance (simple polling, not WebSocket)
+_eth_price = {"price": 0.0, "ts": 0.0}
+
+async def _extra_market_poll(self):
+    """Poll odds + record windows for extra markets (data collection only, no trading)."""
+    import httpx
+    _http = httpx.AsyncClient(timeout=10)
+    _current = {}  # slug_prefix -> {ws, up_token, down_token, start_price}
+
+    await asyncio.sleep(30)  # let main system start first
+    # Create eth_ticks table if needed
+    try:
+        execute_write(self.db, """
+            CREATE TABLE IF NOT EXISTS eth_ticks (
+                ts DOUBLE NOT NULL, price DOUBLE NOT NULL,
+                volume DOUBLE DEFAULT 0, buy_volume DOUBLE DEFAULT 0, sell_volume DOUBLE DEFAULT 0,
+                INDEX idx_eth_ts (ts)
+            ) ENGINE=InnoDB
+        """)
+        self.db.commit()
+    except Exception:
+        pass
+    while self._running:
+        try:
+            now = time.time()
+            # Poll ETH price from Binance (every 2s)
+            if now - _eth_price["ts"] > 2.0:
+                try:
+                    resp_eth = await _http.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "ETHUSDT"})
+                    if resp_eth.status_code == 200:
+                        _eth_price["price"] = float(resp_eth.json().get("price", 0))
+                        _eth_price["ts"] = now
+                        # Store eth tick
+                        execute_write(self.db, "INSERT INTO eth_ticks (ts, price) VALUES (%s, %s)",
+                                     (now, _eth_price["price"]))
+                except Exception:
+                    pass
+
+            for mkt in _EXTRA_MARKETS:
+                prefix = mkt["slug_prefix"]
+                interval = mkt["interval"]
+                ws = int(now) - (int(now) % interval)
+                slug = f"{prefix}-{ws}"
+
+                # New window? discover market
+                if _current.get(prefix, {}).get("ws") != ws:
+                    try:
+                        resp = await _http.get(
+                            "https://gamma-api.polymarket.com/events",
+                            params={"slug": slug},
+                        )
+                        events = resp.json()
+                        if events:
+                            m = events[0]["markets"][0]
+                            ids = m.get("clobTokenIds", [])
+                            outcomes = m.get("outcomes", [])
+                            if isinstance(ids, str): ids = json.loads(ids)
+                            if isinstance(outcomes, str): outcomes = json.loads(outcomes)
+                            up_idx = 0 if outcomes[0].lower() == "up" else 1
+                            _current[prefix] = {
+                                "ws": ws,
+                                "up_token": ids[up_idx],
+                                "down_token": ids[1 - up_idx],
+                                "slug": slug,
+                            }
+                            # Record window start
+                            start_price = 0
+                            if mkt["price_source"] == "btc" and self.btc_price_adjusted:
+                                start_price = self.btc_price_adjusted
+                            elif mkt["price_source"] == "eth" and _eth_price["price"] > 0:
+                                start_price = _eth_price["price"]
+                            execute_write(self.db, """
+                                INSERT IGNORE INTO market_windows (window_start, slug, btc_start_price)
+                                VALUES (%s, %s, %s)
+                            """, (ws, slug, start_price))
+                            self.db.commit()
+                            logger.info("Extra market: %s window=%s", mkt["label"], slug)
+                    except Exception as e:
+                        logger.debug("Extra market discover %s: %s", prefix, e)
+                        continue
+
+                info = _current.get(prefix)
+                if not info:
+                    continue
+
+                # Poll orderbook
+                try:
+                    for side, token in [("up", info["up_token"]), ("down", info["down_token"])]:
+                        resp = await _http.get(
+                            f"{config.polymarket.clob_url}/book",
+                            params={"token_id": token},
+                        )
+                        if resp.status_code != 200:
+                            continue
+                        book = resp.json()
+                        bids = book.get("bids", [])
+                        asks = book.get("asks", [])
+                        best_bid = max((float(b["price"]) for b in bids), default=0)
+                        best_ask = min((float(a["price"]) for a in asks), default=1)
+                        mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask < 1 else 0.5
+
+                        if side == "up":
+                            info["up_bid"] = best_bid
+                            info["up_ask"] = best_ask
+                            info["up_mid"] = mid
+                        else:
+                            info["dn_bid"] = best_bid
+                            info["dn_ask"] = best_ask
+                            info["dn_mid"] = mid
+
+                    # Store to poly_odds (same table, different window_start)
+                    if "up_ask" in info and "dn_ask" in info:
+                        _spread_up = info["up_ask"] - info.get("up_bid", 0)
+                        _spread_dn = info["dn_ask"] - info.get("dn_bid", 0)
+                        _overround = info["up_ask"] + info["dn_ask"] - 1.0
+                        self._odds_buffer.append((
+                            now, ws, slug,
+                            info.get("up_mid", 0.5), info.get("dn_mid", 0.5),
+                            info.get("up_bid", 0), info["up_ask"],
+                            info.get("dn_bid", 0), info["dn_ask"],
+                            _spread_up, _spread_dn, _overround,
+                        ))
+                except Exception as e:
+                    logger.debug("Extra market poll %s: %s", prefix, e)
+
+                # Window end: record end price
+                elapsed = now - ws
+                if elapsed >= interval - 5 and not info.get("finalized"):
+                    end_price = 0
+                    if mkt["price_source"] == "btc" and self.btc_price_adjusted:
+                        end_price = self.btc_price_adjusted
+                    elif mkt["price_source"] == "eth" and _eth_price["price"] > 0:
+                        end_price = _eth_price["price"]
+                    if end_price > 0:
+                        start_px = float(fetch_one(self.db, "SELECT btc_start_price FROM market_windows WHERE window_start = %s", (ws,))[0] or 0)
+                        outcome = "UP" if end_price >= start_px else "DOWN" if start_px > 0 else "UNKNOWN"
+                        execute_write(self.db, """
+                            UPDATE market_windows SET btc_end_price = %s, actual_outcome = %s
+                            WHERE window_start = %s AND slug = %s
+                        """, (end_price, outcome, ws, slug))
+                        self.db.commit()
+                        info["finalized"] = True
+
+        except Exception as e:
+            logger.debug("Extra markets error: %s", e)
+
+        await asyncio.sleep(2.0)  # poll every 2s (low frequency, no impact)
+
+# Attach to DataCollector class
+DataCollector._extra_markets_collector = _extra_market_poll
 
 
 if __name__ == "__main__":
