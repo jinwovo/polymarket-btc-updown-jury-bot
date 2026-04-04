@@ -1,0 +1,20 @@
+# Node.js / Next.js 관련 (필수 제외)
+node_modules/
+.next/
+.npm-cache/
+
+# Python 관련 (필수 제외)
+__pycache__/
+.pip-cache/
+env/
+*.pyc
+
+# Rust 관련 (필수 제외)
+rust_order/target/
+Cargo.lock
+
+# IDE 및 런타임/시스템 캐시
+.idea/
+.runtime/
+.github/
+.claude/
