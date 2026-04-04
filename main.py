@@ -3941,11 +3941,9 @@ class TradingBot:
             )
             dynamic_min_roi = max(0.0, dynamic_min_roi * (1.0 - relax))
 
-        # Check lag_arb early — if lag_arb_allow=1, skip judge-specific filters
-        _lag_allow_early = int(_sig_row.get("lag_arb_allow") or 0) if _sig_row else 0
-
-        # Spread/momentum/max_btc filters: only for JUDGE entries (not lag arb)
-        if LIVE_MIRROR_PAPER_GATES and not _lag_allow_early:
+        # lag_arb DISABLED: 45% WR in paper_replay (loses money)
+        # Spread/momentum/max_btc filters: always apply
+        if LIVE_MIRROR_PAPER_GATES:
             _sig_up = float(_sig_row.get("up_ask") or 0.5)
             _sig_dn = float(_sig_row.get("down_ask") or 0.5)
             _sig_spread = abs(_sig_up - _sig_dn)
@@ -3987,26 +3985,10 @@ class TradingBot:
                 _gate_dir = _lock["dir"]
                 _gate_ev = _lock["ev"]
                 _gate_reason = _lock["reason"]
-            # Lag Arb: if BTC moved 0.04%+ but CLOB hasn't repriced → enter
-            _lag_allow = int(_sig_row.get("lag_arb_allow") or 0)
-            _lag_dir = str(_sig_row.get("lag_arb_direction") or "")
-            _lag_ep = float(_sig_row.get("lag_arb_entry_price") or 0)
-
-            if not _gate_allow and not _lag_allow:
-                logger.info("Skip: no gate_allow and no lag_arb (gate: %s)", _gate_reason)
+            # lag_arb DISABLED: 45% WR in paper_replay
+            if not _gate_allow:
+                logger.info("Skip: gate_allow=0 (gate: %s)", _gate_reason)
                 return
-
-            # If lag arb triggered but gate didn't, use lag arb direction
-            if _lag_allow and not _gate_allow:
-                decision = type(decision)(
-                    final_vote=decision.final_vote,
-                    direction=_lag_dir,
-                    avg_confidence=decision.avg_confidence,
-                    max_edge=decision.max_edge,
-                    verdicts=decision.verdicts,
-                    unanimous=decision.unanimous,
-                )
-                logger.info("Lag arb entry: %s @%.3f (gate_allow=0, lag_arb=1)", _lag_dir, _lag_ep)
 
             # Create proxy gate object for downstream code
             class _GateProxy:

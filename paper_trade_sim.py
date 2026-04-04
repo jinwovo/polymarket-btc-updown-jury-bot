@@ -1306,11 +1306,9 @@ def open_trade_if_signal(
         logger.debug("Skip cheap DOWN ws=%s: price=%.3f < %.3f", window_start, entry_price, PAPER_DOWN_MIN_ENTRY_PRICE)
         return False
 
-    # Check lag_arb early — if lag_arb_allow=1, skip judge-specific filters
-    _lag_early = int(cached.get("lag_arb_allow") or 0) if cached else 0
-
-    # Spread/momentum/max_btc filters: only for JUDGE entries (not lag arb)
-    if not _lag_early:
+    # lag_arb DISABLED: paper_replay showed 45% WR (loses money after fees)
+    # Spread/momentum/max_btc filters: always apply
+    if True:
         _max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
         if up_ask_val is not None and down_ask_val is not None:
             _spread = abs(float(up_ask_val) - float(down_ask_val))
@@ -1367,16 +1365,10 @@ def open_trade_if_signal(
         _gate_allow = int(cached.get("gate_allow") or 0)
         _gate_reason = str(cached.get("gate_reason") or "")
         _gate_ev = float(cached.get("gate_ev") or 0)
-        # Lag Arb: BTC moved 0.04%+ but CLOB hasn't repriced
-        _lag_allow = int(cached.get("lag_arb_allow") or 0)
-        _lag_dir = str(cached.get("lag_arb_direction") or "")
-        if not _gate_allow and not _lag_allow:
-            logger.debug("Entry blocked ws=%s: no gate_allow and no lag_arb (%s)", window_start, _gate_reason)
+        # lag_arb DISABLED: 45% WR in paper_replay (loses money)
+        if not _gate_allow:
+            logger.debug("Entry blocked ws=%s: gate_allow=0 (%s)", window_start, _gate_reason)
             return False
-        # If lag arb triggered, use lag arb direction
-        if _lag_allow and not _gate_allow and _lag_dir in ("UP", "DOWN"):
-            direction = _lag_dir
-            logger.info("Lag arb entry ws=%s: %s (gate_allow=0)", window_start, _lag_dir)
     else:
         # No signal_cache = no trade (was fallback to local gate, caused Paper/Live mismatch)
         return False
