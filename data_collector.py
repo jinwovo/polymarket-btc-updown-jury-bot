@@ -1918,8 +1918,9 @@ async def _extra_market_poll(self):
     _http = httpx.AsyncClient(timeout=10)
     await asyncio.sleep(10)  # let main system start first
 
-    # Start extra markets WebSocket in parallel with REST fallback
+    # Start extra markets WebSocket + ETH price WebSocket
     asyncio.get_event_loop().create_task(self._extra_markets_ws())
+    asyncio.get_event_loop().create_task(self._eth_ws_loop())
 
     # Create eth_ticks table if needed
     try:
@@ -2155,12 +2156,47 @@ async def _extra_markets_ws_loop(self):
             await asyncio.sleep(_reconnect_delay)
             _reconnect_delay = min(_reconnect_delay * 2, 15.0)
 
+async def _eth_ws(self):
+    """ETH/USDT price feed via Binance WebSocket (1-second ticks)."""
+    _eth_url = "wss://stream.binance.com:9443/ws/ethusdt@trade"
+    while self._running:
+        try:
+            async with websockets.connect(_eth_url) as ws:
+                logger.info("ETH WebSocket connected")
+                _last_bucket = 0
+                async for msg in ws:
+                    if not self._running:
+                        break
+                    data = json.loads(msg)
+                    ts = float(data["T"]) / 1000.0
+                    price = float(data["p"])
+                    volume = float(data.get("q", 0))
+                    _eth_price["price"] = price
+                    _eth_price["ts"] = ts
+                    # Store 1 tick per second (bucket)
+                    bucket = round(ts, 0)
+                    if bucket != _last_bucket:
+                        _last_bucket = bucket
+                        is_buyer_maker = bool(data.get("m", False))
+                        buy_vol = volume if not is_buyer_maker else 0.0
+                        sell_vol = volume if is_buyer_maker else 0.0
+                        try:
+                            execute_write(self.db,
+                                "INSERT INTO eth_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (%s,%s,%s,%s,%s)",
+                                (bucket, price, volume, buy_vol, sell_vol))
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.debug("ETH WS error: %s, reconnecting...", e)
+            await asyncio.sleep(3)
+
 # Need _current accessible from both methods
 _current = {}
 
 # Attach to DataCollector class
 DataCollector._extra_markets_collector = _extra_market_poll
 DataCollector._extra_markets_ws = _extra_markets_ws_loop
+DataCollector._eth_ws_loop = _eth_ws
 
 
 if __name__ == "__main__":
