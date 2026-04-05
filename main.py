@@ -4010,7 +4010,7 @@ class TradingBot:
                 allow = True
                 expected_roi = _gate_ev if _gate_allow else 0.10
                 model_prob = 0.5
-                reason = _gate_reason if _gate_allow else f"lag_arb({_lag_dir}@{_lag_ep:.3f})"
+                reason = _gate_reason if _gate_allow else "gate_blocked"
                 win_prob = 0.6
                 prob_floor = 0.5
                 fee_rate = 0.01
