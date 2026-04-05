@@ -1734,13 +1734,13 @@ class TradingBot:
                     """
                     UPDATE live_trades
                     SET status='CLOSED',
-                        closed_at=?,
-                        actual_outcome=?,
-                        won=?,
-                        pnl=?,
-                        roi_pct=?,
+                        closed_at=%s,
+                        actual_outcome=%s,
+                        won=%s,
+                        pnl=%s,
+                        roi_pct=%s,
                         close_reason=COALESCE(close_reason, 'recovered_expiry_settlement')
-                    WHERE id=?
+                    WHERE id=%s
                     """,
                     (
                         float(now_ts),
@@ -1766,7 +1766,7 @@ class TradingBot:
                     resolved = fetch_one_dict(
                         conn,
                         "SELECT actual_outcome FROM market_windows "
-                        "WHERE window_start=? AND actual_outcome IN ('UP','DOWN') "
+                        "WHERE window_start=%s AND actual_outcome IN ('UP','DOWN') "
                         "LIMIT 1",
                         (int(ws),),
                     )
@@ -4615,7 +4615,7 @@ class TradingBot:
                 # Recalculate PnL
                 trade_row = fetch_one_dict(
                     conn,
-                    "SELECT stake, shares FROM live_trades WHERE window_start=? ORDER BY id DESC LIMIT 1",
+                    "SELECT stake, shares FROM live_trades WHERE window_start=%s ORDER BY id DESC LIMIT 1",
                     (int(window_start),),
                 )
                 if trade_row:
@@ -4630,9 +4630,9 @@ class TradingBot:
                     execute_write(
                         conn,
                         """UPDATE live_trades
-                           SET actual_outcome=?, won=?, pnl=?, roi_pct=?,
-                               close_reason=CONCAT(COALESCE(close_reason,''), ' [corrected: was ', ?, ' now ', ?, ']')
-                           WHERE window_start=? AND status='CLOSED'
+                           SET actual_outcome=%s, won=%s, pnl=%s, roi_pct=%s,
+                               close_reason=CONCAT(COALESCE(close_reason,''), ' [corrected: was ', %s, ' now ', %s, ']')
+                           WHERE window_start=%s AND status='CLOSED'
                            ORDER BY id DESC LIMIT 1""",
                         (poly_outcome, won, pnl, roi_pct, initial_outcome, poly_outcome, int(window_start)),
                     )
@@ -4640,7 +4640,7 @@ class TradingBot:
                     # Also sync RiskManager equity
                     old_pnl_row = fetch_one(
                         conn,
-                        "SELECT pnl FROM live_trades WHERE window_start=? ORDER BY id DESC LIMIT 1",
+                        "SELECT pnl FROM live_trades WHERE window_start=%s ORDER BY id DESC LIMIT 1",
                         (int(window_start),),
                     )
                     logger.error(
@@ -4764,6 +4764,14 @@ class TradingBot:
                 window_start=self.current_trade_window_start,
                 actual_outcome=actual_direction,
                 close_reason="expiry_settlement",
+            )
+            # Schedule outcome re-check after 30s (btc_ticks fallback may be wrong)
+            asyncio.get_event_loop().create_task(
+                self._verify_settlement_outcome(
+                    int(self.current_trade_window_start),
+                    str(resolved_trade.direction),
+                    str(actual_direction),
+                )
             )
             if bool(getattr(config.trading, "live_telegram_notify_close", True)):
                 start_price = float(self.market_start_price or 0.0)
