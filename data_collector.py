@@ -1510,8 +1510,8 @@ class DataCollector:
                                 self._correct_trades_for_outcome_change(
                                     window_start, slug, _lt_rows[0]["actual_outcome"], outcome, outcome_source + "(live_mismatch)",
                                 )
-                        except Exception:
-                            pass
+                        except Exception as _lt_err:
+                            logger.warning("Live mismatch check failed for %s: %s", slug, _lt_err)
 
                 # Done if we have definitive outcome
                 if outcome is not None and (poly_outcome or final_price_scraped):
