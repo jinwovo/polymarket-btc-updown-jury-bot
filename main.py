@@ -4002,7 +4002,7 @@ class TradingBot:
             if _vwap_filter_on:
                 _vwap_val = (_sig_row.get("vwap_agree") if _sig_row else None)
                 if _vwap_val is not None and int(_vwap_val) == 0:
-                    logger.info("Skip VWAP disagree dir=%s", direction)
+                    logger.info("Skip VWAP disagree dir=%s", decision.direction)
                     return
 
             # Create proxy gate object for downstream code
