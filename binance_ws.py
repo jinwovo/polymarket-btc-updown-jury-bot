@@ -159,11 +159,14 @@ class ChainlinkCalibrator:
         # the offset may be wildly wrong.  Fall back to raw Binance.
         age = time.time() - self.chainlink_updated_at if self.chainlink_updated_at > 0 else 999
         if age > self.MAX_CALIBRATION_AGE_SEC:
-            logger.warning(
-                "Chainlink calibration stale (%.0fs old, max=%ds). "
-                "Using raw Binance price $%.2f instead of adjusted.",
-                age, int(self.MAX_CALIBRATION_AGE_SEC), binance_price,
-            )
+            now = time.time()
+            if now - getattr(self, '_stale_warn_ts', 0) > 30:
+                self._stale_warn_ts = now
+                logger.warning(
+                    "Chainlink calibration stale (%.0fs old, max=%ds). "
+                    "Using raw Binance price.",
+                    age, int(self.MAX_CALIBRATION_AGE_SEC),
+                )
             return binance_price
         return binance_price - self.offset
 
