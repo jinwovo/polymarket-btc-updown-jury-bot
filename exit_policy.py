@@ -381,7 +381,7 @@ def evaluate_exit_policy(inp: ExitPolicyInput, cfg: ExitPolicyConfig) -> ExitPol
         reason is None
         and hold_sec >= dynamic_stop_loss_min_hold
         and mtm_roi_pct <= dynamic_stop_loss_roi_pct
-        and bool(inp.btc_adverse_ok)
+        # btc_adverse_ok removed: SL should trigger on ROI alone, not BTC direction
     ):
         btc_move_note = (
             f", btc_entry_move={float(inp.btc_move_from_entry_pct):+.4f}%"
