@@ -98,9 +98,10 @@ class ChainlinkCalibrator:
             self._decimals = self._feed.functions.decimals().call()
             logger.info("Chainlink calibrator connected via %s (decimals=%d)", rpc_url, self._decimals)
         except Exception as e:
-            logger.warning("Chainlink init failed: %s", e)
+            logger.warning("Chainlink init failed (%s): %s", POLYGON_RPC_URLS[self._rpc_idx % len(POLYGON_RPC_URLS)], e)
             self._w3 = None
             self._feed = None
+            self._rpc_idx += 1  # rotate to next RPC on init failure
 
     def _fetch_once(self) -> bool:
         """Fetch latest round. Returns True if new round detected."""
