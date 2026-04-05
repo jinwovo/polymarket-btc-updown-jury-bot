@@ -440,6 +440,11 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_allow TINYINT NOT NULL DEFAULT 0",
         "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_direction VARCHAR(16) NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN lag_arb_entry_price DOUBLE NULL",
+        # BB position + VWAP agree indicators
+        "ALTER TABLE signal_cache ADD COLUMN bb_pos DOUBLE NULL",
+        "ALTER TABLE signal_cache ADD COLUMN vwap_agree TINYINT NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN bb_pos DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN vwap_agree TINYINT NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

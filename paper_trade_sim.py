@@ -1392,6 +1392,22 @@ def open_trade_if_signal(
             logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
             return False
         _gate_ev = gate.expected_roi
+    # BB extreme + VWAP agree filter (reads from signal_cache, computed by data_collector)
+    if cached and _gate_allow:
+        _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
+        _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
+        if _bb_filter_on:
+            _bb_pos_val = cached.get("bb_pos")
+            _bb_thresh = float(os.getenv("PAPER_BB_THRESHOLD", "0.5"))
+            if _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+                logger.debug("Skip BB not extreme ws=%s: bb_pos=%.3f < %.1f", window_start, float(_bb_pos_val), _bb_thresh)
+                return False
+        if _vwap_filter_on:
+            _vwap_val = cached.get("vwap_agree")
+            if _vwap_val is not None and int(_vwap_val) == 0:
+                logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
+                return False
+
     # When reading from signal_cache, gate checks are already done by data_collector.
     # Skip all remaining gate-dependent checks (lag edge, contra gap, adaptive EV)
     # to avoid re-running with potentially different prices.

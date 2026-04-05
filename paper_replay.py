@@ -72,11 +72,14 @@ class _RamCache:
         t0 = _time_mod.time()
 
         cur = conn.cursor()
-        cur.execute("SELECT ts, price FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts",
+        cur.execute("SELECT ts, price, volume, buy_volume, sell_volume FROM btc_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts",
                     (int(start_ts) - 600, int(end_ts) + 300))
         rows = cur.fetchall()
         self.btc_ts = [float(r[0]) for r in rows]
         self.btc_px = [float(r[1]) for r in rows]
+        self.btc_vol = [float(r[2] or 0) for r in rows]
+        self.btc_buy_vol = [float(r[3] or 0) for r in rows]
+        self.btc_sell_vol = [float(r[4] or 0) for r in rows]
 
         cur.execute("SELECT ts, window_start, up_best_bid, up_best_ask, down_best_bid, down_best_ask, up_mid, down_mid "
                     "FROM poly_odds WHERE ts >= %s AND ts <= %s ORDER BY ts",
@@ -104,6 +107,63 @@ class _RamCache:
         i0 = self._bisect.bisect_left(self.btc_ts, ts_start)
         i1 = self._bisect.bisect_right(self.btc_ts, ts_end)
         return self.btc_ts[i0:i1], self.btc_px[i0:i1]
+
+    def anchored_vwap(self, ws_start: float, ts: float):
+        """VWAP anchored at window start. Returns (vwap, price_vs_vwap)."""
+        i0 = self._bisect.bisect_left(self.btc_ts, ws_start)
+        i1 = self._bisect.bisect_right(self.btc_ts, ts)
+        if i1 - i0 < 5:
+            return None, 0.0
+        sum_pv = 0.0
+        sum_v = 0.0
+        for i in range(i0, i1):
+            v = self.btc_vol[i]
+            if v > 0:
+                sum_pv += self.btc_px[i] * v
+                sum_v += v
+        if sum_v <= 0:
+            return None, 0.0
+        vwap = sum_pv / sum_v
+        cur_price = self.btc_px[i1 - 1]
+        return vwap, (cur_price - vwap) / vwap * 100  # pct above/below
+
+    def velocity_consistency(self, ts: float, lookback_sec: float = 30.0):
+        """Count how many 1s intervals moved in the same direction over lookback.
+        Returns (ratio, dominant_dir): ratio 0-1, 'UP'/'DOWN'."""
+        i_end = self._bisect.bisect_right(self.btc_ts, ts) - 1
+        i_start = self._bisect.bisect_left(self.btc_ts, ts - lookback_sec)
+        if i_end - i_start < 10:
+            return 0.5, None
+        up_count = 0
+        down_count = 0
+        for i in range(i_start, i_end):
+            diff = self.btc_px[i + 1] - self.btc_px[i]
+            if diff > 0:
+                up_count += 1
+            elif diff < 0:
+                down_count += 1
+        total = up_count + down_count
+        if total == 0:
+            return 0.5, None
+        if up_count >= down_count:
+            return up_count / total, "UP"
+        return down_count / total, "DOWN"
+
+    def volume_surge(self, ts: float, short_sec: float = 10.0, long_sec: float = 60.0):
+        """Ratio of recent volume (short window) vs baseline (long window).
+        Returns surge_ratio (>1 = surge)."""
+        i_end = self._bisect.bisect_right(self.btc_ts, ts)
+        i_short = self._bisect.bisect_left(self.btc_ts, ts - short_sec)
+        i_long = self._bisect.bisect_left(self.btc_ts, ts - long_sec)
+        short_vol = sum(self.btc_vol[i_short:i_end])
+        long_vol = sum(self.btc_vol[i_long:i_end])
+        short_dur = max(ts - (self.btc_ts[i_short] if i_short < len(self.btc_ts) else ts), 1.0)
+        long_dur = max(ts - (self.btc_ts[i_long] if i_long < len(self.btc_ts) else ts), 1.0)
+        short_rate = short_vol / short_dur
+        long_rate = long_vol / long_dur
+        if long_rate <= 0:
+            return 1.0
+        return short_rate / long_rate
 
     def odds_at(self, ws: int, ts: float):
         # Walk backward from bisect point to find matching window_start
@@ -151,6 +211,38 @@ class PaperReplay:
         self.require_momentum_agree = os.getenv("REPLAY_REQUIRE_MOMENTUM_AGREE", "0") == "1"
         self.min_score = int(os.getenv("REPLAY_MIN_SCORE", "0"))
         self.no_lag_arb = os.getenv("REPLAY_NO_LAG_ARB", "0") == "1"
+        self.require_brt = os.getenv("REPLAY_REQUIRE_BRT", "0") == "1"
+        self.require_bb_extreme = os.getenv("REPLAY_REQUIRE_BB_EXTREME", "0") == "1"
+        self.bb_threshold = float(os.getenv("REPLAY_BB_THRESHOLD", "0.5"))
+        self.require_vwap_agree = os.getenv("REPLAY_REQUIRE_VWAP_AGREE", "0") == "1"
+        self.require_vel_consistency = float(os.getenv("REPLAY_VEL_CONSISTENCY", "0"))  # 0=off, e.g. 0.6
+        self.require_vol_surge = float(os.getenv("REPLAY_VOL_SURGE", "0"))  # 0=off, e.g. 1.5
+
+    def _check_brt(self, ws: int, entry_ts: float, start_price: float) -> bool:
+        """Breakout-Retest-Continuation: BTC broke out, retested start, continued."""
+        if not self._cache or start_price <= 0:
+            return False
+        import bisect
+        ts_arr = self._cache.btc_ts
+        px_arr = self._cache.btc_px
+        i0 = bisect.bisect_left(ts_arr, ws + 20)
+        i_entry = bisect.bisect_right(ts_arr, entry_ts)
+        if i_entry - i0 < 20:
+            return False
+        bo_found = retest_found = False
+        bo_dir = None
+        for i in range(i0, i_entry, 3):
+            move = (px_arr[i] - start_price) / start_price * 100
+            if not bo_found and abs(move) >= 0.02:
+                bo_found = True
+                bo_dir = "UP" if move > 0 else "DOWN"
+            elif bo_found and not retest_found and abs(move) <= 0.01:
+                retest_found = True
+            elif bo_found and retest_found:
+                m2 = (px_arr[i] - start_price) / start_price * 100
+                if (bo_dir == "UP" and m2 >= 0.02) or (bo_dir == "DOWN" and m2 <= -0.02):
+                    return True
+        return False
 
     def _get_scl_entries(self, ws: int) -> list[dict]:
         """Get signal_cache_log entries for this window."""
@@ -268,7 +360,7 @@ class PaperReplay:
                         if _conflict:
                             continue
 
-            # Score filter: count how many signals are positive
+            # Score filter: count how many signals are positive (11 signals)
             if self.min_score > 0:
                 _prev = str(entry.get("prev_outcome") or "")
                 _ov = float(entry.get("odds_velocity") or 0)
@@ -276,13 +368,41 @@ class PaperReplay:
                 _score = 0
                 if abs(btc_move) >= 0.02: _score += 1          # 1. BTC moved
                 if _prev == direction: _score += 1               # 2. prev won same dir
-                # entry_price not yet final here, use ask from scl
                 _ep = float(entry.get("up_ask") or 0.5) if direction == "UP" else float(entry.get("down_ask") or 0.5)
                 if _ep <= 0.45: _score += 1                      # 3. cheap entry
                 if gate_ev >= 0.20: _score += 1                  # 4. high EV
                 if confidence >= 0.7: _score += 1                # 5. high conf
                 if _ov >= 0.02: _score += 1                      # 6. odds velocity
                 if _accel: _score += 1                           # 7. BTC accel
+                # --- NEW: technical indicator scores ---
+                _check_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
+                if self._cache:
+                    # 8. Anchored VWAP agree
+                    _vw, _vw_pct = self._cache.anchored_vwap(float(ws), _check_ts)
+                    if _vw is not None:
+                        if (direction == "UP" and _vw_pct > 0) or (direction == "DOWN" and _vw_pct < 0):
+                            _score += 1
+                    # 9. Velocity consistency
+                    _vr, _vd = self._cache.velocity_consistency(_check_ts)
+                    if _vr >= 0.6 and _vd == direction:
+                        _score += 1
+                    # 10. Volume surge
+                    _vs = self._cache.volume_surge(_check_ts)
+                    if _vs >= 1.5:
+                        _score += 1
+                    # 11. BB extreme
+                    import bisect as _sc_bisect
+                    _bb_i2 = _sc_bisect.bisect_right(self._cache.btc_ts, _check_ts)
+                    _bb_s2 = _sc_bisect.bisect_left(self._cache.btc_ts, _check_ts - 120)
+                    if _bb_i2 - _bb_s2 >= 30:
+                        _bb_px2 = self._cache.btc_px[_bb_s2:_bb_i2]
+                        _bb_w2 = _bb_px2[-min(60, len(_bb_px2)):]
+                        _bb_m2 = sum(_bb_w2) / len(_bb_w2)
+                        _bb_sd2 = (sum((p - _bb_m2)**2 for p in _bb_w2) / len(_bb_w2)) ** 0.5
+                        if _bb_sd2 > 0.01:
+                            _bb_p2 = (_bb_px2[-1] - _bb_m2) / (2 * _bb_sd2)
+                            if abs(_bb_p2) > 0.5:
+                                _score += 1
                 if _score < self.min_score:
                     continue
 
@@ -368,6 +488,52 @@ class PaperReplay:
             # Re-check price filters after drift adjustment
             if entry_price > self.max_entry_price:
                 continue
+
+            # BB extreme filter: only enter when price is at Bollinger Band extremes
+            if self.require_bb_extreme and self._cache:
+                import bisect as _bb_bisect
+                _bb_ts = self._cache.btc_ts
+                _bb_px = self._cache.btc_px
+                _bb_i = _bb_bisect.bisect_right(_bb_ts, entry_ts)
+                _bb_s = _bb_bisect.bisect_left(_bb_ts, entry_ts - 120)
+                if _bb_i - _bb_s >= 30:
+                    _bb_prices = _bb_px[_bb_s:_bb_i]
+                    _bb_window = _bb_prices[-min(60, len(_bb_prices)):]
+                    _bb_mean = sum(_bb_window) / len(_bb_window)
+                    _bb_std = (sum((p - _bb_mean)**2 for p in _bb_window) / len(_bb_window)) ** 0.5
+                    if _bb_std > 0.01:
+                        _bb_pos = (_bb_prices[-1] - _bb_mean) / (2 * _bb_std)
+                        if abs(_bb_pos) < self.bb_threshold:  # not extreme = skip
+                            continue
+
+            # Anchored VWAP filter: price must be on the same side as direction
+            if self.require_vwap_agree and self._cache:
+                _vwap, _vwap_pct = self._cache.anchored_vwap(float(ws), entry_ts)
+                if _vwap is not None:
+                    if direction == "UP" and _vwap_pct <= 0:
+                        continue  # price below VWAP, skip UP
+                    if direction == "DOWN" and _vwap_pct >= 0:
+                        continue  # price above VWAP, skip DOWN
+
+            # Velocity consistency filter: direction must be steady
+            if self.require_vel_consistency > 0 and self._cache:
+                _vel_ratio, _vel_dir = self._cache.velocity_consistency(entry_ts)
+                if _vel_ratio < self.require_vel_consistency:
+                    continue  # not consistent enough
+                if _vel_dir and _vel_dir != direction:
+                    continue  # consistent but wrong direction
+
+            # Volume surge filter: recent volume must exceed baseline
+            if self.require_vol_surge > 0 and self._cache:
+                _surge = self._cache.volume_surge(entry_ts)
+                if _surge < self.require_vol_surge:
+                    continue  # not enough volume surge
+
+            # BRT filter: Breakout-Retest-Continuation
+            if self.require_brt:
+                _start_px = float(entry.get("start_price") or 0)
+                if not self._check_brt(ws, entry_ts, _start_px):
+                    continue
 
             # Fixed sizing (matches paper's FIXED mode)
             _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
@@ -677,6 +843,12 @@ def main():
     parser.add_argument("--require-momentum-agree", action="store_true", help="Skip when 30s BTC trend conflicts with bet direction")
     parser.add_argument("--min-score", type=int, default=None, help="Min signal score to enter")
     parser.add_argument("--no-lag-arb", action="store_true", help="Disable lag_arb entries (gate_allow only)")
+    parser.add_argument("--require-brt", action="store_true", help="Only enter on Breakout-Retest-Continuation pattern")
+    parser.add_argument("--require-bb-extreme", action="store_true", help="Only enter when BB position is extreme (|bb|>threshold)")
+    parser.add_argument("--bb-threshold", type=float, default=None, help="BB extreme threshold (default 0.5)")
+    parser.add_argument("--require-vwap-agree", action="store_true", help="Only enter when price vs VWAP agrees with direction")
+    parser.add_argument("--vel-consistency", type=float, default=None, help="Min velocity consistency ratio (e.g. 0.6)")
+    parser.add_argument("--vol-surge", type=float, default=None, help="Min volume surge ratio (e.g. 1.5)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -708,6 +880,18 @@ def main():
         os.environ["REPLAY_MIN_SCORE"] = str(args.min_score)
     if args.no_lag_arb:
         os.environ["REPLAY_NO_LAG_ARB"] = "1"
+    if args.require_brt:
+        os.environ["REPLAY_REQUIRE_BRT"] = "1"
+    if args.require_bb_extreme:
+        os.environ["REPLAY_REQUIRE_BB_EXTREME"] = "1"
+    if args.bb_threshold is not None:
+        os.environ["REPLAY_BB_THRESHOLD"] = str(args.bb_threshold)
+    if args.require_vwap_agree:
+        os.environ["REPLAY_REQUIRE_VWAP_AGREE"] = "1"
+    if args.vel_consistency is not None:
+        os.environ["REPLAY_VEL_CONSISTENCY"] = str(args.vel_consistency)
+    if args.vol_surge is not None:
+        os.environ["REPLAY_VOL_SURGE"] = str(args.vol_surge)
 
     conn = connect_db()
     end_ts = _time_mod.time()

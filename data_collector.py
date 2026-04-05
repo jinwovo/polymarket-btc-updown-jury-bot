@@ -118,6 +118,8 @@ class DataCollector:
         self._raw_prices: list[float] = []
         self._raw_timestamps: list[float] = []
         self._RECENT_MAX = 600  # keep ~10 min of 1s data
+        # Volume buffer for VWAP calculation
+        self._recent_volumes: list[float] = []
 
         # Batch insert buffer
         self._tick_buffer: list[tuple] = []
@@ -213,12 +215,14 @@ class DataCollector:
                             self._raw_prices = self._raw_prices[-self._RECENT_MAX:]
                             self._raw_timestamps = self._raw_timestamps[-self._RECENT_MAX:]
 
-                        # Update ring buffer with calibrated price
+                        # Update ring buffer with calibrated price + volume
                         self._recent_prices.append(self.btc_price_adjusted)
                         self._recent_timestamps.append(ts)
+                        self._recent_volumes.append(volume)
                         if len(self._recent_prices) > self._RECENT_MAX:
                             self._recent_prices = self._recent_prices[-self._RECENT_MAX:]
                             self._recent_timestamps = self._recent_timestamps[-self._RECENT_MAX:]
+                            self._recent_volumes = self._recent_volumes[-self._RECENT_MAX:]
 
                         # Note: btc_start_price is only set from official Price to Beat (PTB).
                         # Binance fallback removed -- wrong start price causes wrong direction.
@@ -788,6 +792,39 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("btc_accel fetch err: %s", _e)
 
+            # --- BB position + VWAP agree (technical indicators) ---
+            _bb_pos = None
+            _vwap_agree = None
+            try:
+                _prices = list(self._recent_prices)
+                _vols = list(self._recent_volumes)
+                _ts_arr = list(self._recent_timestamps)
+                if len(_prices) >= 30:
+                    # BB: last 60 ticks (or fewer), mean + std
+                    _bb_window = _prices[-min(60, len(_prices)):]
+                    _bb_mean = sum(_bb_window) / len(_bb_window)
+                    _bb_std = (sum((p - _bb_mean)**2 for p in _bb_window) / len(_bb_window)) ** 0.5
+                    if _bb_std > 0.01:
+                        _bb_pos = round((_prices[-1] - _bb_mean) / (2 * _bb_std), 4)
+
+                    # VWAP: anchored at window start
+                    _ws_ts = float(self.current_window_start)
+                    _sum_pv = 0.0
+                    _sum_v = 0.0
+                    for _i in range(len(_ts_arr)):
+                        if _ts_arr[_i] >= _ws_ts and _i < len(_vols) and _vols[_i] > 0:
+                            _sum_pv += _prices[_i] * _vols[_i]
+                            _sum_v += _vols[_i]
+                    if _sum_v > 0:
+                        _vwap = _sum_pv / _sum_v
+                        _above_vwap = _prices[-1] > _vwap
+                        if decision.direction == "UP":
+                            _vwap_agree = 1 if _above_vwap else 0
+                        else:
+                            _vwap_agree = 1 if not _above_vwap else 0
+            except Exception as _e:
+                logger.warning("BB/VWAP calc err: %s", _e)
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -804,6 +841,7 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
                     _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
+                    _bb_pos, _vwap_agree,
             )
             execute_write(
                 self.db,
@@ -814,8 +852,9 @@ class DataCollector:
                     btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
-                    lag_arb_allow, lag_arb_direction, lag_arb_entry_price)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
+                    bb_pos, vwap_agree)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
@@ -830,8 +869,9 @@ class DataCollector:
                         btc_move_pct, recent_move_pct, trend_move_pct, guards_passed,
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
-                        lag_arb_allow, lag_arb_direction, lag_arb_entry_price)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
+                        bb_pos, vwap_agree)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()

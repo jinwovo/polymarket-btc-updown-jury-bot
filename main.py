@@ -3990,6 +3990,21 @@ class TradingBot:
                 logger.info("Skip: gate_allow=0 (gate: %s)", _gate_reason)
                 return
 
+            # BB extreme + VWAP agree filter (same as paper, reads signal_cache)
+            _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
+            _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
+            if _bb_filter_on:
+                _bb_pos_val = _sig_row.get("bb_pos") if _sig_row else None
+                _bb_thresh = float(os.getenv("PAPER_BB_THRESHOLD", "0.5"))
+                if _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+                    logger.info("Skip BB not extreme: bb_pos=%.3f < %.1f", float(_bb_pos_val), _bb_thresh)
+                    return
+            if _vwap_filter_on:
+                _vwap_val = (_sig_row.get("vwap_agree") if _sig_row else None)
+                if _vwap_val is not None and int(_vwap_val) == 0:
+                    logger.info("Skip VWAP disagree dir=%s", direction)
+                    return
+
             # Create proxy gate object for downstream code
             class _GateProxy:
                 allow = True

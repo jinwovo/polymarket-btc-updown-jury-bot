@@ -187,4 +187,10 @@ data_collector (single process, 0.1s tick)
 - `env/runtime.public.env` — Runtime knobs
 - `backtest.py` — Backtester
 - `db_config.py` — DB schema (MariaDB port 3400)
+
+## Database Connection
+- **Credentials in `.env.secrets`** (not `env/` dir, project root)
+- config.py loads `.env.secrets` via dotenv — must be loaded before DB calls
+- Port 3400, password in `.env.secrets` (MARIADB_PASSWORD)
+- If `connect_db()` fails with auth_gssapi_client, `.env.secrets` not loaded
 - `dashboard_server.py` — API + process manager
