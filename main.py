@@ -4613,7 +4613,7 @@ class TradingBot:
         sometimes wrong when Binance-Chainlink diverge).  This background task
         polls Polymarket after 15s and 30s to get the oracle-based result.
         """
-        for delay in (15, 30):
+        for delay in (15, 30, 60, 120):
             await asyncio.sleep(delay)
             try:
                 poly_outcome = await self.poly_client.fetch_settlement_outcome(window_start)
