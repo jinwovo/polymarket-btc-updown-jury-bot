@@ -32,14 +32,16 @@ data_collector (single process, 0.1s tick)
 
 ## Key Config (env/runtime.public.env)
 - `JURY_THRESHOLD=2` (majority, no opposing votes with 3 judges)
-- `ENTRY_ORDER_MODE=MAKER_FIRST` (try maker 0% fee → FOK fallback)
-- `MIN_EDGE=0.08`, `MIN_EXPECTED_ROI=0.030`
-- `PAPER_ENTRY_START_SEC=90`, `PAPER_DOWN_ENTRY_END_SEC=200`
-- `PAPER_MIN_BOUNDARY_DIST_PCT=0.020`, `PAPER_D OWN_MIN_BOUNDARY_DIST_PCT=0.030`
-- `PAPER_DOWN_MIN_ENTRY_PRICE=0.30`, `PAPER_MAX_ENTRY_PRICE=0.70`
+- `ENTRY_ORDER_MODE=LIMIT_FAK` (instant market order with limit price protection)
+- `MIN_EDGE=0.12`, `MIN_EXPECTED_ROI=0.150`
+- `PAPER_ENTRY_START_SEC=80`, `PAPER_DOWN_ENTRY_END_SEC=200`
+- `PAPER_MIN_BOUNDARY_DIST_PCT=0.020`, `PAPER_DOWN_MIN_BOUNDARY_DIST_PCT=0.030`
+- `PAPER_DOWN_MIN_ENTRY_PRICE=0.35`, `PAPER_MAX_ENTRY_PRICE=0.58`
 - `PAPER_PERF_PAUSE_SEC=0` (disabled)
 - `LIVE_MAX_DRAWDOWN_STOP_PCT=1.0` (disabled)
+- `LIVE_ENTRY_START_SECONDS=80` (synced with paper)
 - `DRY_RUN` is NOT in env file — dashboard controls via env_overrides
+- **Technical filters**: BB Extreme (|bb|>0.5), VWAP Agree, Ask Drift <=0.08
 
 ## Critical Rules — DO NOT BREAK
 - **Never set `DRY_RUN=true` in runtime.public.env** — config.py override=True overwrites dashboard's Start Live
@@ -89,23 +91,33 @@ data_collector (single process, 0.1s tick)
 - **Revert damage** — git revert/reset can silently undo changes in OTHER files. ALWAYS verify key values after any revert: `BET_PCT_MIN=0.10, BET_PCT_MAX=0.15, timeout_seconds=2.0, conf_norm formula`
 - **Sizing formula mismatch** — risk_manager used edge*confidence, main.py used confidence-only. Must be identical: `conf_norm = (confidence - 0.3) / 0.7`
 - **Settlement used Binance price** — caused wrong outcome ($52 diff). Must use btc_ticks (Chainlink calibrated) or Gamma API finalPrice
+- **`direction` NameError in main.py VWAP filter** — used bare `direction` instead of `decision.direction`, crashed live every tick
+- **`_lag_dir`/`_lag_ep` undefined in dead else-branch** — _GateProxy referenced variables from removed lag_arb path
+- **Chainlink RPC stuck on dead endpoint** — `_init_web3()` didn't rotate `_rpc_idx` on failure, retried same dead URL forever
+- **polygon.llamarpc.com DNS failure** — removed from RPC list, added polygon-rpc.com
+- **Chainlink stale warning log spam** — fired every 0.1s tick, rate-limited to 30s
+- **Settlement verification too short** — 15/30s retries missed slow Polymarket API, extended to 15/30/60/120s
 
 ## Data Collection
 - `btc_ticks`: price, volume, buy_volume, sell_volume (Binance "m" flag)
 - `poly_odds`: up/down bid/ask/mid/spread/overround (0.1s)
-- `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason
+- `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason, bb_pos, vwap_agree, ask_drift
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
-## Current Strategy (2026-04-02)
-- **Entry**: judges direction + signal_cache gate_allow + **score>=3 filter**
-- **Score signals** (7): btc_move>=0.02%, prev_won, ask<=0.45, ev>=20%, conf>=0.7, odds_vel>=0.02, btc_accel
+## Current Strategy (2026-04-06)
+- **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
+- **Technical filters (2026-04-06)**:
+  - BB Extreme: only enter when |Bollinger Band position| > 0.5 (1s tick, 60-tick window)
+  - VWAP Agree: price must be above/below anchored VWAP matching bet direction
+  - Ask Drift <= 0.08: skip when CLOB ask rose >8 cents from window start (edge gone)
+  - ENTRY_START=80s: 60-80s entries had 35% WR (CLOB unstable), 80s+ = 59% WR
 - **Entry mode**: LIMIT_FAK via Rust binary (fallback Python). Rust v2: correct EIP-712 signing, normal exchange (not neg-risk)
 - **Exit**: hold-to-settlement (all early exits disabled)
 - **Sizing**: FIXED flat (Paper $100, Live = seed*LIVE_FIXED_SEED_PCT). No mega multiplier.
-- **Filters**: MIN_EDGE=0.12, ROI=0.150 (time-weighted: 0.06 at 60s remaining), ENTRY_START=60s
-- **Price range**: ask 0.30-0.58, spread < 0.20, opposite ask < 0.78
+- **Filters**: MIN_EDGE=0.12, ROI=0.150 (time-weighted: 0.06 at 60s remaining)
+- **Price range**: ask 0.35-0.58, spread < 0.20, opposite ask < 0.78
 - **Orderbook**: WebSocket primary (wss://ws-subscriptions-clob.polymarket.com/ws/market), REST fallback
-- **Backtest (score>=3)**: 72h 31t 68% PF2.39, 120h 51t 65% PF2.10, 240h 89t 62% PF1.83
+- **paper_replay (BB+VWAP+drift+start80)**: 480h 573t 54% PF1.39 +$10,312
 
 ### Strategy Sweep Results (2026-04-02, $10 fixed, 20 days)
 - baseline (no filter): 489t 54.4% PF1.29 +$652
@@ -114,6 +126,47 @@ data_collector (single process, 0.1s tick)
 - **score>=3: 301t 56% PF1.46 +$607 (BEST across all periods)**
 - Pure momentum 0.10%+20s: 42t 62% PF1.62 (too few trades)
 - Judge min_edge tuning: no effect (gate is the bottleneck)
+
+### Technical Filter Sweep Results (2026-04-06, paper_replay $100 fixed, 480h)
+- **BB+VWAP (no drift)**: 785t 53% PF1.36 +$13,334
+- **BB+VWAP+drift0.08**: 690t 53% PF1.34 +$10,985
+- **BB+VWAP+drift0.08+start80**: 573t 54% PF1.39 +$10,312 (CURRENT)
+- BB+VWAP+score5: 755t 53% PF1.38 +$13,385
+- BB+VWAP+score7: 310t 57% PF1.43 +$5,694 (high PF, low PnL)
+- BB+VWAP+CVD: 556t 53% PF1.37 +$9,588
+- BB+VWAP+vel0.6: 443t 51% PF1.37 +$8,036
+- BB+VWAP+volsurge1.5: 394t 49% PF1.34 +$6,829
+
+### Indicators Tested & Rejected (2026-04-06)
+- **Efficiency Ratio**: 480h PF 0.87 (WORSE - zigzag is normal in 5min binary)
+- **Immediate Momentum (10s)**: PF 1.31 (worse - 10s is noise)
+- **Peak Retracement**: all thresholds worse than baseline
+- **BTC 15min confirm**: PF 1.33 (worse - filters good trades too)
+- **ETH correlation**: PF 1.33 (marginal, not worth complexity)
+- **CLOB Exit (hold-to-settlement vs sell)**: all worse (bid already near 0 when CLOB warns)
+- **CLOB Mismatch Exit**: all worse (same bid-near-0 problem)
+- **CLOB Velocity filter**: all worse at 480h
+- **Volatility regime**: 0.08-0.10% block = small sample, not reliable
+- **Contrarian volume**: PF 2.03 at 120h but PnL -28% (too few trades)
+- **Underreaction filter**: worse at 480h (CLOB catches up by 80s)
+- **Time-of-day**: insufficient sample per hour
+
+### BTC vs CLOB Correlation Analysis (2026-04-06)
+- **CLOB prediction at 10s remaining: 92% accurate**
+- CLOB is leading indicator: market makers have direct Chainlink node access
+- BTC UP + CLOB DOWN at 270s -> CLOB right 64% (reversal signal)
+- **CLOB Underreaction = our edge**: BTC 0.03%+ moved, CLOB ask<0.50 = 100% WR (24 windows)
+- But this state rarely exists at 80s+ (CLOB catches up), so can't be used as hard filter
+- Contrarian volume: vol disagrees with bet -> 60% WR (vs agrees 54%)
+
+### Live Loss Pattern Analysis (2026-04-06, 28 losses / 72h)
+- 82% had CLOB warning (opp>0.65) at 10s remaining
+- 54% were coin flips (BTC final move < 0.03%)
+- 36% had BTC reversal (peak then fade)
+- 32% entered at ask >= 0.55 (bad risk/reward)
+- 29% were early entries (60-80s) -> fixed by START=80s
+- Entry timing: 60-80s=35% WR, 80-100s=62%, 150-200s=64%
+- Entry price sweet spot: 0.45-0.55 (58-61% WR), 0.40-0.45=43%, 0.55-0.60=54%
 
 ### Key Learnings (2026-04-02)
 - Judge min_edge 0.018->0.10: NO effect (gate MIN_ROI already filters)
