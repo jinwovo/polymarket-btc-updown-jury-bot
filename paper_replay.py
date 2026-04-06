@@ -93,9 +93,35 @@ class _RamCache:
             "up_mid": r[6], "down_mid": r[7],
         } for r in rows2]
 
+        # BTC 15-min odds (for trend confirmation)
+        try:
+            cur.execute("""SELECT ts, window_start, up_best_ask, down_best_ask
+                          FROM poly_odds WHERE slug LIKE 'btc-updown-15m%%'
+                          AND ts >= %s AND ts <= %s ORDER BY ts""",
+                        (int(start_ts) - 900, int(end_ts) + 900))
+            rows15 = cur.fetchall()
+            self.btc15_ts = [float(r[0]) for r in rows15]
+            self.btc15_ua = [float(r[2] or 0.5) for r in rows15]
+            self.btc15_da = [float(r[3] or 0.5) for r in rows15]
+        except Exception:
+            self.btc15_ts = []
+            self.btc15_ua = []
+            self.btc15_da = []
+
+        # ETH ticks (for cross-market correlation)
+        try:
+            cur.execute("SELECT ts, price FROM eth_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts",
+                        (int(start_ts) - 600, int(end_ts) + 300))
+            rows_eth = cur.fetchall()
+            self.eth_ts = [float(r[0]) for r in rows_eth]
+            self.eth_px = [float(r[1]) for r in rows_eth]
+        except Exception:
+            self.eth_ts = []
+            self.eth_px = []
+
         t1 = _time_mod.time()
-        logger.info("RAM loaded: %d btc_ticks, %d poly_odds in %.1fs",
-                     len(self.btc_ts), len(self.odds_ts), t1 - t0)
+        logger.info("RAM loaded: %d btc_ticks, %d poly_odds, %d btc15_odds, %d eth_ticks in %.1fs",
+                     len(self.btc_ts), len(self.odds_ts), len(self.btc15_ts), len(self.eth_ts), t1 - t0)
 
     def price_at(self, ts: float):
         idx = self._bisect.bisect_right(self.btc_ts, ts) - 1
@@ -165,6 +191,102 @@ class _RamCache:
             return 1.0
         return short_rate / long_rate
 
+    def efficiency_ratio(self, ts_start: float, ts_end: float):
+        """Efficiency Ratio: |net move| / sum(|each tick move|). 1.0=straight line, 0=noise."""
+        i0 = self._bisect.bisect_left(self.btc_ts, ts_start)
+        i1 = self._bisect.bisect_right(self.btc_ts, ts_end)
+        if i1 - i0 < 5:
+            return None
+        net_move = abs(self.btc_px[i1 - 1] - self.btc_px[i0])
+        total_path = sum(abs(self.btc_px[i + 1] - self.btc_px[i]) for i in range(i0, i1 - 1))
+        if total_path <= 0:
+            return None
+        return net_move / total_path
+
+    def immediate_momentum(self, ts: float, lookback_sec: float = 10.0):
+        """BTC direction in the last N seconds. Returns 'UP'/'DOWN'/None."""
+        i1 = self._bisect.bisect_right(self.btc_ts, ts) - 1
+        i0 = self._bisect.bisect_left(self.btc_ts, ts - lookback_sec)
+        if i1 <= i0 or i0 >= len(self.btc_px):
+            return None
+        diff = self.btc_px[i1] - self.btc_px[i0]
+        if diff > 0:
+            return "UP"
+        elif diff < 0:
+            return "DOWN"
+        return None
+
+    def prev_window_move(self, ws: int):
+        """BTC move % in previous 5-min window."""
+        prev_start = float(ws - 300)
+        prev_end = float(ws)
+        i0 = self._bisect.bisect_left(self.btc_ts, prev_start)
+        i1 = self._bisect.bisect_right(self.btc_ts, prev_end) - 1
+        if i1 <= i0 or i0 >= len(self.btc_px):
+            return None
+        start_px = self.btc_px[i0]
+        end_px = self.btc_px[i1]
+        if start_px <= 0:
+            return None
+        return (end_px - start_px) / start_px * 100
+
+    def clob_velocity(self, ws: int, ts: float, direction: str, lookback_sec: float = 30.0):
+        """CLOB ask change speed in last N seconds for our direction.
+        Returns velocity (positive = moving in our favor)."""
+        odds_now = self.odds_at(ws, ts)
+        odds_before = self.odds_at(ws, ts - lookback_sec)
+        if not odds_now or not odds_before:
+            return None
+        if direction == "UP":
+            a_now = float(odds_now.get("up_best_ask") or 0.5)
+            a_before = float(odds_before.get("up_best_ask") or 0.5)
+        else:
+            a_now = float(odds_now.get("down_best_ask") or 0.5)
+            a_before = float(odds_before.get("down_best_ask") or 0.5)
+        return a_now - a_before  # positive = our side getting more expensive
+
+    def btc15_trend(self, ts: float):
+        """Get BTC 15-min market direction at timestamp.
+        Returns (up_ask, down_ask) or (None, None)."""
+        if not self.btc15_ts:
+            return None, None
+        idx = self._bisect.bisect_right(self.btc15_ts, ts) - 1
+        if idx < 0:
+            return None, None
+        return self.btc15_ua[idx], self.btc15_da[idx]
+
+    def eth_move_pct(self, ws_start: float, ts: float):
+        """ETH price move % from window start to ts."""
+        if not self.eth_ts:
+            return None
+        i0 = self._bisect.bisect_left(self.eth_ts, ws_start)
+        i1 = self._bisect.bisect_right(self.eth_ts, ts) - 1
+        if i0 >= len(self.eth_ts) or i1 < 0 or i1 <= i0:
+            return None
+        eth_start = self.eth_px[i0]
+        eth_now = self.eth_px[i1]
+        if eth_start <= 0:
+            return None
+        return (eth_now - eth_start) / eth_start * 100
+
+    def cvd_slope(self, ts: float, lookback_sec: float = 60.0):
+        """CVD (cumulative volume delta) slope over lookback.
+        Returns (slope_direction, cvd_change): 'UP'/'DOWN', float."""
+        i_end = self._bisect.bisect_right(self.btc_ts, ts)
+        i_start = self._bisect.bisect_left(self.btc_ts, ts - lookback_sec)
+        if i_end - i_start < 10:
+            return None, 0.0
+        # Split into first half and second half
+        mid = (i_start + i_end) // 2
+        cvd_first = sum(self.btc_buy_vol[i] - self.btc_sell_vol[i] for i in range(i_start, mid))
+        cvd_second = sum(self.btc_buy_vol[i] - self.btc_sell_vol[i] for i in range(mid, i_end))
+        cvd_change = cvd_second - cvd_first
+        if cvd_change > 0:
+            return "UP", cvd_change
+        elif cvd_change < 0:
+            return "DOWN", cvd_change
+        return None, 0.0
+
     def odds_at(self, ws: int, ts: float):
         # Walk backward from bisect point to find matching window_start
         idx = self._bisect.bisect_right(self.odds_ts, ts) - 1
@@ -218,6 +340,19 @@ class PaperReplay:
         self.require_vel_consistency = float(os.getenv("REPLAY_VEL_CONSISTENCY", "0"))  # 0=off, e.g. 0.6
         self.require_vol_surge = float(os.getenv("REPLAY_VOL_SURGE", "0"))  # 0=off, e.g. 1.5
         self.max_ask_drift = float(os.getenv("REPLAY_MAX_ASK_DRIFT", "0"))  # 0=off, e.g. 0.06
+        self.require_btc15_agree = os.getenv("REPLAY_REQUIRE_BTC15_AGREE", "0") == "1"
+        self.btc15_min_prob = float(os.getenv("REPLAY_BTC15_MIN_PROB", "0.55"))
+        self.require_eth_agree = os.getenv("REPLAY_REQUIRE_ETH_AGREE", "0") == "1"
+        self.require_cvd_agree = os.getenv("REPLAY_REQUIRE_CVD_AGREE", "0") == "1"
+        self.max_peak_retracement = float(os.getenv("REPLAY_MAX_PEAK_RETRACEMENT", "0"))  # 0=off, e.g. 0.50
+        self.min_efficiency_ratio = float(os.getenv("REPLAY_MIN_EFFICIENCY_RATIO", "0"))  # 0=off, e.g. 0.3
+        self.require_immediate_momentum = os.getenv("REPLAY_REQUIRE_IMMEDIATE_MOMENTUM", "0") == "1"
+        self.prev_window_block_pct = float(os.getenv("REPLAY_PREV_WINDOW_BLOCK_PCT", "0"))  # 0=off, e.g. 0.10
+        self.block_slow_clob = os.getenv("REPLAY_BLOCK_SLOW_CLOB", "0") == "1"
+        self.slow_clob_range = (float(os.getenv("REPLAY_SLOW_CLOB_LO", "-0.05")),
+                                float(os.getenv("REPLAY_SLOW_CLOB_HI", "0.05")))
+        self.clob_exit_enabled = os.getenv("REPLAY_CLOB_EXIT", "0") == "1"
+        self.clob_exit_remaining_sec = float(os.getenv("REPLAY_CLOB_EXIT_REMAINING", "10"))  # check at Ns remaining
 
     def _check_brt(self, ws: int, entry_ts: float, start_price: float) -> bool:
         """Breakout-Retest-Continuation: BTC broke out, retested start, continued."""
@@ -490,6 +625,83 @@ class PaperReplay:
             if entry_price > self.max_entry_price:
                 continue
 
+            # Efficiency Ratio: skip noisy price action (zigzag = coin flip)
+            if self.min_efficiency_ratio > 0 and self._cache:
+                _er = self._cache.efficiency_ratio(float(ws), entry_ts)
+                if _er is not None and _er < self.min_efficiency_ratio:
+                    continue
+
+            # Immediate momentum: last 10s must match direction
+            if self.require_immediate_momentum and self._cache:
+                _im = self._cache.immediate_momentum(entry_ts, 10.0)
+                if _im and _im != direction:
+                    continue  # price moving wrong way right now
+
+            # Previous window block: skip same-direction bet after large move
+            if self.prev_window_block_pct > 0 and self._cache:
+                _pw_move = self._cache.prev_window_move(ws)
+                if _pw_move is not None:
+                    if direction == "UP" and _pw_move > self.prev_window_block_pct:
+                        continue  # prev window already UP big, mean-revert likely
+                    if direction == "DOWN" and _pw_move < -self.prev_window_block_pct:
+                        continue
+
+            # Peak retracement filter: skip when momentum faded from peak
+            if self.max_peak_retracement > 0 and self._cache:
+                import bisect as _pr_bisect
+                _pr_i0 = _pr_bisect.bisect_left(self._cache.btc_ts, float(ws))
+                _pr_i1 = _pr_bisect.bisect_right(self._cache.btc_ts, entry_ts)
+                if _pr_i1 - _pr_i0 >= 10:
+                    _pr_start = self._cache.btc_px[_pr_i0]
+                    _pr_now = self._cache.btc_px[_pr_i1 - 1]
+                    if _pr_start > 0:
+                        _pr_moves = [(self._cache.btc_px[i] - _pr_start) / _pr_start * 100
+                                     for i in range(_pr_i0, _pr_i1)]
+                        _pr_current = (_pr_now - _pr_start) / _pr_start * 100
+                        if direction == "UP":
+                            _pr_peak = max(_pr_moves)
+                            if _pr_peak > 0.01:  # meaningful peak
+                                _pr_retrace = (_pr_peak - _pr_current) / _pr_peak
+                                if _pr_retrace > self.max_peak_retracement:
+                                    continue  # momentum faded too much
+                        else:
+                            _pr_peak = min(_pr_moves)
+                            if _pr_peak < -0.01:
+                                _pr_retrace = (_pr_peak - _pr_current) / _pr_peak
+                                if _pr_retrace > self.max_peak_retracement:
+                                    continue
+
+            # BTC 15-min trend confirmation
+            if self.require_btc15_agree and self._cache:
+                _15ua, _15da = self._cache.btc15_trend(entry_ts)
+                if _15ua is not None and _15da is not None:
+                    if direction == "UP" and _15da > self.btc15_min_prob:
+                        continue  # 15min says DOWN strongly, skip UP
+                    if direction == "DOWN" and _15ua > self.btc15_min_prob:
+                        continue  # 15min says UP strongly, skip DOWN
+
+            # ETH 5-min correlation
+            if self.require_eth_agree and self._cache:
+                _eth_move = self._cache.eth_move_pct(float(ws), entry_ts)
+                if _eth_move is not None:
+                    if direction == "UP" and _eth_move < -0.02:
+                        continue  # ETH dropping, skip BTC UP
+                    if direction == "DOWN" and _eth_move > 0.02:
+                        continue  # ETH rising, skip BTC DOWN
+
+            # CVD (Cumulative Volume Delta) agree
+            if self.require_cvd_agree and self._cache:
+                _cvd_dir, _cvd_val = self._cache.cvd_slope(entry_ts)
+                if _cvd_dir and _cvd_dir != direction:
+                    continue  # CVD disagrees with direction
+
+            # CLOB velocity filter: block slow/uncertain CLOB movement
+            if self.block_slow_clob and self._cache:
+                _cv = self._cache.clob_velocity(ws, entry_ts, direction)
+                if _cv is not None:
+                    if self.slow_clob_range[0] <= _cv <= self.slow_clob_range[1]:
+                        continue  # CLOB moving too slowly = uncertain
+
             # Ask drift filter: skip when CLOB already priced in the move
             if self.max_ask_drift > 0 and self._cache:
                 # Get first odds for this window (near window start)
@@ -690,6 +902,26 @@ class PaperReplay:
             peak = max(float(self.peak_roi.get(trade_key, -999.0)), float(mtm_roi_pct))
             self.peak_roi[trade_key] = peak
 
+            # CLOB mismatch exit: BTC favors us but CLOB strongly disagrees
+            # Pattern: UP hold + BTC above start + CLOB DOWN > 0.70 = smart money says reversal
+            if self.clob_exit_enabled and remaining_sec <= self.clob_exit_remaining_sec and remaining_sec > 0:
+                _opp_ask = down_ask if direction == "UP" else up_ask
+                _opp_threshold = float(os.getenv("REPLAY_CLOB_EXIT_OPP_THRESHOLD", "0.65"))
+                if _opp_ask is not None and _opp_ask >= _opp_threshold and current_btc > 0 and start_btc > 0:
+                    _btc_favors_us = (direction == "UP" and current_btc > start_btc) or \
+                                     (direction == "DOWN" and current_btc < start_btc)
+                    if _btc_favors_us:
+                        # BTC says we should win, but CLOB strongly disagrees -> exit
+                        _our_bid = float(odds_row.get("up_best_bid") or 0) if direction == "UP" \
+                            else float(odds_row.get("down_best_bid") or 0)
+                        if _our_bid > 0:
+                            _sell_pnl = _our_bid * shares - stake
+                            trade.pnl = apply_fee_to_pnl(_sell_pnl, stake) if _sell_pnl > 0 else _sell_pnl
+                            trade.won = trade.pnl > 0
+                            trade.close_reason = f"clob_mismatch_exit@{remaining_sec:.0f}s(opp={_opp_ask:.2f},btc_favors=True)"
+                            trade.closed_at = t
+                            return
+
             # 3) Exit policy
             exit_decision = evaluate_exit_policy(
                 ExitPolicyInput(
@@ -862,6 +1094,20 @@ def main():
     parser.add_argument("--vel-consistency", type=float, default=None, help="Min velocity consistency ratio (e.g. 0.6)")
     parser.add_argument("--vol-surge", type=float, default=None, help="Min volume surge ratio (e.g. 1.5)")
     parser.add_argument("--max-ask-drift", type=float, default=None, help="Max ask drift from window start (e.g. 0.06)")
+    parser.add_argument("--require-btc15-agree", action="store_true", help="Skip when BTC 15min trend disagrees")
+    parser.add_argument("--btc15-min-prob", type=float, default=None, help="BTC15 opposing prob threshold (default 0.55)")
+    parser.add_argument("--require-eth-agree", action="store_true", help="Skip when ETH 5min moves opposite")
+    parser.add_argument("--require-cvd-agree", action="store_true", help="Skip when CVD slope disagrees")
+    parser.add_argument("--max-peak-retracement", type=float, default=None, help="Max peak retracement ratio (e.g. 0.50 = 50%%)")
+    parser.add_argument("--min-efficiency-ratio", type=float, default=None, help="Min ER to enter (e.g. 0.3)")
+    parser.add_argument("--require-immediate-momentum", action="store_true", help="Last 10s BTC must match direction")
+    parser.add_argument("--prev-window-block", type=float, default=None, help="Block same-dir after prev window moved X%% (e.g. 0.10)")
+    parser.add_argument("--block-slow-clob", action="store_true", help="Block entry when CLOB velocity is slow")
+    parser.add_argument("--slow-clob-lo", type=float, default=None, help="Slow CLOB velocity lower bound (default -0.05)")
+    parser.add_argument("--slow-clob-hi", type=float, default=None, help="Slow CLOB velocity upper bound (default 0.05)")
+    parser.add_argument("--clob-exit", action="store_true", help="Enable CLOB exit near expiry")
+    parser.add_argument("--clob-exit-remaining", type=float, default=None, help="Seconds remaining to check CLOB exit (default 10)")
+    parser.add_argument("--clob-exit-opp-threshold", type=float, default=None, help="Opposing ask threshold for CLOB exit (default 0.65)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -907,6 +1153,34 @@ def main():
         os.environ["REPLAY_VOL_SURGE"] = str(args.vol_surge)
     if args.max_ask_drift is not None:
         os.environ["REPLAY_MAX_ASK_DRIFT"] = str(args.max_ask_drift)
+    if args.require_btc15_agree:
+        os.environ["REPLAY_REQUIRE_BTC15_AGREE"] = "1"
+    if args.btc15_min_prob is not None:
+        os.environ["REPLAY_BTC15_MIN_PROB"] = str(args.btc15_min_prob)
+    if args.require_eth_agree:
+        os.environ["REPLAY_REQUIRE_ETH_AGREE"] = "1"
+    if args.require_cvd_agree:
+        os.environ["REPLAY_REQUIRE_CVD_AGREE"] = "1"
+    if args.max_peak_retracement is not None:
+        os.environ["REPLAY_MAX_PEAK_RETRACEMENT"] = str(args.max_peak_retracement)
+    if args.min_efficiency_ratio is not None:
+        os.environ["REPLAY_MIN_EFFICIENCY_RATIO"] = str(args.min_efficiency_ratio)
+    if args.require_immediate_momentum:
+        os.environ["REPLAY_REQUIRE_IMMEDIATE_MOMENTUM"] = "1"
+    if args.prev_window_block is not None:
+        os.environ["REPLAY_PREV_WINDOW_BLOCK_PCT"] = str(args.prev_window_block)
+    if hasattr(args, 'block_slow_clob') and args.block_slow_clob:
+        os.environ["REPLAY_BLOCK_SLOW_CLOB"] = "1"
+    if hasattr(args, 'slow_clob_lo') and args.slow_clob_lo is not None:
+        os.environ["REPLAY_SLOW_CLOB_LO"] = str(args.slow_clob_lo)
+    if hasattr(args, 'slow_clob_hi') and args.slow_clob_hi is not None:
+        os.environ["REPLAY_SLOW_CLOB_HI"] = str(args.slow_clob_hi)
+    if args.clob_exit:
+        os.environ["REPLAY_CLOB_EXIT"] = "1"
+    if args.clob_exit_remaining is not None:
+        os.environ["REPLAY_CLOB_EXIT_REMAINING"] = str(args.clob_exit_remaining)
+    if args.clob_exit_opp_threshold is not None:
+        os.environ["REPLAY_CLOB_EXIT_OPP_THRESHOLD"] = str(args.clob_exit_opp_threshold)
 
     conn = connect_db()
     end_ts = _time_mod.time()
