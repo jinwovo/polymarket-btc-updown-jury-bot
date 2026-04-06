@@ -95,6 +95,8 @@ class DataCollector:
         self.btc_price_adjusted: Optional[float] = None  # Chainlink-calibrated
         self._chainlink = ChainlinkCalibrator()
         self.window_start_price: Optional[float] = None
+        self._window_initial_up_ask: Optional[float] = None
+        self._window_initial_down_ask: Optional[float] = None
         self._window_start_official: bool = False
         self._ptb_scrape_done: bool = False
         self._running = False
@@ -825,6 +827,23 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("BB/VWAP calc err: %s", _e)
 
+            # --- Ask drift: how much CLOB ask moved from window start ---
+            _ask_drift = None
+            try:
+                if up_ask and dn_ask:
+                    # Capture initial ask on first valid reading
+                    if self._window_initial_up_ask is None and float(up_ask) > 0.01:
+                        self._window_initial_up_ask = float(up_ask)
+                        self._window_initial_down_ask = float(dn_ask)
+                    # Compute drift
+                    if self._window_initial_up_ask is not None:
+                        if decision.direction == "UP":
+                            _ask_drift = round(float(up_ask) - self._window_initial_up_ask, 4)
+                        else:
+                            _ask_drift = round(float(dn_ask) - self._window_initial_down_ask, 4)
+            except Exception as _e:
+                logger.warning("Ask drift calc err: %s", _e)
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -841,7 +860,7 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
                     _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
-                    _bb_pos, _vwap_agree,
+                    _bb_pos, _vwap_agree, _ask_drift,
             )
             execute_write(
                 self.db,
@@ -853,8 +872,8 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bb_pos, vwap_agree, ask_drift)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
@@ -870,8 +889,8 @@ class DataCollector:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        bb_pos, vwap_agree, ask_drift)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()
@@ -894,6 +913,8 @@ class DataCollector:
                     # Start tracking new window -- chainlink_adj immediately, scrape at +3s
                     self.current_window_start = window_start
                     self.window_start_price = None
+                    self._window_initial_up_ask = None
+                    self._window_initial_down_ask = None
                     self._window_start_official = False
                     self._window_start_source = "none"
                     self._ptb_scrape_done = False

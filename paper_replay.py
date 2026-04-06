@@ -217,6 +217,7 @@ class PaperReplay:
         self.require_vwap_agree = os.getenv("REPLAY_REQUIRE_VWAP_AGREE", "0") == "1"
         self.require_vel_consistency = float(os.getenv("REPLAY_VEL_CONSISTENCY", "0"))  # 0=off, e.g. 0.6
         self.require_vol_surge = float(os.getenv("REPLAY_VOL_SURGE", "0"))  # 0=off, e.g. 1.5
+        self.max_ask_drift = float(os.getenv("REPLAY_MAX_ASK_DRIFT", "0"))  # 0=off, e.g. 0.06
 
     def _check_brt(self, ws: int, entry_ts: float, start_price: float) -> bool:
         """Breakout-Retest-Continuation: BTC broke out, retested start, continued."""
@@ -488,6 +489,17 @@ class PaperReplay:
             # Re-check price filters after drift adjustment
             if entry_price > self.max_entry_price:
                 continue
+
+            # Ask drift filter: skip when CLOB already priced in the move
+            if self.max_ask_drift > 0 and self._cache:
+                # Get first odds for this window (near window start)
+                _first_odds = self._cache.odds_at(ws, float(ws) + 5)
+                if _first_odds:
+                    _init_ask = float(_first_odds.get("up_best_ask") or 0.5) if direction == "UP" \
+                        else float(_first_odds.get("down_best_ask") or 0.5)
+                    _ask_drift = entry_price - _init_ask
+                    if _ask_drift > self.max_ask_drift:
+                        continue  # CLOB already moved, edge gone
 
             # BB extreme filter: only enter when price is at Bollinger Band extremes
             if self.require_bb_extreme and self._cache:
@@ -849,6 +861,7 @@ def main():
     parser.add_argument("--require-vwap-agree", action="store_true", help="Only enter when price vs VWAP agrees with direction")
     parser.add_argument("--vel-consistency", type=float, default=None, help="Min velocity consistency ratio (e.g. 0.6)")
     parser.add_argument("--vol-surge", type=float, default=None, help="Min volume surge ratio (e.g. 1.5)")
+    parser.add_argument("--max-ask-drift", type=float, default=None, help="Max ask drift from window start (e.g. 0.06)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -892,6 +905,8 @@ def main():
         os.environ["REPLAY_VEL_CONSISTENCY"] = str(args.vel_consistency)
     if args.vol_surge is not None:
         os.environ["REPLAY_VOL_SURGE"] = str(args.vol_surge)
+    if args.max_ask_drift is not None:
+        os.environ["REPLAY_MAX_ASK_DRIFT"] = str(args.max_ask_drift)
 
     conn = connect_db()
     end_ts = _time_mod.time()

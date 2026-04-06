@@ -1407,6 +1407,12 @@ def open_trade_if_signal(
             if _vwap_val is not None and int(_vwap_val) == 0:
                 logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
                 return False
+        _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
+        if _max_ask_drift > 0:
+            _drift_val = cached.get("ask_drift")
+            if _drift_val is not None and float(_drift_val) > _max_ask_drift:
+                logger.debug("Skip ask drift ws=%s: drift=%.3f > %.3f", window_start, float(_drift_val), _max_ask_drift)
+                return False
 
     # When reading from signal_cache, gate checks are already done by data_collector.
     # Skip all remaining gate-dependent checks (lag edge, contra gap, adaptive EV)

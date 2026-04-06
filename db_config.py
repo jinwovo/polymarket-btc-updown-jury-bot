@@ -445,6 +445,9 @@ def init_market_schema(conn):
         "ALTER TABLE signal_cache ADD COLUMN vwap_agree TINYINT NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN bb_pos DOUBLE NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN vwap_agree TINYINT NULL",
+        # Ask drift: how much CLOB ask moved from window start
+        "ALTER TABLE signal_cache ADD COLUMN ask_drift DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN ask_drift DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

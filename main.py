@@ -4004,6 +4004,12 @@ class TradingBot:
                 if _vwap_val is not None and int(_vwap_val) == 0:
                     logger.info("Skip VWAP disagree dir=%s", decision.direction)
                     return
+            _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
+            if _max_ask_drift > 0:
+                _drift_val = _sig_row.get("ask_drift") if _sig_row else None
+                if _drift_val is not None and float(_drift_val) > _max_ask_drift:
+                    logger.info("Skip ask drift: %.3f > %.3f", float(_drift_val), _max_ask_drift)
+                    return
 
             # Create proxy gate object for downstream code
             class _GateProxy:
