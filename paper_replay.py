@@ -93,35 +93,61 @@ class _RamCache:
             "up_mid": r[6], "down_mid": r[7],
         } for r in rows2]
 
-        # BTC 15-min odds (for trend confirmation)
+        # BTC 15-min odds (lazy load - only if needed)
+        self.btc15_ts = []
+        self.btc15_ua = []
+        self.btc15_da = []
+        self.eth_ts = []
+        self.eth_px = []
+        self._btc15_loaded = False
+        self._eth_loaded = False
+        self._conn_ref = conn
+        self._start_ts = start_ts
+        self._end_ts = end_ts
+
+        # Preload market_windows for fast outcome lookup
+        cur.execute("SELECT window_start, actual_outcome, btc_start_price FROM market_windows WHERE window_start >= %s AND window_start <= %s",
+                    (int(start_ts) - 300, int(end_ts) + 300))
+        self._mw_map = {}
+        for r in cur.fetchall():
+            self._mw_map[int(r[0])] = {"actual_outcome": r[1], "btc_start_price": float(r[2]) if r[2] else None}
+
+        t1 = _time_mod.time()
+        logger.info("RAM loaded: %d btc_ticks, %d poly_odds, %d market_windows in %.1fs",
+                     len(self.btc_ts), len(self.odds_ts), len(self._mw_map), t1 - t0)
+
+    def _ensure_btc15(self):
+        if self._btc15_loaded:
+            return
+        self._btc15_loaded = True
         try:
+            cur = self._conn_ref.cursor()
             cur.execute("""SELECT ts, window_start, up_best_ask, down_best_ask
                           FROM poly_odds WHERE slug LIKE 'btc-updown-15m%%'
                           AND ts >= %s AND ts <= %s ORDER BY ts""",
-                        (int(start_ts) - 900, int(end_ts) + 900))
+                        (int(self._start_ts) - 900, int(self._end_ts) + 900))
             rows15 = cur.fetchall()
             self.btc15_ts = [float(r[0]) for r in rows15]
             self.btc15_ua = [float(r[2] or 0.5) for r in rows15]
             self.btc15_da = [float(r[3] or 0.5) for r in rows15]
+            logger.info("Lazy loaded %d btc15_odds", len(self.btc15_ts))
         except Exception:
-            self.btc15_ts = []
-            self.btc15_ua = []
-            self.btc15_da = []
+            pass
 
-        # ETH ticks (for cross-market correlation)
+    def _ensure_eth(self):
+        if self._eth_loaded:
+            return
+        self._eth_loaded = True
         try:
+            cur = self._conn_ref.cursor()
             cur.execute("SELECT ts, price FROM eth_ticks WHERE ts >= %s AND ts <= %s ORDER BY ts",
-                        (int(start_ts) - 600, int(end_ts) + 300))
+                        (int(self._start_ts) - 600, int(self._end_ts) + 300))
             rows_eth = cur.fetchall()
             self.eth_ts = [float(r[0]) for r in rows_eth]
             self.eth_px = [float(r[1]) for r in rows_eth]
+            logger.info("Lazy loaded %d eth_ticks", len(self.eth_ts))
         except Exception:
-            self.eth_ts = []
-            self.eth_px = []
-
-        t1 = _time_mod.time()
-        logger.info("RAM loaded: %d btc_ticks, %d poly_odds, %d btc15_odds, %d eth_ticks in %.1fs",
-                     len(self.btc_ts), len(self.odds_ts), len(self.btc15_ts), len(self.eth_ts), t1 - t0)
+            pass
 
     def price_at(self, ts: float):
         idx = self._bisect.bisect_right(self.btc_ts, ts) - 1
@@ -248,6 +274,7 @@ class _RamCache:
     def btc15_trend(self, ts: float):
         """Get BTC 15-min market direction at timestamp.
         Returns (up_ask, down_ask) or (None, None)."""
+        self._ensure_btc15()
         if not self.btc15_ts:
             return None, None
         idx = self._bisect.bisect_right(self.btc15_ts, ts) - 1
@@ -257,6 +284,7 @@ class _RamCache:
 
     def eth_move_pct(self, ws_start: float, ts: float):
         """ETH price move % from window start to ts."""
+        self._ensure_eth()
         if not self.eth_ts:
             return None
         i0 = self._bisect.bisect_left(self.eth_ts, ws_start)
@@ -875,18 +903,24 @@ class PaperReplay:
             down_ask = _safe_prob(odds_row.get("down_best_ask")) or _safe_prob(odds_row.get("down_mid"))
             opposite_ask = up_ask if direction == "DOWN" else down_ask
 
-            # BTC price
-            btc_now = _price_at_or_near(self.conn, t, prefer_before=True)
-            btc_entry = _price_at_or_near(self.conn, opened_at, prefer_before=True)
-            current_btc = float(btc_now) if btc_now else 0.0
-            start_btc = float(fetch_one_dict(self.conn,
-                "SELECT btc_start_price FROM market_windows WHERE window_start = %s", (ws,)
-            ).get("btc_start_price") or current_btc) if current_btc > 0 else 0.0
+            # BTC price (RAM cache for speed)
+            if self._cache:
+                current_btc = self._cache.price_at(t) or 0.0
+                _btc_entry_val = self._cache.price_at(opened_at) or current_btc
+                _mw = self._cache._mw_map.get(ws)
+                start_btc = float(_mw["btc_start_price"]) if _mw and _mw.get("btc_start_price") else current_btc
+            else:
+                btc_now = _price_at_or_near(self.conn, t, prefer_before=True)
+                _btc_entry_val = _price_at_or_near(self.conn, opened_at, prefer_before=True)
+                current_btc = float(btc_now) if btc_now else 0.0
+                _mw_row = fetch_one_dict(self.conn,
+                    "SELECT btc_start_price FROM market_windows WHERE window_start = %s", (ws,))
+                start_btc = float(_mw_row.get("btc_start_price") or current_btc) if _mw_row and current_btc > 0 else current_btc
 
             btc_move_entry = None
             btc_adverse_ok = True
-            if btc_entry and btc_now and float(btc_entry) > 0:
-                btc_move_entry = ((float(btc_now) - float(btc_entry)) / float(btc_entry)) * 100.0
+            if _btc_entry_val and current_btc and float(_btc_entry_val) > 0:
+                btc_move_entry = ((float(current_btc) - float(_btc_entry_val)) / float(_btc_entry_val)) * 100.0
                 if self.exit_cfg.stop_loss_require_btc_adverse:
                     thr = abs(float(self.exit_cfg.stop_loss_btc_adverse_pct))
                     if direction == "UP":
@@ -894,9 +928,15 @@ class PaperReplay:
                     else:
                         btc_adverse_ok = float(btc_move_entry) >= thr
 
-            recent_ts, recent_prices = _recent_price_series(self.conn, t, lookback_sec=180.0)
-            if recent_prices:
-                current_btc = float(recent_prices[-1])
+            if self._cache:
+                _rts, _rpx = self._cache.prices_range(t - 180, t)
+                recent_ts, recent_prices = _rts, _rpx
+                if _rpx:
+                    current_btc = float(_rpx[-1])
+            else:
+                recent_ts, recent_prices = _recent_price_series(self.conn, t, lookback_sec=180.0)
+                if recent_prices:
+                    current_btc = float(recent_prices[-1])
 
             trade_key = ws
             peak = max(float(self.peak_roi.get(trade_key, -999.0)), float(mtm_roi_pct))
