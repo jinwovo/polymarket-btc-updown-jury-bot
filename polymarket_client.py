@@ -696,6 +696,54 @@ class PolymarketClient:
                     pass
         return None
 
+    @classmethod
+    def _scrape_ptb_separate_tab(cls, slug: str) -> tuple:
+        """Scrape PTB + Current price using a SEPARATE TAB (no impact on main page).
+        Returns (ptb, current_price) or (None, None)."""
+        import re
+        if cls._pw_browser is None:
+            if not cls._ensure_browser():
+                return None, None
+        url = f"https://polymarket.com/event/{slug}"
+        temp_page = None
+        try:
+            temp_page = cls._pw_browser.new_page()
+            temp_page.goto(url, wait_until="domcontentloaded", timeout=12000)
+            import time
+            time.sleep(2.5)
+
+            text = temp_page.evaluate("""() => {
+                const body = document.body.innerText;
+                const result = {};
+                // PTB (case-insensitive)
+                const ptbMatch = body.match(/price\\s+to\\s+beat[:\\s]*\\$?([\\d,]+\\.\\d{2})/i);
+                if (ptbMatch) result.ptb = ptbMatch[1];
+                // Current price
+                const cpMatch = body.match(/current\\s+price[:\\s]*\\$?([\\d,]+\\.\\d{2})/i);
+                if (cpMatch) result.cp = cpMatch[1];
+                return JSON.stringify(result);
+            }""")
+            ptb = None
+            current = None
+            if text:
+                data = json.loads(text)
+                if data.get("ptb"):
+                    ptb = float(data["ptb"].replace(",", ""))
+                if data.get("cp"):
+                    current = float(data["cp"].replace(",", ""))
+            if ptb and ptb > 100:
+                logger.info("PTB scraped (separate tab): $%.2f from %s", ptb, slug)
+            return ptb, current
+        except Exception as e:
+            logger.debug("PTB separate tab scrape failed for %s: %s", slug, e)
+        finally:
+            if temp_page:
+                try:
+                    temp_page.close()
+                except Exception:
+                    pass
+        return None, None
+
     async def scrape_final_price(self, slug: str, **kwargs) -> Optional[float]:
         """Scrape Final price from resolved window using a separate browser tab.
         Does NOT interrupt the main page or price sync loop."""
