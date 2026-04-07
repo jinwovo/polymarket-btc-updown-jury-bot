@@ -2143,12 +2143,15 @@ class TradingBot:
             pass
         if current_ask is not None:
             if abs(current_ask - retry["price"]) > _retry_drift_max:
-                logger.info(
-                    "Entry retry: price moved too far (saved=%.4f current=%.4f), cancelling",
+                # Don't cancel — price might come back. Just skip this tick.
+                logger.debug(
+                    "Entry retry: price drifted (saved=%.4f current=%.4f), waiting...",
                     retry["price"], current_ask,
                 )
-                self._pending_entry_retry = None
                 return False
+            # Price came back or is better — update to current price for FAK
+            if current_ask < retry["price"]:
+                retry["price"] = current_ask  # use cheaper price
 
         logger.info(
             "Entry retry attempt #%d: dir=%s price=%.4f $%.2f (age=%.1fs)",
