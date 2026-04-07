@@ -2597,6 +2597,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(_mm_get_status[path].status(), code=200)
             return
 
+        # Multi-market paper/live history (GET)
+        _mm_paper_get = {
+            "/api/btc15/paper-history": "paper_trades_btc15",
+            "/api/eth5/paper-history": "paper_trades_eth5",
+        }
+        if path in _mm_paper_get:
+            try:
+                table = _mm_paper_get[path]
+                conn = connect_db()
+                _qs_h = parse_qs(parsed.query)
+                limit = int(_qs_h.get("limit", ["50"])[0])
+                offset = int(_qs_h.get("offset", ["0"])[0])
+                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} WHERE archived_at IS NULL ORDER BY opened_at DESC LIMIT %s OFFSET %s", (limit, offset))
+                total_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table} WHERE archived_at IS NULL")
+                total = int(total_row[0]) if total_row else 0
+                conn.close()
+                self._send_json({"ok": True, "trades": rows, "total": total})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        _mm_live_get = {
+            "/api/btc15/live-trade-history": "live_trades_btc15",
+            "/api/eth5/live-trade-history": "live_trades_eth5",
+        }
+        if path in _mm_live_get:
+            try:
+                table = _mm_live_get[path]
+                conn = connect_db()
+                _qs_h = parse_qs(parsed.query)
+                limit = int(_qs_h.get("limit", ["50"])[0])
+                offset = int(_qs_h.get("offset", ["0"])[0])
+                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} ORDER BY opened_at DESC LIMIT %s OFFSET %s", (limit, offset))
+                total_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table}")
+                total = int(total_row[0]) if total_row else 0
+                conn.close()
+                self._send_json({"ok": True, "trades": rows, "total": total})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
         # Multi-market paper equity + live PnL endpoints
         _mm_equity = {
             "/api/btc15/paper-equity": "paper_trades_btc15",
@@ -3193,7 +3234,7 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
     try:
         conn = _connect_db()
         execute_write(conn, "UPDATE accounts SET status='RUNNING', pid=%s WHERE id=%s",
-                     (proc._process.pid if proc._process else None, account_id))
+                     (proc._proc.pid if proc._proc else None, account_id))
         conn.commit()
     except Exception:
         pass
@@ -3249,10 +3290,10 @@ def build_account_status(account_id: int) -> dict:
     return {
         "account": {k: v for k, v in acct.items() if k not in ("private_key", "api_secret", "api_passphrase")},
         "running": running,
-        "pid": proc._process.pid if proc and proc._process else None,
+        "pid": proc._proc.pid if proc and proc._proc else None,
         "today_pnl": pnl,
         "today_trades": trade_count,
-        "log_lines": list(proc._output_lines) if proc else [],
+        "log_lines": list(proc._output) if proc else [],
         "api_configured": api_configured,
         "funder": funder[:10] + "..." if len(funder) > 10 else funder,
         "telegram_configured": telegram_configured,

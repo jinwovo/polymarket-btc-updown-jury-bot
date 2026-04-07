@@ -2049,9 +2049,8 @@ async def _extra_market_poll(self):
     try:
         execute_write(self.db, """
             CREATE TABLE IF NOT EXISTS eth_ticks (
-                ts DOUBLE NOT NULL, price DOUBLE NOT NULL,
-                volume DOUBLE DEFAULT 0, buy_volume DOUBLE DEFAULT 0, sell_volume DOUBLE DEFAULT 0,
-                INDEX idx_eth_ts (ts)
+                ts DOUBLE PRIMARY KEY, price DOUBLE NOT NULL,
+                volume DOUBLE DEFAULT 0, buy_volume DOUBLE DEFAULT 0, sell_volume DOUBLE DEFAULT 0
             ) ENGINE=InnoDB
         """)
         self.db.commit()
@@ -2068,7 +2067,7 @@ async def _extra_market_poll(self):
                         _eth_price["price"] = float(resp_eth.json().get("price", 0))
                         _eth_price["ts"] = now
                         # Store eth tick
-                        execute_write(self.db, "INSERT INTO eth_ticks (ts, price) VALUES (%s, %s)",
+                        execute_write(self.db, "INSERT INTO eth_ticks (ts, price) VALUES (%s, %s) ON DUPLICATE KEY UPDATE price=VALUES(price)",
                                      (now, _eth_price["price"]))
                 except Exception:
                     pass
@@ -2107,9 +2106,9 @@ async def _extra_market_poll(self):
                             elif mkt["price_source"] == "eth" and _eth_price["price"] > 0:
                                 start_price = _eth_price["price"]
                             execute_write(self.db, """
-                                INSERT IGNORE INTO market_windows (window_start, slug, btc_start_price)
-                                VALUES (%s, %s, %s)
-                            """, (ws, slug, start_price))
+                                INSERT IGNORE INTO market_windows (window_start, window_end, slug, btc_start_price)
+                                VALUES (%s, %s, %s, %s)
+                            """, (ws, ws + interval, slug, start_price))
                             self.db.commit()
                             logger.info("Extra market: %s window=%s start=$%.2f", mkt["label"], slug, start_price)
                             # PTB scrape disabled: Playwright sync API + async thread = greenlet crash
@@ -2307,7 +2306,7 @@ async def _eth_ws(self):
                         sell_vol = volume if is_buyer_maker else 0.0
                         try:
                             execute_write(self.db,
-                                "INSERT INTO eth_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (%s,%s,%s,%s,%s)",
+                                "INSERT INTO eth_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE price=VALUES(price), volume=VALUES(volume), buy_volume=VALUES(buy_volume), sell_volume=VALUES(sell_volume)",
                                 (bucket, price, volume, buy_vol, sell_vol))
                         except Exception:
                             pass
