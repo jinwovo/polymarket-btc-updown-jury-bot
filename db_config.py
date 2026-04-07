@@ -448,6 +448,9 @@ def init_market_schema(conn):
         # Ask drift: how much CLOB ask moved from window start
         "ALTER TABLE signal_cache ADD COLUMN ask_drift DOUBLE NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN ask_drift DOUBLE NULL",
+        # BTC still moving: 1 if BTC moved in judge direction over last 30s
+        "ALTER TABLE signal_cache ADD COLUMN btc_still_moving TINYINT NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN btc_still_moving TINYINT NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

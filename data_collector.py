@@ -844,6 +844,27 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("Ask drift calc err: %s", _e)
 
+            # --- BTC still moving: is BTC moving in judge direction over last 30s? ---
+            _btc_still_moving = None
+            try:
+                _prices = list(self._recent_prices)
+                _ts_arr = list(self._recent_timestamps)
+                if len(_prices) >= 10 and len(_ts_arr) >= 10:
+                    # Find price 30s ago
+                    _now_px = _prices[-1]
+                    _p30 = None
+                    for _i in range(len(_ts_arr) - 1, -1, -1):
+                        if _ts_arr[_i] <= now - 30:
+                            _p30 = _prices[_i]
+                            break
+                    if _p30 and _now_px and _p30 > 0:
+                        if decision.direction == "UP":
+                            _btc_still_moving = 1 if _now_px > _p30 else 0
+                        else:
+                            _btc_still_moving = 1 if _now_px < _p30 else 0
+            except Exception as _e:
+                logger.warning("BTC still moving calc err: %s", _e)
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -860,7 +881,7 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
                     _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
-                    _bb_pos, _vwap_agree, _ask_drift,
+                    _bb_pos, _vwap_agree, _ask_drift, _btc_still_moving,
             )
             execute_write(
                 self.db,
@@ -872,8 +893,8 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree, ask_drift)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bb_pos, vwap_agree, ask_drift, btc_still_moving)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
@@ -889,8 +910,8 @@ class DataCollector:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree, ask_drift)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        bb_pos, vwap_agree, ask_drift, btc_still_moving)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()

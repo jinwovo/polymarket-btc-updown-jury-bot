@@ -1407,6 +1407,12 @@ def open_trade_if_signal(
             if _vwap_val is not None and int(_vwap_val) == 0:
                 logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
                 return False
+        _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+        if _require_btc_still:
+            _bsm_val = cached.get("btc_still_moving")
+            if _bsm_val is not None and int(_bsm_val) == 0:
+                logger.debug("Skip BTC not moving in direction ws=%s", window_start)
+                return False
         _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
         if _max_ask_drift > 0:
             _drift_val = cached.get("ask_drift")

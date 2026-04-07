@@ -4004,6 +4004,12 @@ class TradingBot:
                 if _vwap_val is not None and int(_vwap_val) == 0:
                     logger.info("Skip VWAP disagree dir=%s", decision.direction)
                     return
+            _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+            if _require_btc_still:
+                _bsm_val = _sig_row.get("btc_still_moving") if _sig_row else None
+                if _bsm_val is not None and int(_bsm_val) == 0:
+                    logger.info("Skip BTC not moving in direction")
+                    return
             _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
             if _max_ask_drift > 0:
                 _drift_val = _sig_row.get("ask_drift") if _sig_row else None
