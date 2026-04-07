@@ -3980,48 +3980,70 @@ class TradingBot:
             _gate_reason = str(_sig_row.get("gate_reason") or "")
             _gate_ev = float(_sig_row.get("gate_ev") or 0)
             _gate_dir = str(_sig_row.get("direction") or "")
-            # Lock: once gate_allow=1, remember for 5 seconds
+            # Lock: once gate_allow=1 AND all filters pass, lock for 5 seconds
+            # This ensures paper and live see the SAME filter values (parity)
             _now = time.time()
             _lock = getattr(self, '_gate_lock', None)
+            _cur_ws = int(_sig_row.get("window_start") or 0)
+
             if _gate_allow and _gate_dir in ("UP", "DOWN"):
-                self._gate_lock = {"ts": _now, "dir": _gate_dir, "ev": _gate_ev, "reason": _gate_reason, "ws": int(_sig_row.get("window_start") or 0)}
-            elif _lock and _lock.get("ws") == int(_sig_row.get("window_start") or 0) and (_now - _lock["ts"]) < 2.0:
-                # Use locked gate values
+                # Check filters NOW and lock the result
+                _bb_pos_val = _sig_row.get("bb_pos") if _sig_row else None
+                _vwap_val = _sig_row.get("vwap_agree") if _sig_row else None
+                _drift_val = _sig_row.get("ask_drift") if _sig_row else None
+                _bsm_val = _sig_row.get("btc_still_moving") if _sig_row else None
+                _qs_val = _sig_row.get("quality_score") if _sig_row else None
+
+                _filters_pass = True
+                _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
+                _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
+                _bb_thresh = float(os.getenv("PAPER_BB_THRESHOLD", "0.5"))
+
+                if _bb_filter_on and _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+                    _filters_pass = False
+                if _vwap_filter_on and _vwap_val is not None and int(_vwap_val) == 0:
+                    _filters_pass = False
+                _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+                if _require_btc_still and _bsm_val is not None and int(_bsm_val) == 0:
+                    _filters_pass = False
+                _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
+                if _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
+                    _filters_pass = False
+
+                if _filters_pass:
+                    self._gate_lock = {
+                        "ts": _now, "dir": _gate_dir, "ev": _gate_ev, "reason": _gate_reason,
+                        "ws": _cur_ws, "bb_pos": _bb_pos_val, "vwap_agree": _vwap_val,
+                        "ask_drift": _drift_val, "btc_still_moving": _bsm_val, "quality_score": _qs_val,
+                    }
+                else:
+                    # Filters failed — don't lock, don't trade
+                    if _bb_filter_on and _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+                        logger.info("Skip BB not extreme: bb_pos=%.3f < %.1f", float(_bb_pos_val), _bb_thresh)
+                    elif _vwap_filter_on and _vwap_val is not None and int(_vwap_val) == 0:
+                        logger.info("Skip VWAP disagree dir=%s", decision.direction)
+                    elif _require_btc_still and _bsm_val is not None and int(_bsm_val) == 0:
+                        logger.info("Skip BTC not moving in direction")
+                    elif _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
+                        logger.info("Skip ask drift: %.3f > %.3f", float(_drift_val), _max_ask_drift)
+                    return
+
+            elif _lock and _lock.get("ws") == _cur_ws and (_now - _lock["ts"]) < 2.0:
+                # Use locked values — same as what paper will see
                 _gate_allow = 1
                 _gate_dir = _lock["dir"]
                 _gate_ev = _lock["ev"]
                 _gate_reason = _lock["reason"]
-            # lag_arb DISABLED: 45% WR in paper_replay
+            else:
+                _gate_allow = 0
+
             if not _gate_allow:
                 logger.info("Skip: gate_allow=0 (gate: %s)", _gate_reason)
                 return
 
-            # BB extreme + VWAP agree filter (same as paper, reads signal_cache)
-            _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
-            _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
-            if _bb_filter_on:
-                _bb_pos_val = _sig_row.get("bb_pos") if _sig_row else None
-                _bb_thresh = float(os.getenv("PAPER_BB_THRESHOLD", "0.5"))
-                if _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
-                    logger.info("Skip BB not extreme: bb_pos=%.3f < %.1f", float(_bb_pos_val), _bb_thresh)
-                    return
-            if _vwap_filter_on:
-                _vwap_val = (_sig_row.get("vwap_agree") if _sig_row else None)
-                if _vwap_val is not None and int(_vwap_val) == 0:
-                    logger.info("Skip VWAP disagree dir=%s", decision.direction)
-                    return
-            _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
-            if _require_btc_still:
-                _bsm_val = _sig_row.get("btc_still_moving") if _sig_row else None
-                if _bsm_val is not None and int(_bsm_val) == 0:
-                    logger.info("Skip BTC not moving in direction")
-                    return
-            _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
-            if _max_ask_drift > 0:
-                _drift_val = _sig_row.get("ask_drift") if _sig_row else None
-                if _drift_val is not None and float(_drift_val) > _max_ask_drift:
-                    logger.info("Skip ask drift: %.3f > %.3f", float(_drift_val), _max_ask_drift)
-                    return
+            # Store quality_score from locked values
+            if _lock and _lock.get("ws") == _cur_ws and _lock.get("quality_score") is not None:
+                self._last_quality_score = float(_lock["quality_score"])
 
             # Create proxy gate object for downstream code
             class _GateProxy:
