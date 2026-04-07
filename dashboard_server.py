@@ -3095,6 +3095,17 @@ def main():
     if not DASHBOARD_DIR.exists():
         raise RuntimeError(f"Dashboard assets not found: {DASHBOARD_DIR}")
 
+    # Auto-start signal generators on server boot
+    for sig_name, sig_script, sig_proc in [
+        ("BTC 15min", "signal_generator_btc15.py", SIGNAL_BTC15_PROC),
+        ("ETH 5min", "signal_generator_eth5.py", SIGNAL_ETH5_PROC),
+    ]:
+        try:
+            sig_proc.start(_python_command(sig_script, []), meta={"auto_started": True})
+            logger.info("Auto-started signal generator: %s", sig_name)
+        except Exception as e:
+            logger.warning("Failed to auto-start %s signal generator: %s", sig_name, e)
+
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     logger.info("Dashboard server running at http://%s:%d", args.host, args.port)
     try:
