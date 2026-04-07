@@ -519,7 +519,7 @@ class BTC15SignalGenerator:
                 pw = ws - INTERVAL
                 pr = fetch_one_dict(
                     self.db,
-                    "SELECT actual_outcome FROM market_windows WHERE window_start = %s",
+                    "SELECT actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-15m%%'",
                     (pw,),
                 )
                 if pr and pr.get("actual_outcome"):

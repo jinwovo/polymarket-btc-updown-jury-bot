@@ -233,7 +233,7 @@ class ETH5SignalGenerator:
         # Try market_windows first
         row = fetch_one_dict(
             self.db,
-            "SELECT btc_start_price FROM market_windows WHERE window_start = %s",
+            "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug LIKE 'eth-updown-5m%%'",
             (ws,),
         )
         if row and row.get("btc_start_price") and float(row["btc_start_price"]) > 0:
@@ -412,7 +412,7 @@ class ETH5SignalGenerator:
         try:
             row = fetch_one_dict(
                 self.db,
-                "SELECT actual_outcome FROM market_windows WHERE window_start = %s",
+                "SELECT actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE 'eth-updown-5m%%'",
                 (prev_ws,),
             )
             if row and row.get("actual_outcome"):
