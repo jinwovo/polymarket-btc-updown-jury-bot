@@ -3315,6 +3315,11 @@ def build_account_status(account_id: int) -> dict:
     except Exception:
         pass
 
+    # Convert datetime fields to string for JSON serialization
+    for k, v in list(acct.items()):
+        if hasattr(v, 'isoformat'):
+            acct[k] = v.isoformat()
+
     # API config status from DB (not .env.secrets)
     api_configured = bool(acct.get("api_key") and acct.get("private_key"))
     funder = str(acct.get("funder", "")) or ""
