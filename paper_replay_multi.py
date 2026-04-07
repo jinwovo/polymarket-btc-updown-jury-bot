@@ -781,15 +781,33 @@ class PaperReplayMulti:
             logger.error("No RAM cache -- cannot replay")
             return []
 
-        # Get all resolved windows in range from market_windows
-        windows = fetch_all_dicts(self.conn, """
-            SELECT window_start, actual_outcome
-            FROM market_windows
+        # Get all windows from poly_odds (more complete than market_windows)
+        _interval = self.market.interval_seconds
+        windows_raw = fetch_all_dicts(self.conn, """
+            SELECT DISTINCT window_start
+            FROM poly_odds
             WHERE slug LIKE %s
               AND window_start >= %s AND window_start <= %s
-              AND actual_outcome IN ('UP', 'DOWN')
             ORDER BY window_start ASC
-        """, (self.market.slug_prefix + "%", int(start_ts), int(end_ts)))
+        """, (self.market.slug_prefix + "%", int(start_ts), int(end_ts) - _interval))
+
+        # Determine outcome from price ticks (start vs end price)
+        windows = []
+        for wr in windows_raw:
+            ws = int(wr["window_start"])
+            we = ws + _interval
+            # Check market_windows first
+            mw = self._cache._mw_map.get(ws)
+            if mw and mw.get("actual_outcome") in ("UP", "DOWN"):
+                windows.append({"window_start": ws, "actual_outcome": mw["actual_outcome"]})
+                continue
+            # Fallback: compute from price ticks
+            sp = self._cache.price_at(float(ws) + 1)
+            ep = self._cache.price_at(float(we) - 1)
+            if sp and ep and sp > 0:
+                outcome = "UP" if ep > sp else "DOWN"
+                windows.append({"window_start": ws, "actual_outcome": outcome})
+            # else: skip (no price data)
 
         total = len(windows)
         logger.info("Replaying %d %s windows (%.1fh)", total, self.market.label,
