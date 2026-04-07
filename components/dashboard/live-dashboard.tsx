@@ -776,17 +776,18 @@ export function LiveDashboard() {
     return (await res.json()) as ProcessStatus;
   }
 
-  async function loadLiveStatus() {
-    const acctParam = selectedAccountId > 0 ? `?account_id=${selectedAccountId}` : "";
+  async function loadLiveStatus(accountId?: number) {
+    const aid = accountId ?? selectedAccountId;
+    const acctParam = aid > 0 ? `?account_id=${aid}` : "";
     const res = await fetch(`/api/control/live${acctParam}`, { cache: "no-store" });
     return (await res.json()) as LiveControlStatus;
   }
 
-  async function refreshLiveStatus() {
+  async function refreshLiveStatus(accountId?: number) {
     if (liveStatusInFlightRef.current) return null;
     liveStatusInFlightRef.current = true;
     try {
-      const live = await loadLiveStatus();
+      const live = await loadLiveStatus(accountId);
       setLiveStatus(live);
       return live;
     } finally {
@@ -2032,9 +2033,10 @@ export function LiveDashboard() {
                       if (val === "__add__") {
                         setShowAddAccount(true);
                       } else {
-                        setSelectedAccountId(Number(val));
-                        // Refresh live status when account changes
-                        setTimeout(() => refreshLiveStatus(), 100);
+                        const newId = Number(val);
+                        setSelectedAccountId(newId);
+                        // Refresh with new ID directly (don't rely on state update)
+                        refreshLiveStatus(newId);
                       }
                     }}
                     className="rounded-md border border-border/70 bg-background/40 px-2 py-1 text-sm"
