@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PY_API_BASE = process.env.PY_DASHBOARD_URL || "http://127.0.0.1:8790";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const response = await fetch(`${PY_API_BASE}/api/control/live`, {
+    const accountId = request.nextUrl.searchParams.get("account_id") || "0";
+    const response = await fetch(`${PY_API_BASE}/api/control/live?account_id=${accountId}`, {
       cache: "no-store",
     });
     const payload = await response.json();

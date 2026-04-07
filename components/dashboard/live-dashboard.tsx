@@ -777,7 +777,8 @@ export function LiveDashboard() {
   }
 
   async function loadLiveStatus() {
-    const res = await fetch("/api/control/live", { cache: "no-store" });
+    const acctParam = selectedAccountId > 0 ? `?account_id=${selectedAccountId}` : "";
+    const res = await fetch(`/api/control/live${acctParam}`, { cache: "no-store" });
     return (await res.json()) as LiveControlStatus;
   }
 
@@ -2037,6 +2038,8 @@ export function LiveDashboard() {
                         setShowAddAccount(true);
                       } else {
                         setSelectedAccountId(Number(val));
+                        // Refresh live status when account changes
+                        setTimeout(() => refreshLiveStatus(), 100);
                       }
                     }}
                     className="rounded-md border border-border/70 bg-background/40 px-2 py-1 text-sm"
