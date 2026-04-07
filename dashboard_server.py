@@ -2059,6 +2059,14 @@ def build_history(minutes: int = 30) -> dict:
         odds_rows = fetch_all_dicts(
             conn,
             """SELECT ts, up_mid, down_mid FROM poly_odds
+               WHERE ts >= ? AND ts <= ? AND slug LIKE 'btc-updown-5m%%'
+               ORDER BY ts ASC""",
+            (start_ts, now_ts),
+        )
+        # ETH price history
+        eth_rows = fetch_all_dicts(
+            conn,
+            """SELECT ts, price FROM eth_ticks
                WHERE ts >= ? AND ts <= ?
                ORDER BY ts ASC""",
             (start_ts, now_ts),
@@ -2089,12 +2097,22 @@ def build_history(minutes: int = 30) -> dict:
             max_points=320,
         )
 
+        eth = _downsample(
+            [
+                {"ts": _to_float(r["ts"]), "value": _to_float(r["price"])}
+                for r in eth_rows
+                if _to_float(r["ts"]) is not None and _to_float(r["price"]) is not None
+            ],
+            max_points=320,
+        )
+
         return {
             "ok": True,
             "minutes": minutes,
             "btc": btc,
             "up": up,
             "down": down,
+            "eth": eth,
         }
     finally:
         conn.close()

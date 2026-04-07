@@ -1562,6 +1562,7 @@ export function LiveDashboard() {
   const upSeries = history?.up?.map((p) => p.value) ?? [];
   const downSeries = history?.down?.map((p) => p.value) ?? [];
   const btcSeries5m = useMemo(() => windowSeries(history?.btc, 5 * 60), [history?.btc]);
+  const ethSeries5m = useMemo(() => windowSeries((history as any)?.eth, 5 * 60), [(history as any)?.eth]);
 
   return (
     <main className="pb-8">
@@ -1639,8 +1640,9 @@ export function LiveDashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              Mid UP/DOWN {formatNumber(market?.up_mid, 3)} / {formatNumber(market?.down_mid, 3)} | bid UP/DOWN{" "}
-              {formatNumber(market?.up_bid, 3)} / {formatNumber(market?.down_bid, 3)}
+              bid UP/DOWN{" "}
+              {formatNumber(market?.up_bid, 3)} / {formatNumber(market?.down_bid, 3)} | ask UP/DOWN{" "}
+              {formatNumber(market?.up_ask, 3)} / {formatNumber(market?.down_ask, 3)}
             </CardContent>
           </Card>
 
@@ -1670,31 +1672,24 @@ export function LiveDashboard() {
                 </p>
                 <Sparkline values={btcSeries} stroke="#22d3ee" fillGradient="#22d3ee" />
               </div>
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <div>
-                  <p className="tiny-label mb-2 flex items-center gap-2">
-                    <ArrowUpRight className="h-3.5 w-3.5 text-emerald-300" />
-                    UP Mid
-                  </p>
-                  <Sparkline values={upSeries} stroke="#34d399" fillGradient="#34d399" />
-                </div>
-                <div>
-                  <p className="tiny-label mb-2 flex items-center gap-2">
-                    <ArrowDownRight className="h-3.5 w-3.5 text-rose-300" />
-                    DOWN Mid
-                  </p>
-                  <Sparkline values={downSeries} stroke="#fb7185" fillGradient="#fb7185" />
-                </div>
-              </div>
               <div className="rounded-xl border border-border/70 bg-background/20 p-3">
                 <p className="tiny-label mb-3">Last 5 minutes (entry horizon)</p>
-                <div className="grid grid-cols-1 gap-4">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <div>
                     <p className="tiny-label mb-2">BTC 5m</p>
                     <Sparkline
                       values={btcSeries5m}
                       stroke="#22d3ee"
                       fillGradient="#22d3ee"
+                      className="h-[120px]"
+                    />
+                  </div>
+                  <div>
+                    <p className="tiny-label mb-2">ETH 5m</p>
+                    <Sparkline
+                      values={ethSeries5m}
+                      stroke="#a78bfa"
+                      fillGradient="#a78bfa"
                       className="h-[120px]"
                     />
                   </div>
