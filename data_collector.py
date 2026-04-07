@@ -865,6 +865,47 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("BTC still moving calc err: %s", _e)
 
+            # --- Quality score for dynamic sizing ---
+            _quality_score = None
+            try:
+                _prices = list(self._recent_prices)
+                _ts_arr = list(self._recent_timestamps)
+                if len(_prices) >= 30:
+                    quality = 1.0
+
+                    # Acceleration: compare velocity in 2nd half vs 1st half of last 30s
+                    _p_end = _prices[-1]
+                    _p_mid = _prices[-min(15, len(_prices)//2)]
+                    _p_start = _prices[-min(30, len(_prices))]
+                    _v1 = _p_end - _p_mid
+                    _v2 = _p_mid - _p_start
+                    _accel = _v1 - _v2
+                    if decision.direction == "DOWN":
+                        _accel = -_accel
+                    if _accel >= 18: quality += 0.5
+                    elif _accel >= 14: quality += 0.25
+                    elif _accel < 10: quality -= 0.3
+
+                    # CLOB ask stability (last 30s)
+                    if up_ask and dn_ask:
+                        _ask_history = getattr(self, '_ask_history', [])
+                        _cur_ask = float(up_ask) if decision.direction == "UP" else float(dn_ask)
+                        _ask_history.append(_cur_ask)
+                        if len(_ask_history) > 300:
+                            _ask_history = _ask_history[-300:]
+                        self._ask_history = _ask_history
+                        if len(_ask_history) >= 30:
+                            _recent_asks = _ask_history[-30:]
+                            _am = sum(_recent_asks) / len(_recent_asks)
+                            _astd = (sum((a - _am)**2 for a in _recent_asks) / len(_recent_asks))**0.5
+                            if _astd < 0.04: quality += 0.5
+                            elif _astd < 0.055: quality += 0.25
+                            elif _astd > 0.065: quality -= 0.3
+
+                    _quality_score = round(max(0.5, min(2.0, quality)), 2)
+            except Exception as _e:
+                logger.warning("Quality score calc err: %s", _e)
+
             import json as _json
             judges_json = _json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -881,7 +922,7 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
                     _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
-                    _bb_pos, _vwap_agree, _ask_drift, _btc_still_moving,
+                    _bb_pos, _vwap_agree, _ask_drift, _btc_still_moving, _quality_score,
             )
             execute_write(
                 self.db,
@@ -893,8 +934,8 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree, ask_drift, btc_still_moving)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
@@ -910,8 +951,8 @@ class DataCollector:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree, ask_drift, btc_still_moving)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()

@@ -451,6 +451,9 @@ def init_market_schema(conn):
         # BTC still moving: 1 if BTC moved in judge direction over last 30s
         "ALTER TABLE signal_cache ADD COLUMN btc_still_moving TINYINT NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN btc_still_moving TINYINT NULL",
+        # Quality score for dynamic sizing (0.5=low, 1.0=normal, 1.5=good, 2.0=great)
+        "ALTER TABLE signal_cache ADD COLUMN quality_score DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN quality_score DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)

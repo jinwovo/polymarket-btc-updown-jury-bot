@@ -1101,8 +1101,14 @@ class TradingBot:
             if fixed <= 0.0:
                 return 0.0
             base = round(max(float(config.trading.min_bet_size), fixed), 2)
+            # Dynamic sizing: adjust by quality_score from signal_cache
+            if os.getenv("PAPER_DYNAMIC_SIZING", "false").lower() == "true":
+                _qs = getattr(self, '_last_quality_score', None)
+                if _qs is not None:
+                    base = round(base * float(_qs), 2)
+                    base = max(float(config.trading.min_bet_size), base)
             # Kelly sizing: adjust by conviction score ($0.5x ~ $2x of base)
-            if os.getenv("LIVE_KELLY_SIZING", "true").lower() == "true":
+            elif os.getenv("LIVE_KELLY_SIZING", "true").lower() == "true":
                 _k_score = getattr(self, '_last_kelly_score', 3)
                 if _k_score >= 4:
                     base = round(base * 2.0, 2)
@@ -4295,6 +4301,10 @@ class TradingBot:
             self._last_kelly_score = _k_score
             logger.info("Kelly score: %d (conf=%.2f move=%.3f%% spread=%.2f ask=%.3f)",
                         _k_score, _k_conf, _k_move, _k_spread, _k_ep)
+            # Store quality_score from signal_cache for dynamic sizing
+            if _sig_row and _sig_row.get("quality_score") is not None:
+                self._last_quality_score = float(_sig_row["quality_score"])
+                logger.info("Quality score: %.2f", self._last_quality_score)
 
         bet_size = self._compute_entry_bet_size(
             decision.avg_confidence,

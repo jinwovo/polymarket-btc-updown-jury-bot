@@ -1650,6 +1650,13 @@ def open_trade_if_signal(
                 logger.info("Skip low score ws=%s: score=%d < %d (dir=%s)", window_start, _score, _min_score, direction)
                 return False
             logger.info("Score OK: %d/%d $%.2f (btc=%.3f%% conf=%.2f ev=%.2f prev=%s)", _score, _min_score, stake, _btc_move, _conf, _ev, _prev)
+        # Dynamic sizing: adjust stake based on quality_score from data_collector
+        if os.getenv("PAPER_DYNAMIC_SIZING", "false").lower() == "true" and cached:
+            _qs = cached.get("quality_score")
+            if _qs is not None:
+                _qs = float(_qs)
+                stake = round(stake * _qs, 2)
+                logger.debug("Dynamic sizing: quality=%.2f stake=$%.2f", _qs, stake)
         # Kelly sizing: adjust stake based on conviction score
         # Higher score = more conditions met = higher WR = bet more
         if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true" and cached:
