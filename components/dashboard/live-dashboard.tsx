@@ -519,6 +519,51 @@ export function LiveDashboard() {
   const marketMotionCardRef = useRef<HTMLDivElement | null>(null);
   const [marketMotionCardHeight, setMarketMotionCardHeight] = useState<number | null>(null);
 
+  // ---- BTC 15min & ETH 5min market control state ----
+  interface MarketControlStatus {
+    signal: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
+    paper: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
+    live: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
+  }
+  const [btc15Status, setBtc15Status] = useState<MarketControlStatus | null>(null);
+  const [btc15PaperStake, setBtc15PaperStake] = useState("100");
+  const [btc15LiveStake, setBtc15LiveStake] = useState("15");
+  const [btc15DryRun, setBtc15DryRun] = useState(true);
+  const [btc15Open, setBtc15Open] = useState(false);
+
+  const [eth5Status, setEth5Status] = useState<MarketControlStatus | null>(null);
+  const [eth5PaperStake, setEth5PaperStake] = useState("100");
+  const [eth5LiveStake, setEth5LiveStake] = useState("15");
+  const [eth5DryRun, setEth5DryRun] = useState(true);
+  const [eth5Open, setEth5Open] = useState(false);
+
+  async function loadMarketControlStatus(market: "btc15" | "eth5") {
+    try {
+      const res = await fetch(`/api/control/${market}`, { cache: "no-store" });
+      return (await res.json()) as MarketControlStatus & { ok: boolean };
+    } catch {
+      return null;
+    }
+  }
+
+  async function marketControlAction(
+    market: "btc15" | "eth5",
+    action: string,
+    extra: Record<string, unknown> = {},
+  ) {
+    const res = await fetch(`/api/control/${market}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...extra }),
+    });
+    const json = await res.json();
+    // Refresh status after action
+    const status = await loadMarketControlStatus(market);
+    if (market === "btc15" && status) setBtc15Status(status);
+    if (market === "eth5" && status) setEth5Status(status);
+    return json;
+  }
+
   async function loadSnapshot() {
     const res = await fetch("/api/live/snapshot", { cache: "no-store" });
     const json = (await res.json()) as SnapshotResponse;
@@ -1027,6 +1072,7 @@ export function LiveDashboard() {
     let paperSummaryTimer: number | null = null;
     let liveStatusTimer: number | null = null;
     let controlStatusTimer: number | null = null;
+    let marketControlTimer: number | null = null;
 
     const pollSnapshot = async () => {
       if (!mounted) return;
@@ -1155,12 +1201,32 @@ export function LiveDashboard() {
       }
     };
 
+    const pollMarketControl = async () => {
+      if (!mounted) return;
+      try {
+        const [btc15, eth5] = await Promise.all([
+          loadMarketControlStatus("btc15"),
+          loadMarketControlStatus("eth5"),
+        ]);
+        if (mounted) {
+          if (btc15) setBtc15Status(btc15);
+          if (eth5) setEth5Status(eth5);
+        }
+      } catch (_) {
+        // Ignore transient market control status errors.
+      }
+      if (mounted) {
+        marketControlTimer = window.setTimeout(() => void pollMarketControl(), 10000);
+      }
+    };
+
     void pollSnapshot();
     void pollHistory();
     void loadControlOnce();
     void pollPaperSummary();
     void pollLiveStatus();
     void pollControlStatus();
+    void pollMarketControl();
 
     return () => {
       mounted = false;
@@ -1169,6 +1235,7 @@ export function LiveDashboard() {
       if (paperSummaryTimer !== null) window.clearTimeout(paperSummaryTimer);
       if (liveStatusTimer !== null) window.clearTimeout(liveStatusTimer);
       if (controlStatusTimer !== null) window.clearTimeout(controlStatusTimer);
+      if (marketControlTimer !== null) window.clearTimeout(marketControlTimer);
     };
   }, []);
 
@@ -2165,6 +2232,286 @@ export function LiveDashboard() {
                 {(backtestStatus?.output_tail ?? []).slice(-24).join("\n") || "No logs yet"}
               </pre>
             </CardContent>
+          </Card>
+
+          {/* ---- BTC 15min Market Control ---- */}
+          <Card className="xl:self-start">
+            <CardHeader
+              className="cursor-pointer select-none"
+              onClick={() => setBtc15Open((v) => !v)}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>BTC 15min Market</CardTitle>
+                  <CardDescription>Signal generator, paper sim, and live trading for BTC 15-minute windows</CardDescription>
+                </div>
+                <span className="text-muted-foreground text-sm">{btc15Open ? "[-]" : "[+]"}</span>
+              </div>
+            </CardHeader>
+            {btc15Open && (
+              <CardContent className="space-y-4">
+                {/* Signal Generator */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Signal Generator</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => void marketControlAction("btc15", "signal_start")}
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("btc15", "signal_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={btc15Status?.signal?.running ? "success" : "neutral"}>
+                      {btc15Status?.signal?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={btc15Status?.signal?.pid ?? "-"}
+                  </p>
+                </div>
+
+                {/* Paper Sim */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Paper Sim</p>
+                  <label className="text-xs text-muted-foreground">
+                    Stake (USD)
+                    <input
+                      value={btc15PaperStake}
+                      onChange={(e) => setBtc15PaperStake(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        void marketControlAction("btc15", "paper_start", {
+                          stake: Number(btc15PaperStake || "100"),
+                        })
+                      }
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("btc15", "paper_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={btc15Status?.paper?.running ? "success" : "neutral"}>
+                      {btc15Status?.paper?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={btc15Status?.paper?.pid ?? "-"}
+                  </p>
+                  <pre className="max-h-32 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                    {(btc15Status?.paper?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+                  </pre>
+                </div>
+
+                {/* Live Trading */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Live Trading</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      Stake (USD)
+                      <input
+                        value={btc15LiveStake}
+                        onChange={(e) => setBtc15LiveStake(e.target.value)}
+                        className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground pt-4">
+                      <input
+                        type="checkbox"
+                        checked={btc15DryRun}
+                        onChange={(e) => setBtc15DryRun(e.target.checked)}
+                        className="h-4 w-4 rounded border-border/70 bg-background/40"
+                      />
+                      Dry Run
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        void marketControlAction("btc15", "live_start", {
+                          stake: Number(btc15LiveStake || "15"),
+                          dry_run: btc15DryRun,
+                        })
+                      }
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start Live
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("btc15", "live_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={btc15Status?.live?.running ? "success" : "neutral"}>
+                      {btc15Status?.live?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={btc15Status?.live?.pid ?? "-"}
+                  </p>
+                  <pre className="max-h-32 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                    {(btc15Status?.live?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+                  </pre>
+                </div>
+
+                <p className="text-xs text-muted-foreground italic">
+                  Uses shared Telegram + API settings from BTC 5min
+                </p>
+              </CardContent>
+            )}
+          </Card>
+
+          {/* ---- ETH 5min Market Control ---- */}
+          <Card className="xl:self-start">
+            <CardHeader
+              className="cursor-pointer select-none"
+              onClick={() => setEth5Open((v) => !v)}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>ETH 5min Market</CardTitle>
+                  <CardDescription>Signal generator, paper sim, and live trading for ETH 5-minute windows</CardDescription>
+                </div>
+                <span className="text-muted-foreground text-sm">{eth5Open ? "[-]" : "[+]"}</span>
+              </div>
+            </CardHeader>
+            {eth5Open && (
+              <CardContent className="space-y-4">
+                {/* Signal Generator */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Signal Generator</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => void marketControlAction("eth5", "signal_start")}
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("eth5", "signal_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={eth5Status?.signal?.running ? "success" : "neutral"}>
+                      {eth5Status?.signal?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={eth5Status?.signal?.pid ?? "-"}
+                  </p>
+                </div>
+
+                {/* Paper Sim */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Paper Sim</p>
+                  <label className="text-xs text-muted-foreground">
+                    Stake (USD)
+                    <input
+                      value={eth5PaperStake}
+                      onChange={(e) => setEth5PaperStake(e.target.value)}
+                      className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        void marketControlAction("eth5", "paper_start", {
+                          stake: Number(eth5PaperStake || "100"),
+                        })
+                      }
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("eth5", "paper_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={eth5Status?.paper?.running ? "success" : "neutral"}>
+                      {eth5Status?.paper?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={eth5Status?.paper?.pid ?? "-"}
+                  </p>
+                  <pre className="max-h-32 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                    {(eth5Status?.paper?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+                  </pre>
+                </div>
+
+                {/* Live Trading */}
+                <div className="rounded-md border border-border/60 bg-background/30 p-3 space-y-2">
+                  <p className="text-sm font-medium">Live Trading</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-xs text-muted-foreground">
+                      Stake (USD)
+                      <input
+                        value={eth5LiveStake}
+                        onChange={(e) => setEth5LiveStake(e.target.value)}
+                        className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground pt-4">
+                      <input
+                        type="checkbox"
+                        checked={eth5DryRun}
+                        onChange={(e) => setEth5DryRun(e.target.checked)}
+                        className="h-4 w-4 rounded border-border/70 bg-background/40"
+                      />
+                      Dry Run
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() =>
+                        void marketControlAction("eth5", "live_start", {
+                          stake: Number(eth5LiveStake || "15"),
+                          dry_run: eth5DryRun,
+                        })
+                      }
+                      className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Start Live
+                    </button>
+                    <button
+                      onClick={() => void marketControlAction("eth5", "live_stop")}
+                      className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
+                    >
+                      Stop
+                    </button>
+                    <Badge variant={eth5Status?.live?.running ? "success" : "neutral"}>
+                      {eth5Status?.live?.running ? "RUNNING" : "STOPPED"}
+                    </Badge>
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    pid={eth5Status?.live?.pid ?? "-"}
+                  </p>
+                  <pre className="max-h-32 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                    {(eth5Status?.live?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+                  </pre>
+                </div>
+
+                <p className="text-xs text-muted-foreground italic">
+                  Uses shared Telegram + API settings from BTC 5min
+                </p>
+              </CardContent>
+            )}
           </Card>
         </section>
 

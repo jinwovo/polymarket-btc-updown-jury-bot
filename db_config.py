@@ -460,6 +460,117 @@ def init_market_schema(conn):
         except Exception:
             pass
 
+    # -- Multi-market tables (BTC 15min, ETH 5min) --
+    _multi_market_tables(conn)
+
+
+def _multi_market_tables(conn):
+    """Create signal_cache + trade tables for BTC 15min and ETH 5min."""
+    for suffix in ["_btc15", "_eth5"]:
+        for stmt in [
+            f"""CREATE TABLE IF NOT EXISTS signal_cache{suffix} (
+                id TINYINT PRIMARY KEY DEFAULT 1,
+                ts DOUBLE NOT NULL,
+                window_start BIGINT NOT NULL,
+                direction VARCHAR(16) NOT NULL,
+                avg_confidence DOUBLE NOT NULL,
+                max_edge DOUBLE NOT NULL,
+                unanimous TINYINT NOT NULL DEFAULT 0,
+                judges_json LONGTEXT NOT NULL,
+                up_ask DOUBLE NULL, down_ask DOUBLE NULL,
+                btc_price DOUBLE NULL, start_price DOUBLE NULL,
+                seconds_elapsed DOUBLE NULL, seconds_remaining DOUBLE NULL,
+                btc_move_pct DOUBLE NULL, recent_move_pct DOUBLE NULL,
+                trend_move_pct DOUBLE NULL,
+                guards_passed TINYINT NOT NULL DEFAULT 0,
+                buy_sell_ratio DOUBLE NULL,
+                gate_allow TINYINT NOT NULL DEFAULT 0,
+                gate_ev DOUBLE NULL, gate_reason TEXT NULL,
+                binance_rtds_gap DOUBLE NULL,
+                prev_outcome VARCHAR(16) NULL,
+                odds_velocity DOUBLE NULL, btc_accel_ok TINYINT NULL,
+                lag_arb_allow TINYINT NOT NULL DEFAULT 0,
+                lag_arb_direction VARCHAR(16) NULL,
+                lag_arb_entry_price DOUBLE NULL,
+                bb_pos DOUBLE NULL, vwap_agree TINYINT NULL,
+                ask_drift DOUBLE NULL, btc_still_moving TINYINT NULL,
+                quality_score DOUBLE NULL
+            ) ENGINE=InnoDB""",
+            f"""CREATE TABLE IF NOT EXISTS signal_cache_log{suffix} (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                ts DOUBLE NOT NULL,
+                window_start BIGINT NOT NULL,
+                direction VARCHAR(16) NOT NULL,
+                avg_confidence DOUBLE NOT NULL,
+                max_edge DOUBLE NOT NULL,
+                unanimous TINYINT NOT NULL DEFAULT 0,
+                judges_json LONGTEXT NOT NULL,
+                up_ask DOUBLE NULL, down_ask DOUBLE NULL,
+                btc_price DOUBLE NULL, start_price DOUBLE NULL,
+                seconds_elapsed DOUBLE NULL, seconds_remaining DOUBLE NULL,
+                btc_move_pct DOUBLE NULL, recent_move_pct DOUBLE NULL,
+                trend_move_pct DOUBLE NULL,
+                guards_passed TINYINT NOT NULL DEFAULT 0,
+                buy_sell_ratio DOUBLE NULL,
+                gate_allow TINYINT NOT NULL DEFAULT 0,
+                gate_ev DOUBLE NULL, gate_reason TEXT NULL,
+                binance_rtds_gap DOUBLE NULL,
+                prev_outcome VARCHAR(16) NULL,
+                odds_velocity DOUBLE NULL, btc_accel_ok TINYINT NULL,
+                lag_arb_allow TINYINT NOT NULL DEFAULT 0,
+                lag_arb_direction VARCHAR(16) NULL,
+                lag_arb_entry_price DOUBLE NULL,
+                bb_pos DOUBLE NULL, vwap_agree TINYINT NULL,
+                ask_drift DOUBLE NULL, btc_still_moving TINYINT NULL,
+                quality_score DOUBLE NULL,
+                INDEX idx_scl{suffix}_ws_ts (window_start, ts),
+                INDEX idx_scl{suffix}_ws_gate (window_start, gate_allow)
+            ) ENGINE=InnoDB""",
+            f"""CREATE TABLE IF NOT EXISTS paper_trades{suffix} (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                window_start BIGINT NOT NULL,
+                window_end BIGINT,
+                direction VARCHAR(16),
+                stake DOUBLE, entry_price DOUBLE,
+                payout_multiple DOUBLE, shares DOUBLE,
+                potential_win_pnl DOUBLE,
+                signal_confidence DOUBLE, signal_reason TEXT,
+                status VARCHAR(16) DEFAULT 'OPEN',
+                opened_at DOUBLE NOT NULL, closed_at DOUBLE,
+                actual_outcome VARCHAR(16), won TINYINT,
+                pnl DOUBLE, roi_pct DOUBLE,
+                initial_capital DOUBLE, risk_fraction DOUBLE,
+                close_reason TEXT,
+                archived_at REAL,
+                UNIQUE KEY uq_pt{suffix}_ws (window_start),
+                INDEX idx_pt{suffix}_status (status),
+                INDEX idx_pt{suffix}_closed (closed_at)
+            ) ENGINE=InnoDB""",
+            f"""CREATE TABLE IF NOT EXISTS live_trades{suffix} (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                window_start BIGINT NOT NULL,
+                window_end BIGINT,
+                direction VARCHAR(16),
+                stake DOUBLE, entry_price DOUBLE,
+                payout_multiple DOUBLE, shares DOUBLE,
+                potential_win_pnl DOUBLE,
+                signal_confidence DOUBLE, signal_reason TEXT,
+                entry_source VARCHAR(32), close_reason TEXT,
+                status VARCHAR(16) DEFAULT 'OPEN',
+                opened_at DOUBLE NOT NULL, closed_at DOUBLE,
+                actual_outcome VARCHAR(16), won TINYINT,
+                pnl DOUBLE, roi_pct DOUBLE,
+                account_id INT NULL,
+                UNIQUE KEY uq_lt{suffix}_ws (window_start),
+                INDEX idx_lt{suffix}_status (status, opened_at),
+                INDEX idx_lt{suffix}_window (window_start)
+            ) ENGINE=InnoDB""",
+        ]:
+            try:
+                execute_write(conn, stmt)
+            except Exception:
+                pass
+
 
 def upsert_btc_ticks_sql() -> str:
     return (

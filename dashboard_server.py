@@ -208,6 +208,14 @@ BACKTEST_PROC = ManagedProcess("backtest")
 LIVE_TRADING_PROC = ManagedProcess("live_trading")  # Legacy single account
 LIVE_ACCOUNT_PROCS: dict[int, ManagedProcess] = {}  # Multi-account: {account_id: ManagedProcess}
 
+# -- Multi-market processes --
+SIGNAL_BTC15_PROC = ManagedProcess("signal_btc15")
+PAPER_BTC15_PROC = ManagedProcess("paper_sim_btc15")
+LIVE_BTC15_PROC = ManagedProcess("live_btc15")
+SIGNAL_ETH5_PROC = ManagedProcess("signal_eth5")
+PAPER_ETH5_PROC = ManagedProcess("paper_sim_eth5")
+LIVE_ETH5_PROC = ManagedProcess("live_eth5")
+
 
 def _to_float(value: Any) -> Optional[float]:
     try:
@@ -2570,6 +2578,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "time": time.time()})
             return
 
+        # Multi-market GET status
+        _mm_get_status = {
+            "/api/control/btc15/signal": SIGNAL_BTC15_PROC,
+            "/api/control/btc15/paper": PAPER_BTC15_PROC,
+            "/api/control/btc15/live": LIVE_BTC15_PROC,
+            "/api/control/eth5/signal": SIGNAL_ETH5_PROC,
+            "/api/control/eth5/paper": PAPER_ETH5_PROC,
+            "/api/control/eth5/live": LIVE_ETH5_PROC,
+        }
+        if path in _mm_get_status:
+            self._send_json(_mm_get_status[path].status(), code=200)
+            return
+
         self.send_error(404, "Not found")
 
     def do_POST(self):  # noqa: N802
@@ -2824,6 +2845,89 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(control_backtest_stop(), code=200)
             except Exception as e:
                 logger.exception("backtest stop error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        # -- Multi-market control endpoints --
+        _mm_routes = {
+            "/api/control/btc15/signal/start": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC),
+            "/api/control/btc15/signal/stop": (None, SIGNAL_BTC15_PROC),
+            "/api/control/btc15/paper/start": ("paper_sim_btc15.py", PAPER_BTC15_PROC),
+            "/api/control/btc15/paper/stop": (None, PAPER_BTC15_PROC),
+            "/api/control/btc15/live/start": ("live_btc15.py", LIVE_BTC15_PROC),
+            "/api/control/btc15/live/stop": (None, LIVE_BTC15_PROC),
+            "/api/control/eth5/signal/start": ("signal_generator_eth5.py", SIGNAL_ETH5_PROC),
+            "/api/control/eth5/signal/stop": (None, SIGNAL_ETH5_PROC),
+            "/api/control/eth5/paper/start": ("paper_sim_eth5.py", PAPER_ETH5_PROC),
+            "/api/control/eth5/paper/stop": (None, PAPER_ETH5_PROC),
+            "/api/control/eth5/live/start": ("live_eth5.py", LIVE_ETH5_PROC),
+            "/api/control/eth5/live/stop": (None, LIVE_ETH5_PROC),
+        }
+        if path in _mm_routes:
+            script, proc = _mm_routes[path]
+            try:
+                if script is not None:
+                    # Start
+                    stake = payload.get("stake", 100.0)
+                    sizing_mode = str(payload.get("sizing_mode", "fixed"))
+                    args = ["--stake", str(stake), "--sizing-mode", sizing_mode]
+                    if "live" in path and not payload.get("dry_run", True):
+                        args.append("--no-dry-run")
+                    cmd = _python_command(script, args)
+                    proc.start(cmd, meta={"stake": stake, "sizing_mode": sizing_mode})
+                    self._send_json({"ok": True, "status": "started", "pid": proc._proc.pid if proc._proc else None})
+                else:
+                    # Stop
+                    proc.stop()
+                    self._send_json({"ok": True, "status": "stopped"})
+            except Exception as e:
+                logger.exception("multi-market control error: %s", path)
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        # Multi-market status endpoints
+        _mm_status = {
+            "/api/control/btc15/signal": SIGNAL_BTC15_PROC,
+            "/api/control/btc15/paper": PAPER_BTC15_PROC,
+            "/api/control/btc15/live": LIVE_BTC15_PROC,
+            "/api/control/eth5/signal": SIGNAL_ETH5_PROC,
+            "/api/control/eth5/paper": PAPER_ETH5_PROC,
+            "/api/control/eth5/live": LIVE_ETH5_PROC,
+        }
+        if path in _mm_status:
+            proc = _mm_status[path]
+            self._send_json({"ok": True, **proc.status()})
+            return
+
+        # Multi-market paper history
+        _mm_paper_tables = {
+            "/api/btc15/paper-history": "paper_trades_btc15",
+            "/api/eth5/paper-history": "paper_trades_eth5",
+        }
+        if path in _mm_paper_tables:
+            try:
+                table = _mm_paper_tables[path]
+                conn = connect_db()
+                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} WHERE archived_at IS NULL ORDER BY opened_at DESC LIMIT 50")
+                conn.close()
+                self._send_json({"ok": True, "trades": rows})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        # Multi-market live history
+        _mm_live_tables = {
+            "/api/btc15/live-trade-history": "live_trades_btc15",
+            "/api/eth5/live-trade-history": "live_trades_eth5",
+        }
+        if path in _mm_live_tables:
+            try:
+                table = _mm_live_tables[path]
+                conn = connect_db()
+                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} ORDER BY opened_at DESC LIMIT 50")
+                conn.close()
+                self._send_json({"ok": True, "trades": rows})
+            except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
