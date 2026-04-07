@@ -537,6 +537,9 @@ export function LiveDashboard() {
   const [eth5LiveStake, setEth5LiveStake] = useState("15");
   const [eth5LiveSizing, setEth5LiveSizing] = useState("fixed");
 
+  const [btc15SelectedAccountId, setBtc15SelectedAccountId] = useState(0);
+  const [eth5SelectedAccountId, setEth5SelectedAccountId] = useState(0);
+
   // ---- BTC 15min & ETH 5min paper equity + trade history state ----
   interface MarketPaperSummary {
     total_pnl: number;
@@ -2516,16 +2519,28 @@ export function LiveDashboard() {
                   <CardTitle>Live Trading - BTC 15min</CardTitle>
                   <CardDescription>Real execution for BTC 15-minute windows</CardDescription>
                 </div>
-                <button
-                  onClick={() => {
-                    setBtc15LiveHistoryOpen(true);
-                    setBtc15LiveHistoryOffset(0);
-                    void loadMarketLiveHistory("btc15", { limit: marketHistoryPageSize, offset: 0 });
-                  }}
-                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
-                >
-                  Trade History
-                </button>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={btc15SelectedAccountId}
+                    onChange={(e) => setBtc15SelectedAccountId(Number(e.target.value))}
+                    className="rounded-md border border-border/70 bg-background/40 px-2 py-1 text-sm"
+                  >
+                    <option value={0}>Main Account</option>
+                    {accountList.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name || `Account ${a.id}`}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      setBtc15LiveHistoryOpen(true);
+                      setBtc15LiveHistoryOffset(0);
+                      void loadMarketLiveHistory("btc15", { limit: marketHistoryPageSize, offset: 0 });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Trade History
+                  </button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -2562,19 +2577,37 @@ export function LiveDashboard() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() =>
-                    void marketControlAction("btc15", "live_start", {
-                      stake: Number(btc15LiveStake || "15"),
-                      sizing_mode: btc15LiveSizing,
-                      dry_run: false,
-                    })
-                  }
+                  onClick={() => {
+                    if (btc15SelectedAccountId > 0) {
+                      void fetch("/api/accounts/start", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ account_id: btc15SelectedAccountId, market: "btc15" }),
+                      });
+                    } else {
+                      void marketControlAction("btc15", "live_start", {
+                        stake: Number(btc15LiveStake || "15"),
+                        sizing_mode: btc15LiveSizing,
+                        dry_run: false,
+                      });
+                    }
+                  }}
                   className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
                 >
                   Start Live
                 </button>
                 <button
-                  onClick={() => void marketControlAction("btc15", "live_stop")}
+                  onClick={() => {
+                    if (btc15SelectedAccountId > 0) {
+                      void fetch("/api/accounts/stop", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ account_id: btc15SelectedAccountId, market: "btc15" }),
+                      });
+                    } else {
+                      void marketControlAction("btc15", "live_stop");
+                    }
+                  }}
                   className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
                 >
                   Stop
@@ -2585,9 +2618,12 @@ export function LiveDashboard() {
               </div>
               <p className="font-mono text-xs text-muted-foreground">
                 pid={btc15Status?.live?.pid ?? "-"} | sizing={btc15LiveSizing}
+                {btc15SelectedAccountId > 0 ? ` | account=${btc15SelectedAccountId}` : ""}
               </p>
               <p className="text-xs text-muted-foreground italic">
-                Uses Main Account API + Telegram settings.
+                {btc15SelectedAccountId > 0
+                  ? `Using Account #${btc15SelectedAccountId} (${accountList.find((a) => a.id === btc15SelectedAccountId)?.name || ""})`
+                  : "Uses Main Account API + Telegram settings."}
               </p>
               <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
                 {(btc15Status?.live?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
@@ -2708,16 +2744,28 @@ export function LiveDashboard() {
                   <CardTitle>Live Trading - ETH 5min</CardTitle>
                   <CardDescription>Real execution for ETH 5-minute windows</CardDescription>
                 </div>
-                <button
-                  onClick={() => {
-                    setEth5LiveHistoryOpen(true);
-                    setEth5LiveHistoryOffset(0);
-                    void loadMarketLiveHistory("eth5", { limit: marketHistoryPageSize, offset: 0 });
-                  }}
-                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
-                >
-                  Trade History
-                </button>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={eth5SelectedAccountId}
+                    onChange={(e) => setEth5SelectedAccountId(Number(e.target.value))}
+                    className="rounded-md border border-border/70 bg-background/40 px-2 py-1 text-sm"
+                  >
+                    <option value={0}>Main Account</option>
+                    {accountList.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name || `Account ${a.id}`}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      setEth5LiveHistoryOpen(true);
+                      setEth5LiveHistoryOffset(0);
+                      void loadMarketLiveHistory("eth5", { limit: marketHistoryPageSize, offset: 0 });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Trade History
+                  </button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -2754,19 +2802,37 @@ export function LiveDashboard() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() =>
-                    void marketControlAction("eth5", "live_start", {
-                      stake: Number(eth5LiveStake || "15"),
-                      sizing_mode: eth5LiveSizing,
-                      dry_run: false,
-                    })
-                  }
+                  onClick={() => {
+                    if (eth5SelectedAccountId > 0) {
+                      void fetch("/api/accounts/start", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ account_id: eth5SelectedAccountId, market: "eth5" }),
+                      });
+                    } else {
+                      void marketControlAction("eth5", "live_start", {
+                        stake: Number(eth5LiveStake || "15"),
+                        sizing_mode: eth5LiveSizing,
+                        dry_run: false,
+                      });
+                    }
+                  }}
                   className="rounded-md border border-emerald-400/50 bg-emerald-500/20 px-3 py-1.5 text-sm"
                 >
                   Start Live
                 </button>
                 <button
-                  onClick={() => void marketControlAction("eth5", "live_stop")}
+                  onClick={() => {
+                    if (eth5SelectedAccountId > 0) {
+                      void fetch("/api/accounts/stop", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ account_id: eth5SelectedAccountId, market: "eth5" }),
+                      });
+                    } else {
+                      void marketControlAction("eth5", "live_stop");
+                    }
+                  }}
                   className="rounded-md border border-rose-400/50 bg-rose-500/20 px-3 py-1.5 text-sm"
                 >
                   Stop
@@ -2777,9 +2843,12 @@ export function LiveDashboard() {
               </div>
               <p className="font-mono text-xs text-muted-foreground">
                 pid={eth5Status?.live?.pid ?? "-"} | sizing={eth5LiveSizing}
+                {eth5SelectedAccountId > 0 ? ` | account=${eth5SelectedAccountId}` : ""}
               </p>
               <p className="text-xs text-muted-foreground italic">
-                Uses Main Account API + Telegram settings.
+                {eth5SelectedAccountId > 0
+                  ? `Using Account #${eth5SelectedAccountId} (${accountList.find((a) => a.id === eth5SelectedAccountId)?.name || ""})`
+                  : "Uses Main Account API + Telegram settings."}
               </p>
               <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
                 {(eth5Status?.live?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
