@@ -2112,22 +2112,8 @@ async def _extra_market_poll(self):
                             """, (ws, slug, start_price))
                             self.db.commit()
                             logger.info("Extra market: %s window=%s start=$%.2f", mkt["label"], slug, start_price)
-
-                            # PTB scrape after 3s (separate tab, no impact on main BTC 5min page)
-                            async def _scrape_extra_ptb(s=slug, w=ws, m=mkt, sp=start_price):
-                                await asyncio.sleep(3)
-                                try:
-                                    ptb, _cur = await asyncio.get_event_loop().run_in_executor(
-                                        None, self.poly_client._scrape_ptb_separate_tab, s)
-                                    if ptb and ptb > 0:
-                                        execute_write(self.db, """
-                                            UPDATE market_windows SET btc_start_price=%s WHERE window_start=%s AND slug=%s
-                                        """, (ptb, w, s))
-                                        self.db.commit()
-                                        logger.info("Extra PTB scraped: %s | $%.2f (was $%.2f)", s, ptb, sp)
-                                except Exception as _e:
-                                    logger.debug("Extra PTB scrape failed %s: %s", s, _e)
-                            asyncio.get_event_loop().create_task(_scrape_extra_ptb())
+                            # PTB scrape disabled: Playwright sync API + async thread = greenlet crash
+                            # Start price from btc_ticks/eth_ticks is good enough for now
                     except Exception as e:
                         logger.debug("Extra market discover %s: %s", prefix, e)
                         continue
