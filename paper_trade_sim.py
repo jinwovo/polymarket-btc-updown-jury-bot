@@ -1392,32 +1392,49 @@ def open_trade_if_signal(
             logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
             return False
         _gate_ev = gate.expected_roi
-    # BB extreme + VWAP agree filter (reads from signal_cache, computed by data_collector)
+    # BB/VWAP/drift/btc_still filter with per-window lock (parity with live)
+    # Once filters pass for a window, lock for 2s so paper sees same values as live
+    global _paper_filter_lock
+    if not hasattr(open_trade_if_signal, '_filter_lock'):
+        open_trade_if_signal._filter_lock = {}
+    _flock = open_trade_if_signal._filter_lock
+    _flock_key = window_start
+    _now_fl = time.time()
+
     if cached and _gate_allow:
-        _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
-        _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
-        if _bb_filter_on:
+        # Check if already locked for this window
+        if _flock.get("ws") == _flock_key and (_now_fl - _flock.get("ts", 0)) < 2.0:
+            pass  # Already passed filters, proceed
+        else:
+            # Check all filters
+            _bb_filter_on = os.getenv("PAPER_REQUIRE_BB_EXTREME", "false").lower() == "true"
+            _vwap_filter_on = os.getenv("PAPER_REQUIRE_VWAP_AGREE", "false").lower() == "true"
             _bb_pos_val = cached.get("bb_pos")
             _bb_thresh = float(os.getenv("PAPER_BB_THRESHOLD", "0.5"))
-            if _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
-                logger.debug("Skip BB not extreme ws=%s: bb_pos=%.3f < %.1f", window_start, float(_bb_pos_val), _bb_thresh)
-                return False
-        if _vwap_filter_on:
             _vwap_val = cached.get("vwap_agree")
-            if _vwap_val is not None and int(_vwap_val) == 0:
-                logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
-                return False
-        _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
-        if _require_btc_still:
             _bsm_val = cached.get("btc_still_moving")
-            if _bsm_val is not None and int(_bsm_val) == 0:
-                logger.debug("Skip BTC not moving in direction ws=%s", window_start)
-                return False
-        _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
-        if _max_ask_drift > 0:
             _drift_val = cached.get("ask_drift")
-            if _drift_val is not None and float(_drift_val) > _max_ask_drift:
-                logger.debug("Skip ask drift ws=%s: drift=%.3f > %.3f", window_start, float(_drift_val), _max_ask_drift)
+
+            _filters_pass = True
+            if _bb_filter_on and _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+                _filters_pass = False
+                logger.debug("Skip BB not extreme ws=%s: bb_pos=%.3f < %.1f", window_start, float(_bb_pos_val), _bb_thresh)
+            if _vwap_filter_on and _vwap_val is not None and int(_vwap_val) == 0:
+                _filters_pass = False
+                logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
+            _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+            if _require_btc_still and _bsm_val is not None and int(_bsm_val) == 0:
+                _filters_pass = False
+                logger.debug("Skip BTC not moving ws=%s", window_start)
+            _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
+            if _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
+                _filters_pass = False
+                logger.debug("Skip ask drift ws=%s: %.3f > %.3f", window_start, float(_drift_val), _max_ask_drift)
+
+            if _filters_pass:
+                # Lock for this window
+                open_trade_if_signal._filter_lock = {"ws": _flock_key, "ts": _now_fl}
+            else:
                 return False
 
     # When reading from signal_cache, gate checks are already done by data_collector.
