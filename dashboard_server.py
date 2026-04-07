@@ -2861,7 +2861,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/accounts/start":
             try:
                 aid = int(payload.get("account_id", 0))
-                self._send_json(control_account_start(aid))
+                market = str(payload.get("market", "btc5"))
+                self._send_json(control_account_start(aid, market=market))
             except Exception as e:
                 logger.exception("account start error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
@@ -2870,7 +2871,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/accounts/stop":
             try:
                 aid = int(payload.get("account_id", 0))
-                self._send_json(control_account_stop(aid))
+                market = str(payload.get("market", "btc5"))
+                self._send_json(control_account_stop(aid, market=market))
             except Exception as e:
                 logger.exception("account stop error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
@@ -3109,22 +3111,11 @@ def _save_account(data: dict) -> dict:
         return {"ok": True, "id": int(new_id)}
 
 
-def control_account_start(account_id: int) -> dict:
-    """Start live trading for a specific account."""
-    acct = _get_account(account_id)
-    if not acct:
-        return {"ok": False, "error": f"Account {account_id} not found"}
-    if not acct.get("api_key") or not acct.get("private_key"):
-        return {"ok": False, "error": "API key or private key not configured"}
-
-    # Stop if already running
-    if account_id in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[account_id].running():
-        LIVE_ACCOUNT_PROCS[account_id].stop()
-
-    proc = ManagedProcess(f"live_account_{account_id}")
-    env_overrides = {
+def _build_account_env(acct: dict) -> dict:
+    """Build env overrides from account DB row."""
+    return {
         "DRY_RUN": "false",
-        "ACCOUNT_ID": str(account_id),
+        "ACCOUNT_ID": str(acct.get("id", "")),
         "POLYMARKET_PRIVATE_KEY": str(acct.get("private_key", "")),
         "POLYMARKET_API_KEY": str(acct.get("api_key", "")),
         "POLYMARKET_API_SECRET": str(acct.get("api_secret", "")),
@@ -3143,12 +3134,54 @@ def control_account_start(account_id: int) -> dict:
         "MAX_BET_SIZE": str(acct.get("fixed_stake", 15)),
     }
 
+
+# Market script mapping for multi-market account trading
+_MARKET_SCRIPTS = {
+    "btc5": "main.py",
+    "btc15": "live_btc15.py",
+    "eth5": "live_eth5.py",
+}
+
+# Per-account per-market processes: {(account_id, market): ManagedProcess}
+LIVE_ACCOUNT_MARKET_PROCS: dict[tuple[int, str], ManagedProcess] = {}
+
+
+def control_account_start(account_id: int, market: str = "btc5") -> dict:
+    """Start live trading for a specific account + market."""
+    acct = _get_account(account_id)
+    if not acct:
+        return {"ok": False, "error": f"Account {account_id} not found"}
+    if not acct.get("api_key") or not acct.get("private_key"):
+        return {"ok": False, "error": "API key or private key not configured"}
+
+    script = _MARKET_SCRIPTS.get(market, "main.py")
+    proc_key = (account_id, market)
+
+    # Stop if already running
+    if proc_key in LIVE_ACCOUNT_MARKET_PROCS and LIVE_ACCOUNT_MARKET_PROCS[proc_key].running():
+        LIVE_ACCOUNT_MARKET_PROCS[proc_key].stop()
+    # Legacy single-market compat
+    if market == "btc5" and account_id in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[account_id].running():
+        LIVE_ACCOUNT_PROCS[account_id].stop()
+
+    # Auto-start signal generator for non-btc5 markets
+    _sig_map = {"btc15": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC),
+                "eth5": ("signal_generator_eth5.py", SIGNAL_ETH5_PROC)}
+    if market in _sig_map:
+        sig_script, sig_proc = _sig_map[market]
+        if not sig_proc.running():
+            sig_proc.start(_python_command(sig_script, []), meta={"auto_started": True})
+
+    proc = ManagedProcess(f"live_{market}_account_{account_id}")
+    env_overrides = _build_account_env(acct)
+
     ok, msg = proc.start(
-        _python_command("main.py", []),
-        meta={"account_id": account_id, "account_name": acct.get("name","")},
+        _python_command(script, []),
+        meta={"account_id": account_id, "account_name": acct.get("name",""), "market": market},
         env_overrides=env_overrides,
     )
-    LIVE_ACCOUNT_PROCS[account_id] = proc
+    LIVE_ACCOUNT_MARKET_PROCS[proc_key] = proc
+    LIVE_ACCOUNT_PROCS[account_id] = proc  # legacy compat
 
     # Update DB status
     try:
@@ -3162,9 +3195,10 @@ def control_account_start(account_id: int) -> dict:
     return {"ok": ok, "message": msg, "account_id": account_id}
 
 
-def control_account_stop(account_id: int) -> dict:
-    """Stop live trading for a specific account."""
-    proc = LIVE_ACCOUNT_PROCS.get(account_id)
+def control_account_stop(account_id: int, market: str = "btc5") -> dict:
+    """Stop live trading for a specific account + market."""
+    proc_key = (account_id, market)
+    proc = LIVE_ACCOUNT_MARKET_PROCS.get(proc_key) or LIVE_ACCOUNT_PROCS.get(account_id)
     if proc:
         ok, msg = proc.stop()
     else:
