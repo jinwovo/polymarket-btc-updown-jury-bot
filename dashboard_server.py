@@ -2863,10 +2863,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "/api/control/eth5/live/start": ("live_eth5.py", LIVE_ETH5_PROC),
             "/api/control/eth5/live/stop": (None, LIVE_ETH5_PROC),
         }
+        # Auto-start signal generator when paper/live starts
+        _mm_signal_map = {
+            "/api/control/btc15/paper/start": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC),
+            "/api/control/btc15/live/start": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC),
+            "/api/control/eth5/paper/start": ("signal_generator_eth5.py", SIGNAL_ETH5_PROC),
+            "/api/control/eth5/live/start": ("signal_generator_eth5.py", SIGNAL_ETH5_PROC),
+        }
+
         if path in _mm_routes:
             script, proc = _mm_routes[path]
             try:
                 if script is not None:
+                    # Auto-start signal generator if not running
+                    if path in _mm_signal_map:
+                        sig_script, sig_proc = _mm_signal_map[path]
+                        if not sig_proc.running():
+                            sig_cmd = _python_command(sig_script, [])
+                            sig_proc.start(sig_cmd, meta={"auto_started": True})
+                            logger.info("Auto-started signal generator: %s", sig_script)
+
                     # Start
                     stake = payload.get("stake", 100.0)
                     sizing_mode = str(payload.get("sizing_mode", "fixed"))
