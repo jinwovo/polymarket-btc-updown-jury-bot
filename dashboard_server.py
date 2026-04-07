@@ -2591,6 +2591,71 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(_mm_get_status[path].status(), code=200)
             return
 
+        # Multi-market paper equity + live PnL endpoints
+        _mm_equity = {
+            "/api/btc15/paper-equity": "paper_trades_btc15",
+            "/api/eth5/paper-equity": "paper_trades_eth5",
+        }
+        if path in _mm_equity:
+            try:
+                table = _mm_equity[path]
+                conn = connect_db()
+                rows = fetch_all_dicts(conn, f"""
+                    SELECT pnl, won, stake FROM {table}
+                    WHERE archived_at IS NULL AND status='CLOSED'
+                """)
+                _qs = parse_qs(parsed.query)
+                seed = float(_qs.get("seed", ["1000"])[0])
+                total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
+                wins = sum(1 for r in rows if r.get("won"))
+                losses = len(rows) - wins
+                equity = seed + total_pnl
+                ret_pct = (total_pnl / seed * 100) if seed > 0 else 0
+                # Simple max drawdown
+                running = seed
+                peak = seed
+                max_dd = 0
+                for r in rows:
+                    running += float(r.get("pnl") or 0)
+                    peak = max(peak, running)
+                    dd = (peak - running) / peak * 100 if peak > 0 else 0
+                    max_dd = max(max_dd, dd)
+                conn.close()
+                self._send_json({
+                    "ok": True, "seed": seed, "equity": round(equity, 2),
+                    "realized_pnl": round(total_pnl, 2), "return_pct": round(ret_pct, 2),
+                    "wins": wins, "losses": losses, "trades": len(rows),
+                    "max_drawdown_pct": round(max_dd, 2),
+                })
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        _mm_live_pnl = {
+            "/api/btc15/live-pnl": "live_trades_btc15",
+            "/api/eth5/live-pnl": "live_trades_eth5",
+        }
+        if path in _mm_live_pnl:
+            try:
+                table = _mm_live_pnl[path]
+                conn = connect_db()
+                import datetime as _dt
+                today_start = _dt.datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+                rows = fetch_all_dicts(conn, f"""
+                    SELECT pnl, won FROM {table}
+                    WHERE status='CLOSED' AND closed_at >= %s
+                """, (today_start,))
+                total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
+                trades = len(rows)
+                conn.close()
+                self._send_json({
+                    "ok": True, "today_pnl": round(total_pnl, 2),
+                    "today_trades": trades,
+                })
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
         self.send_error(404, "Not found")
 
     def do_POST(self):  # noqa: N802

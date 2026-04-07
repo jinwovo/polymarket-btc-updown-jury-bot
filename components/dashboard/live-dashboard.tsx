@@ -529,11 +529,69 @@ export function LiveDashboard() {
   const [btc15PaperStake, setBtc15PaperStake] = useState("100");
   const [btc15PaperSizing, setBtc15PaperSizing] = useState("fixed");
   const [btc15LiveStake, setBtc15LiveStake] = useState("15");
+  const [btc15LiveSizing, setBtc15LiveSizing] = useState("fixed");
 
   const [eth5Status, setEth5Status] = useState<MarketControlStatus | null>(null);
   const [eth5PaperStake, setEth5PaperStake] = useState("100");
   const [eth5PaperSizing, setEth5PaperSizing] = useState("fixed");
   const [eth5LiveStake, setEth5LiveStake] = useState("15");
+  const [eth5LiveSizing, setEth5LiveSizing] = useState("fixed");
+
+  // ---- BTC 15min & ETH 5min paper equity + trade history state ----
+  interface MarketPaperSummary {
+    total_pnl: number;
+    initial_capital: number;
+    current_equity: number;
+    equity_roi_pct: number;
+    bust_count: number;
+    max_drawdown_pct: number;
+    wins: number;
+    losses: number;
+    open: number;
+    closed: number;
+    win_rate: number;
+    max_consecutive_losses?: number;
+  }
+  interface MarketLiveDailyPnl {
+    daily_pnl: number;
+    daily_trades: number;
+  }
+
+  const [btc15PaperSummary, setBtc15PaperSummary] = useState<MarketPaperSummary | null>(null);
+  const [eth5PaperSummary, setEth5PaperSummary] = useState<MarketPaperSummary | null>(null);
+  const [btc15LiveDaily, setBtc15LiveDaily] = useState<MarketLiveDailyPnl | null>(null);
+  const [eth5LiveDaily, setEth5LiveDaily] = useState<MarketLiveDailyPnl | null>(null);
+
+  // Trade history modals for btc15/eth5
+  const [btc15PaperHistoryOpen, setBtc15PaperHistoryOpen] = useState(false);
+  const [btc15PaperHistoryLoading, setBtc15PaperHistoryLoading] = useState(false);
+  const [btc15PaperHistory, setBtc15PaperHistory] = useState<PaperTradeHistoryItem[]>([]);
+  const [btc15PaperHistoryTotal, setBtc15PaperHistoryTotal] = useState(0);
+  const [btc15PaperHistoryOffset, setBtc15PaperHistoryOffset] = useState(0);
+  const [btc15PaperHistorySummary, setBtc15PaperHistorySummary] = useState<PaperTradeHistorySummary | null>(null);
+
+  const [btc15LiveHistoryOpen, setBtc15LiveHistoryOpen] = useState(false);
+  const [btc15LiveHistoryLoading, setBtc15LiveHistoryLoading] = useState(false);
+  const [btc15LiveHistory, setBtc15LiveHistory] = useState<LiveTradeHistoryItem[]>([]);
+  const [btc15LiveHistoryTotal, setBtc15LiveHistoryTotal] = useState(0);
+  const [btc15LiveHistoryOffset, setBtc15LiveHistoryOffset] = useState(0);
+  const [btc15LiveHistorySummary, setBtc15LiveHistorySummary] = useState<LiveTradeHistorySummary | null>(null);
+
+  const [eth5PaperHistoryOpen, setEth5PaperHistoryOpen] = useState(false);
+  const [eth5PaperHistoryLoading, setEth5PaperHistoryLoading] = useState(false);
+  const [eth5PaperHistory, setEth5PaperHistory] = useState<PaperTradeHistoryItem[]>([]);
+  const [eth5PaperHistoryTotal, setEth5PaperHistoryTotal] = useState(0);
+  const [eth5PaperHistoryOffset, setEth5PaperHistoryOffset] = useState(0);
+  const [eth5PaperHistorySummary, setEth5PaperHistorySummary] = useState<PaperTradeHistorySummary | null>(null);
+
+  const [eth5LiveHistoryOpen, setEth5LiveHistoryOpen] = useState(false);
+  const [eth5LiveHistoryLoading, setEth5LiveHistoryLoading] = useState(false);
+  const [eth5LiveHistory, setEth5LiveHistory] = useState<LiveTradeHistoryItem[]>([]);
+  const [eth5LiveHistoryTotal, setEth5LiveHistoryTotal] = useState(0);
+  const [eth5LiveHistoryOffset, setEth5LiveHistoryOffset] = useState(0);
+  const [eth5LiveHistorySummary, setEth5LiveHistorySummary] = useState<LiveTradeHistorySummary | null>(null);
+
+  const marketHistoryPageSize = 20;
 
   async function loadMarketControlStatus(market: "btc15" | "eth5") {
     try {
@@ -560,6 +618,100 @@ export function LiveDashboard() {
     if (market === "btc15" && status) setBtc15Status(status);
     if (market === "eth5" && status) setEth5Status(status);
     return json;
+  }
+
+  // ---- Market paper/live history loaders ----
+  async function loadMarketPaperHistory(
+    market: "btc15" | "eth5",
+    params: { limit?: number; offset?: number } = {},
+  ) {
+    const limit = params.limit ?? marketHistoryPageSize;
+    const offset = params.offset ?? 0;
+    const setLoading = market === "btc15" ? setBtc15PaperHistoryLoading : setEth5PaperHistoryLoading;
+    const setItems = market === "btc15" ? setBtc15PaperHistory : setEth5PaperHistory;
+    const setTotal = market === "btc15" ? setBtc15PaperHistoryTotal : setEth5PaperHistoryTotal;
+    const setOff = market === "btc15" ? setBtc15PaperHistoryOffset : setEth5PaperHistoryOffset;
+    const setSummary = market === "btc15" ? setBtc15PaperHistorySummary : setEth5PaperHistorySummary;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/${market}/paper-history?limit=${limit}&offset=${offset}`, { cache: "no-store" });
+      const json = (await res.json()) as PaperTradeHistoryResponse;
+      if (json.ok) {
+        setItems(json.items ?? []);
+        setTotal(json.count ?? 0);
+        setOff(json.offset ?? offset);
+        setSummary(json.summary ?? null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadMarketPaperSummary(market: "btc15" | "eth5") {
+    try {
+      const res = await fetch(`/api/${market}/paper-history?limit=1&offset=0`, { cache: "no-store" });
+      const json = (await res.json()) as PaperTradeHistoryResponse;
+      if (json.ok && json.summary) {
+        const s = json.summary;
+        const summary: MarketPaperSummary = {
+          total_pnl: s.total_pnl ?? 0,
+          initial_capital: s.initial_capital ?? 100,
+          current_equity: s.current_equity ?? 100,
+          equity_roi_pct: s.equity_roi_pct ?? 0,
+          bust_count: s.bust_count ?? 0,
+          max_drawdown_pct: s.max_drawdown_pct ?? 0,
+          wins: s.wins ?? 0,
+          losses: s.losses ?? 0,
+          open: s.open ?? 0,
+          closed: s.closed ?? 0,
+          win_rate: s.win_rate ?? 0,
+          max_consecutive_losses: s.max_consecutive_losses ?? 0,
+        };
+        if (market === "btc15") setBtc15PaperSummary(summary);
+        else setEth5PaperSummary(summary);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function loadMarketLiveHistory(
+    market: "btc15" | "eth5",
+    params: { limit?: number; offset?: number } = {},
+  ) {
+    const limit = params.limit ?? marketHistoryPageSize;
+    const offset = params.offset ?? 0;
+    const setLoading = market === "btc15" ? setBtc15LiveHistoryLoading : setEth5LiveHistoryLoading;
+    const setItems = market === "btc15" ? setBtc15LiveHistory : setEth5LiveHistory;
+    const setTotal = market === "btc15" ? setBtc15LiveHistoryTotal : setEth5LiveHistoryTotal;
+    const setOff = market === "btc15" ? setBtc15LiveHistoryOffset : setEth5LiveHistoryOffset;
+    const setSummary = market === "btc15" ? setBtc15LiveHistorySummary : setEth5LiveHistorySummary;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/${market}/live-trade-history?limit=${limit}&offset=${offset}`, { cache: "no-store" });
+      const json = (await res.json()) as LiveTradeHistoryResponse;
+      if (json.ok) {
+        setItems(json.items ?? []);
+        setTotal(json.count ?? 0);
+        setOff(json.offset ?? offset);
+        setSummary(json.summary ?? null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadMarketLiveDailyPnl(market: "btc15" | "eth5") {
+    try {
+      const res = await fetch(`/api/${market}/live-trade-history?limit=1&offset=0`, { cache: "no-store" });
+      const json = (await res.json()) as LiveTradeHistoryResponse;
+      if (json.ok && json.summary) {
+        const pnl: MarketLiveDailyPnl = {
+          daily_pnl: json.summary.total_pnl ?? 0,
+          daily_trades: (json.summary.open ?? 0) + (json.summary.closed ?? 0),
+        };
+        if (market === "btc15") setBtc15LiveDaily(pnl);
+        else setEth5LiveDaily(pnl);
+      }
+    } catch { /* ignore */ }
   }
 
   async function loadSnapshot() {
@@ -1218,6 +1370,22 @@ export function LiveDashboard() {
       }
     };
 
+    let marketSummaryTimer: number | null = null;
+    const pollMarketSummaries = async () => {
+      if (!mounted) return;
+      try {
+        await Promise.all([
+          loadMarketPaperSummary("btc15"),
+          loadMarketPaperSummary("eth5"),
+          loadMarketLiveDailyPnl("btc15"),
+          loadMarketLiveDailyPnl("eth5"),
+        ]);
+      } catch (_) { /* ignore */ }
+      if (mounted) {
+        marketSummaryTimer = window.setTimeout(() => void pollMarketSummaries(), 30000);
+      }
+    };
+
     void pollSnapshot();
     void pollHistory();
     void loadControlOnce();
@@ -1225,6 +1393,7 @@ export function LiveDashboard() {
     void pollLiveStatus();
     void pollControlStatus();
     void pollMarketControl();
+    void pollMarketSummaries();
 
     return () => {
       mounted = false;
@@ -1234,6 +1403,7 @@ export function LiveDashboard() {
       if (liveStatusTimer !== null) window.clearTimeout(liveStatusTimer);
       if (controlStatusTimer !== null) window.clearTimeout(controlStatusTimer);
       if (marketControlTimer !== null) window.clearTimeout(marketControlTimer);
+      if (marketSummaryTimer !== null) window.clearTimeout(marketSummaryTimer);
     };
   }, []);
 
@@ -2238,9 +2408,21 @@ export function LiveDashboard() {
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Card>
             <CardHeader>
-              <div>
-                <CardTitle>Paper Sim - BTC 15min</CardTitle>
-                <CardDescription>Virtual trading for BTC 15-minute windows</CardDescription>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Paper Sim - BTC 15min</CardTitle>
+                  <CardDescription>Virtual trading for BTC 15-minute windows</CardDescription>
+                </div>
+                <button
+                  onClick={() => {
+                    setBtc15PaperHistoryOpen(true);
+                    setBtc15PaperHistoryOffset(0);
+                    void loadMarketPaperHistory("btc15", { limit: marketHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Trade History
+                </button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -2253,14 +2435,17 @@ export function LiveDashboard() {
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   />
                 </label>
-                <label className="text-xs text-muted-foreground">
+                <label className="text-xs text-muted-foreground col-span-2">
                   Sizing Mode
                   <select
                     value={btc15PaperSizing}
                     onChange={(e) => setBtc15PaperSizing(e.target.value)}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   >
-                    <option value="fixed">fixed</option>
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
+                    <option value="adaptive">adaptive</option>
+                    <option value="all_in_fixed">all_in_fixed (always seed amount)</option>
+                    <option value="all_in_equity">all_in_equity (all available equity)</option>
                   </select>
                 </label>
               </div>
@@ -2289,36 +2474,98 @@ export function LiveDashboard() {
               <p className="font-mono text-xs text-muted-foreground">
                 pid={btc15Status?.paper?.pid ?? "-"}
               </p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono">{formatUsd(btc15PaperSummary?.initial_capital ?? Number(btc15PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono">{formatUsd(btc15PaperSummary?.current_equity ?? Number(btc15PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized PnL</p>
+                  <p className="font-mono">{formatUsd(btc15PaperSummary?.total_pnl ?? 0)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono">{formatPct(btc15PaperSummary?.equity_roi_pct ?? 0, 2)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">All-Loss Hits</p>
+                  <p className="font-mono">{btc15PaperSummary?.bust_count ?? 0}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Max Drawdown</p>
+                  <p className="font-mono">{formatPct(btc15PaperSummary?.max_drawdown_pct ?? 0, 2)}</p>
+                </div>
+              </div>
               <p className="text-xs text-muted-foreground italic">
                 Signal Generator starts automatically with paper/live.
               </p>
-              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
-                {(btc15Status?.paper?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+              <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                {(btc15Status?.paper?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
               </pre>
             </CardContent>
           </Card>
 
           <Card className="xl:self-start">
             <CardHeader>
-              <div>
-                <CardTitle>Live Trading - BTC 15min</CardTitle>
-                <CardDescription>Real execution for BTC 15-minute windows</CardDescription>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Live Trading - BTC 15min</CardTitle>
+                  <CardDescription>Real execution for BTC 15-minute windows</CardDescription>
+                </div>
+                <button
+                  onClick={() => {
+                    setBtc15LiveHistoryOpen(true);
+                    setBtc15LiveHistoryOffset(0);
+                    void loadMarketLiveHistory("btc15", { limit: marketHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Trade History
+                </button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <label className="text-xs text-muted-foreground">
-                Fixed Invest Per Trade (USD)
-                <input
-                  value={btc15LiveStake}
-                  onChange={(e) => setBtc15LiveStake(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
-                />
-              </label>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Today&apos;s PnL</p>
+                  <p className={`font-mono font-semibold ${(btc15LiveDaily?.daily_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    ${(btc15LiveDaily?.daily_pnl ?? 0).toFixed(2)} ({btc15LiveDaily?.daily_trades ?? 0} trades)
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="text-xs text-muted-foreground">
+                  Fixed Invest Per Trade (USD)
+                  <input
+                    value={btc15LiveStake}
+                    onChange={(e) => setBtc15LiveStake(e.target.value)}
+                    disabled={btc15LiveSizing !== "fixed"}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Sizing Mode
+                  <select
+                    value={btc15LiveSizing}
+                    onChange={(e) => setBtc15LiveSizing(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  >
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
+                    <option value="adaptive">adaptive (balance)</option>
+                    <option value="adaptive_seed">adaptive (seed capital)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() =>
                     void marketControlAction("btc15", "live_start", {
                       stake: Number(btc15LiveStake || "15"),
+                      sizing_mode: btc15LiveSizing,
                       dry_run: false,
                     })
                   }
@@ -2337,13 +2584,13 @@ export function LiveDashboard() {
                 </Badge>
               </div>
               <p className="font-mono text-xs text-muted-foreground">
-                pid={btc15Status?.live?.pid ?? "-"}
+                pid={btc15Status?.live?.pid ?? "-"} | sizing={btc15LiveSizing}
               </p>
               <p className="text-xs text-muted-foreground italic">
                 Uses Main Account API + Telegram settings.
               </p>
-              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
-                {(btc15Status?.live?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+              <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                {(btc15Status?.live?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
               </pre>
             </CardContent>
           </Card>
@@ -2353,9 +2600,21 @@ export function LiveDashboard() {
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Card>
             <CardHeader>
-              <div>
-                <CardTitle>Paper Sim - ETH 5min</CardTitle>
-                <CardDescription>Virtual trading for ETH 5-minute windows</CardDescription>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Paper Sim - ETH 5min</CardTitle>
+                  <CardDescription>Virtual trading for ETH 5-minute windows</CardDescription>
+                </div>
+                <button
+                  onClick={() => {
+                    setEth5PaperHistoryOpen(true);
+                    setEth5PaperHistoryOffset(0);
+                    void loadMarketPaperHistory("eth5", { limit: marketHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Trade History
+                </button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -2368,14 +2627,17 @@ export function LiveDashboard() {
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   />
                 </label>
-                <label className="text-xs text-muted-foreground">
+                <label className="text-xs text-muted-foreground col-span-2">
                   Sizing Mode
                   <select
                     value={eth5PaperSizing}
                     onChange={(e) => setEth5PaperSizing(e.target.value)}
                     className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
                   >
-                    <option value="fixed">fixed</option>
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
+                    <option value="adaptive">adaptive</option>
+                    <option value="all_in_fixed">all_in_fixed (always seed amount)</option>
+                    <option value="all_in_equity">all_in_equity (all available equity)</option>
                   </select>
                 </label>
               </div>
@@ -2404,36 +2666,98 @@ export function LiveDashboard() {
               <p className="font-mono text-xs text-muted-foreground">
                 pid={eth5Status?.paper?.pid ?? "-"}
               </p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono">{formatUsd(eth5PaperSummary?.initial_capital ?? Number(eth5PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono">{formatUsd(eth5PaperSummary?.current_equity ?? Number(eth5PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized PnL</p>
+                  <p className="font-mono">{formatUsd(eth5PaperSummary?.total_pnl ?? 0)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono">{formatPct(eth5PaperSummary?.equity_roi_pct ?? 0, 2)}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">All-Loss Hits</p>
+                  <p className="font-mono">{eth5PaperSummary?.bust_count ?? 0}</p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Max Drawdown</p>
+                  <p className="font-mono">{formatPct(eth5PaperSummary?.max_drawdown_pct ?? 0, 2)}</p>
+                </div>
+              </div>
               <p className="text-xs text-muted-foreground italic">
                 Signal Generator starts automatically with paper/live.
               </p>
-              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
-                {(eth5Status?.paper?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+              <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                {(eth5Status?.paper?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
               </pre>
             </CardContent>
           </Card>
 
           <Card className="xl:self-start">
             <CardHeader>
-              <div>
-                <CardTitle>Live Trading - ETH 5min</CardTitle>
-                <CardDescription>Real execution for ETH 5-minute windows</CardDescription>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Live Trading - ETH 5min</CardTitle>
+                  <CardDescription>Real execution for ETH 5-minute windows</CardDescription>
+                </div>
+                <button
+                  onClick={() => {
+                    setEth5LiveHistoryOpen(true);
+                    setEth5LiveHistoryOffset(0);
+                    void loadMarketLiveHistory("eth5", { limit: marketHistoryPageSize, offset: 0 });
+                  }}
+                  className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                >
+                  Trade History
+                </button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <label className="text-xs text-muted-foreground">
-                Fixed Invest Per Trade (USD)
-                <input
-                  value={eth5LiveStake}
-                  onChange={(e) => setEth5LiveStake(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
-                />
-              </label>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Today&apos;s PnL</p>
+                  <p className={`font-mono font-semibold ${(eth5LiveDaily?.daily_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    ${(eth5LiveDaily?.daily_pnl ?? 0).toFixed(2)} ({eth5LiveDaily?.daily_trades ?? 0} trades)
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="text-xs text-muted-foreground">
+                  Fixed Invest Per Trade (USD)
+                  <input
+                    value={eth5LiveStake}
+                    onChange={(e) => setEth5LiveStake(e.target.value)}
+                    disabled={eth5LiveSizing !== "fixed"}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                </label>
+                <label className="text-xs text-muted-foreground">
+                  Sizing Mode
+                  <select
+                    value={eth5LiveSizing}
+                    onChange={(e) => setEth5LiveSizing(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border/70 bg-background/40 px-2 py-1.5 text-sm"
+                  >
+                    <option value="fixed">fixed (manual amount, mega 3x)</option>
+                    <option value="adaptive">adaptive (balance)</option>
+                    <option value="adaptive_seed">adaptive (seed capital)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() =>
                     void marketControlAction("eth5", "live_start", {
                       stake: Number(eth5LiveStake || "15"),
+                      sizing_mode: eth5LiveSizing,
                       dry_run: false,
                     })
                   }
@@ -2452,17 +2776,655 @@ export function LiveDashboard() {
                 </Badge>
               </div>
               <p className="font-mono text-xs text-muted-foreground">
-                pid={eth5Status?.live?.pid ?? "-"}
+                pid={eth5Status?.live?.pid ?? "-"} | sizing={eth5LiveSizing}
               </p>
               <p className="text-xs text-muted-foreground italic">
                 Uses Main Account API + Telegram settings.
               </p>
-              <pre className="max-h-40 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
-                {(eth5Status?.live?.output_tail ?? []).slice(-10).join("\n") || "No logs yet"}
+              <pre className="max-h-52 overflow-auto rounded-md border border-border/70 bg-background/30 p-2 font-mono text-[11px]">
+                {(eth5Status?.live?.output_tail ?? []).slice(-20).join("\n") || "No logs yet"}
               </pre>
             </CardContent>
           </Card>
         </section>
+
+        {/* ---- BTC 15min Paper Trade History Modal ---- */}
+        {btc15PaperHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Paper Trade History - BTC 15min</p>
+                  <p className="text-xs text-muted-foreground">
+                    Entry, start price, odds at entry, to-win, and realized PnL.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadMarketPaperHistory("btc15", {
+                        limit: marketHistoryPageSize,
+                        offset: btc15PaperHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setBtc15PaperHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-8">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{btc15PaperHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{btc15PaperHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {btc15PaperHistorySummary?.wins ?? 0}/{btc15PaperHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((btc15PaperHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono text-sm">{formatUsd(btc15PaperHistorySummary?.initial_capital ?? Number(btc15PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono text-sm">{formatUsd(btc15PaperHistorySummary?.current_equity ?? Number(btc15PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono text-sm">{formatPct(btc15PaperHistorySummary?.equity_roi_pct ?? 0, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(btc15PaperHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {btc15PaperHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : btc15PaperHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No paper trades yet.</p>
+                ) : (
+                  btc15PaperHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">{formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">BTC Start/End</p>
+                          <p className="font-mono">{formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}</p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">{formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">fill {formatNumber(t.exit?.fill_px, 3)} | settle {formatNumber(t.exit?.settlement_px, 3)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">conf {formatNumber(t.signal_confidence, 3)}</span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {btc15PaperHistoryTotal} | showing {btc15PaperHistoryTotal === 0 ? 0 : btc15PaperHistoryOffset + 1}-
+                  {Math.min(btc15PaperHistoryOffset + btc15PaperHistory.length, btc15PaperHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={btc15PaperHistoryLoading || btc15PaperHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, btc15PaperHistoryOffset - marketHistoryPageSize);
+                      setBtc15PaperHistoryOffset(nextOffset);
+                      void loadMarketPaperHistory("btc15", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={btc15PaperHistoryLoading || btc15PaperHistoryOffset + marketHistoryPageSize >= btc15PaperHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = btc15PaperHistoryOffset + marketHistoryPageSize;
+                      setBtc15PaperHistoryOffset(nextOffset);
+                      void loadMarketPaperHistory("btc15", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* ---- BTC 15min Live Trade History Modal ---- */}
+        {btc15LiveHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Live Trade History - BTC 15min</p>
+                  <p className="text-xs text-muted-foreground">
+                    Filled entries and realized PnL from live execution.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadMarketLiveHistory("btc15", {
+                        limit: marketHistoryPageSize,
+                        offset: btc15LiveHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setBtc15LiveHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-7">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{btc15LiveHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{btc15LiveHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {btc15LiveHistorySummary?.wins ?? 0}/{btc15LiveHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((btc15LiveHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg Stake</p>
+                  <p className="font-mono text-sm">{formatUsd(btc15LiveHistorySummary?.avg_stake)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg ROI</p>
+                  <p className="font-mono text-sm">{formatPct(btc15LiveHistorySummary?.avg_roi_pct, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(btc15LiveHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {btc15LiveHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : btc15LiveHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No live trades yet.</p>
+                ) : (
+                  btc15LiveHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        {t.entry_source ? (
+                          <Badge variant="neutral">{t.entry_source.toUpperCase()}</Badge>
+                        ) : null}
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">{formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}</p>
+                          <p className="font-mono text-muted-foreground">signal-side px {formatNumber(t.entry_side_price_at_signal, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">BTC Start/End</p>
+                          <p className="font-mono">{formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}</p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">{formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}</p>
+                          <p className="font-mono text-muted-foreground">mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">fill {formatNumber(t.exit?.fill_px, 3)} | mkt {formatNumber(t.exit?.market_px, 3)}</p>
+                          <p className="font-mono text-muted-foreground">settle {formatNumber(t.exit?.settlement_px, 3)} | {t.exit?.kind ?? "--"}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">conf {formatNumber(t.signal_confidence, 3)}</span>
+                        {t.close_reason ? (
+                          <span className="font-mono text-amber-300/90">exit {t.close_reason}</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {btc15LiveHistoryTotal} | showing {btc15LiveHistoryTotal === 0 ? 0 : btc15LiveHistoryOffset + 1}-
+                  {Math.min(btc15LiveHistoryOffset + btc15LiveHistory.length, btc15LiveHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={btc15LiveHistoryLoading || btc15LiveHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, btc15LiveHistoryOffset - marketHistoryPageSize);
+                      setBtc15LiveHistoryOffset(nextOffset);
+                      void loadMarketLiveHistory("btc15", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={btc15LiveHistoryLoading || btc15LiveHistoryOffset + marketHistoryPageSize >= btc15LiveHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = btc15LiveHistoryOffset + marketHistoryPageSize;
+                      setBtc15LiveHistoryOffset(nextOffset);
+                      void loadMarketLiveHistory("btc15", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* ---- ETH 5min Paper Trade History Modal ---- */}
+        {eth5PaperHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Paper Trade History - ETH 5min</p>
+                  <p className="text-xs text-muted-foreground">
+                    Entry, start price, odds at entry, to-win, and realized PnL.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadMarketPaperHistory("eth5", {
+                        limit: marketHistoryPageSize,
+                        offset: eth5PaperHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setEth5PaperHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-8">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{eth5PaperHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{eth5PaperHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {eth5PaperHistorySummary?.wins ?? 0}/{eth5PaperHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((eth5PaperHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Seed Capital</p>
+                  <p className="font-mono text-sm">{formatUsd(eth5PaperHistorySummary?.initial_capital ?? Number(eth5PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Equity</p>
+                  <p className="font-mono text-sm">{formatUsd(eth5PaperHistorySummary?.current_equity ?? Number(eth5PaperStake || "100"))}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Account Return</p>
+                  <p className="font-mono text-sm">{formatPct(eth5PaperHistorySummary?.equity_roi_pct ?? 0, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(eth5PaperHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {eth5PaperHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : eth5PaperHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No paper trades yet.</p>
+                ) : (
+                  eth5PaperHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">{formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">ETH Start/End</p>
+                          <p className="font-mono">{formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}</p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">{formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">fill {formatNumber(t.exit?.fill_px, 3)} | settle {formatNumber(t.exit?.settlement_px, 3)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">conf {formatNumber(t.signal_confidence, 3)}</span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {eth5PaperHistoryTotal} | showing {eth5PaperHistoryTotal === 0 ? 0 : eth5PaperHistoryOffset + 1}-
+                  {Math.min(eth5PaperHistoryOffset + eth5PaperHistory.length, eth5PaperHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={eth5PaperHistoryLoading || eth5PaperHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, eth5PaperHistoryOffset - marketHistoryPageSize);
+                      setEth5PaperHistoryOffset(nextOffset);
+                      void loadMarketPaperHistory("eth5", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={eth5PaperHistoryLoading || eth5PaperHistoryOffset + marketHistoryPageSize >= eth5PaperHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = eth5PaperHistoryOffset + marketHistoryPageSize;
+                      setEth5PaperHistoryOffset(nextOffset);
+                      void loadMarketPaperHistory("eth5", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* ---- ETH 5min Live Trade History Modal ---- */}
+        {eth5LiveHistoryOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-5xl rounded-xl border border-border/80 bg-slate-950 p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-lg font-semibold">Live Trade History - ETH 5min</p>
+                  <p className="text-xs text-muted-foreground">
+                    Filled entries and realized PnL from live execution.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() =>
+                      void loadMarketLiveHistory("eth5", {
+                        limit: marketHistoryPageSize,
+                        offset: eth5LiveHistoryOffset,
+                      })
+                    }
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs"
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={() => setEth5LiveHistoryOpen(false)}
+                    className="rounded-md border border-rose-400/50 bg-rose-500/20 px-2.5 py-1 text-xs"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-7">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Open</p>
+                  <p className="font-mono text-sm">{eth5LiveHistorySummary?.open ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Closed</p>
+                  <p className="font-mono text-sm">{eth5LiveHistorySummary?.closed ?? 0}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Wins/Losses</p>
+                  <p className="font-mono text-sm">
+                    {eth5LiveHistorySummary?.wins ?? 0}/{eth5LiveHistorySummary?.losses ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Win Rate</p>
+                  <p className="font-mono text-sm">{formatPct((eth5LiveHistorySummary?.win_rate ?? 0) * 100, 1)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg Stake</p>
+                  <p className="font-mono text-sm">{formatUsd(eth5LiveHistorySummary?.avg_stake)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Avg ROI</p>
+                  <p className="font-mono text-sm">{formatPct(eth5LiveHistorySummary?.avg_roi_pct, 2)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2 text-xs">
+                  <p className="text-muted-foreground">Realized Total PnL</p>
+                  <p className="font-mono text-sm">{formatUsd(eth5LiveHistorySummary?.total_pnl)}</p>
+                </div>
+              </div>
+
+              <div className="max-h-[62vh] space-y-2 overflow-auto pr-1">
+                {eth5LiveHistoryLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                ) : eth5LiveHistory.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No live trades yet.</p>
+                ) : (
+                  eth5LiveHistory.map((t) => (
+                    <div key={`${t.id}-${t.window_start}`} className="rounded-lg border border-border/60 bg-background/40 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant={t.status === "OPEN" ? "neutral" : t.won === 1 ? "success" : "danger"}>
+                          {t.status === "OPEN" ? "OPEN" : t.won === 1 ? "WIN" : "LOSS"}
+                        </Badge>
+                        <Badge variant={t.direction === "UP" ? "success" : t.direction === "DOWN" ? "danger" : "neutral"}>
+                          {t.direction}
+                        </Badge>
+                        {t.entry_source ? (
+                          <Badge variant="neutral">{t.entry_source.toUpperCase()}</Badge>
+                        ) : null}
+                        <span className="font-mono text-muted-foreground">{toKST(t.opened_at_utc)}</span>
+                        <span className="truncate font-mono text-muted-foreground">{t.window?.slug ?? "--"}</span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Stake / Entry</p>
+                          <p className="font-mono">{formatUsd(t.stake)} @ {formatNumber(t.entry_price, 3)}</p>
+                          <p className="font-mono text-muted-foreground">signal-side px {formatNumber(t.entry_side_price_at_signal, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">To Win</p>
+                          <p className="font-mono">total {formatUsd(t.to_win_total)}</p>
+                          <p className="font-mono text-muted-foreground">pnl {formatUsd(t.to_win_pnl)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">ETH Start/End</p>
+                          <p className="font-mono">{formatNumber(t.window?.btc_start_price)} / {formatNumber(t.window?.btc_end_price)}</p>
+                          <p className="font-mono text-muted-foreground">outcome {t.window?.actual_outcome ?? "--"}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">UP / DOWN at Entry</p>
+                          <p className="font-mono">{formatNumber(t.odds_at_entry?.up_ask, 3)} / {formatNumber(t.odds_at_entry?.down_ask, 3)}</p>
+                          <p className="font-mono text-muted-foreground">mid {formatNumber(t.odds_at_entry?.up_mid, 3)} / {formatNumber(t.odds_at_entry?.down_mid, 3)}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-background/40 p-2 text-xs">
+                          <p className="text-muted-foreground">Exit / Settle</p>
+                          <p className="font-mono">fill {formatNumber(t.exit?.fill_px, 3)} | mkt {formatNumber(t.exit?.market_px, 3)}</p>
+                          <p className="font-mono text-muted-foreground">settle {formatNumber(t.exit?.settlement_px, 3)} | {t.exit?.kind ?? "--"}</p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          realized pnl {formatUsd(t.pnl)} ({formatPct(t.roi_pct, 2)})
+                        </span>
+                        <span className="font-mono text-muted-foreground">conf {formatNumber(t.signal_confidence, 3)}</span>
+                        {t.close_reason ? (
+                          <span className="font-mono text-amber-300/90">exit {t.close_reason}</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{t.signal_reason || "no reason"}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-3 text-xs">
+                <p className="text-muted-foreground">
+                  total {eth5LiveHistoryTotal} | showing {eth5LiveHistoryTotal === 0 ? 0 : eth5LiveHistoryOffset + 1}-
+                  {Math.min(eth5LiveHistoryOffset + eth5LiveHistory.length, eth5LiveHistoryTotal)}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    disabled={eth5LiveHistoryLoading || eth5LiveHistoryOffset <= 0}
+                    onClick={() => {
+                      const nextOffset = Math.max(0, eth5LiveHistoryOffset - marketHistoryPageSize);
+                      setEth5LiveHistoryOffset(nextOffset);
+                      void loadMarketLiveHistory("eth5", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    disabled={eth5LiveHistoryLoading || eth5LiveHistoryOffset + marketHistoryPageSize >= eth5LiveHistoryTotal}
+                    onClick={() => {
+                      const nextOffset = eth5LiveHistoryOffset + marketHistoryPageSize;
+                      setEth5LiveHistoryOffset(nextOffset);
+                      void loadMarketLiveHistory("eth5", { limit: marketHistoryPageSize, offset: nextOffset });
+                    }}
+                    className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {authModalOpen ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
