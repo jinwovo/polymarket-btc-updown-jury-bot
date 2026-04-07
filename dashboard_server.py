@@ -783,12 +783,12 @@ def _get_latest_odds_for_window(
     if window_start is None:
         return fetch_one_dict(
             conn,
-            "SELECT * FROM poly_odds ORDER BY ts DESC LIMIT 1"
+            "SELECT * FROM poly_odds WHERE slug LIKE 'btc-updown-5m%%' ORDER BY ts DESC LIMIT 1"
         )
     return fetch_one_dict(
         conn,
         """SELECT * FROM poly_odds
-           WHERE window_start = ?
+           WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'
            ORDER BY ts DESC
            LIMIT 1""",
         (window_start,),
