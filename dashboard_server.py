@@ -2567,7 +2567,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/control/live":
-            self._send_json(build_live_control_status(), code=200)
+            _qs_live = parse_qs(parsed.query)
+            _acct_id = int(_qs_live.get("account_id", ["0"])[0])
+            if _acct_id > 0:
+                # Non-main account: read from DB, not .env.secrets
+                self._send_json(build_account_status(_acct_id), code=200)
+            else:
+                self._send_json(build_live_control_status(), code=200)
             return
 
         if path == "/api/control/backtest":
@@ -3235,13 +3241,23 @@ def build_account_status(account_id: int) -> dict:
     except Exception:
         pass
 
+    # API config status from DB (not .env.secrets)
+    api_configured = bool(acct.get("api_key") and acct.get("private_key"))
+    funder = str(acct.get("funder", "")) or ""
+    telegram_configured = bool(acct.get("telegram_token") and acct.get("telegram_chat_id"))
+
     return {
-        "account": acct,
+        "account": {k: v for k, v in acct.items() if k not in ("private_key", "api_secret", "api_passphrase")},
         "running": running,
         "pid": proc._process.pid if proc and proc._process else None,
         "today_pnl": pnl,
         "today_trades": trade_count,
         "log_lines": list(proc._output_lines) if proc else [],
+        "api_configured": api_configured,
+        "funder": funder[:10] + "..." if len(funder) > 10 else funder,
+        "telegram_configured": telegram_configured,
+        "seed_capital": float(acct.get("seed_capital", 100)),
+        "fixed_stake": float(acct.get("fixed_stake", 15)),
     }
 
 
