@@ -844,17 +844,17 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("Ask drift calc err: %s", _e)
 
-            # --- BTC still moving: is BTC moving in judge direction over last 30s? ---
+            # --- BTC still moving: is BTC moving in judge direction over last 20s? ---
             _btc_still_moving = None
+            _bsm_lookback = float(os.getenv("PAPER_BTC_STILL_LOOKBACK", "20"))
             try:
                 _prices = list(self._recent_prices)
                 _ts_arr = list(self._recent_timestamps)
                 if len(_prices) >= 10 and len(_ts_arr) >= 10:
-                    # Find price 30s ago
                     _now_px = _prices[-1]
                     _p30 = None
                     for _i in range(len(_ts_arr) - 1, -1, -1):
-                        if _ts_arr[_i] <= now - 30:
+                        if _ts_arr[_i] <= now - _bsm_lookback:
                             _p30 = _prices[_i]
                             break
                     if _p30 and _now_px and _p30 > 0:

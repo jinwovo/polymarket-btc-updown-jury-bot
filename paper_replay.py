@@ -377,6 +377,7 @@ class PaperReplay:
         self.require_immediate_momentum = os.getenv("REPLAY_REQUIRE_IMMEDIATE_MOMENTUM", "0") == "1"
         self.prev_window_block_pct = float(os.getenv("REPLAY_PREV_WINDOW_BLOCK_PCT", "0"))  # 0=off, e.g. 0.10
         self.require_btc_still_moving = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+        self.btc_still_lookback = float(os.getenv("PAPER_BTC_STILL_LOOKBACK", "20"))
         self.min_path_eff = float(os.getenv("REPLAY_MIN_PATH_EFF", "0"))  # 0=off, e.g. 0.15
         self.block_slow_clob = os.getenv("REPLAY_BLOCK_SLOW_CLOB", "0") == "1"
         self.slow_clob_range = (float(os.getenv("REPLAY_SLOW_CLOB_LO", "-0.05")),
@@ -727,7 +728,7 @@ class PaperReplay:
 
             # BTC still moving: last 30s BTC must be moving in our direction
             if self.require_btc_still_moving and self._cache:
-                _bsm_p30 = self._cache.price_at(entry_ts - 30)
+                _bsm_p30 = self._cache.price_at(entry_ts - self.btc_still_lookback)
                 _bsm_pnow = self._cache.price_at(entry_ts)
                 if _bsm_p30 and _bsm_pnow:
                     if direction == "UP" and _bsm_pnow <= _bsm_p30:
@@ -1207,6 +1208,7 @@ def main():
     parser.add_argument("--clob-exit", action="store_true", help="Enable CLOB exit near expiry")
     parser.add_argument("--clob-exit-remaining", type=float, default=None, help="Seconds remaining to check CLOB exit (default 10)")
     parser.add_argument("--clob-exit-opp-threshold", type=float, default=None, help="Opposing ask threshold for CLOB exit (default 0.65)")
+    parser.add_argument("--btc-still-lookback", type=float, default=None, help="BTC still moving lookback seconds (default 30)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -1282,6 +1284,8 @@ def main():
         os.environ["REPLAY_CLOB_EXIT_REMAINING"] = str(args.clob_exit_remaining)
     if args.clob_exit_opp_threshold is not None:
         os.environ["REPLAY_CLOB_EXIT_OPP_THRESHOLD"] = str(args.clob_exit_opp_threshold)
+    if args.btc_still_lookback is not None:
+        os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
 
     conn = connect_db()
     end_ts = _time_mod.time()
