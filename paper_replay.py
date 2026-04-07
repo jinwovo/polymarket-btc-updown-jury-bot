@@ -376,6 +376,8 @@ class PaperReplay:
         self.min_efficiency_ratio = float(os.getenv("REPLAY_MIN_EFFICIENCY_RATIO", "0"))  # 0=off, e.g. 0.3
         self.require_immediate_momentum = os.getenv("REPLAY_REQUIRE_IMMEDIATE_MOMENTUM", "0") == "1"
         self.prev_window_block_pct = float(os.getenv("REPLAY_PREV_WINDOW_BLOCK_PCT", "0"))  # 0=off, e.g. 0.10
+        self.require_btc_still_moving = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
+        self.min_path_eff = float(os.getenv("REPLAY_MIN_PATH_EFF", "0"))  # 0=off, e.g. 0.15
         self.block_slow_clob = os.getenv("REPLAY_BLOCK_SLOW_CLOB", "0") == "1"
         self.slow_clob_range = (float(os.getenv("REPLAY_SLOW_CLOB_LO", "-0.05")),
                                 float(os.getenv("REPLAY_SLOW_CLOB_HI", "0.05")))
@@ -723,6 +725,29 @@ class PaperReplay:
                 if _cvd_dir and _cvd_dir != direction:
                     continue  # CVD disagrees with direction
 
+            # BTC still moving: last 30s BTC must be moving in our direction
+            if self.require_btc_still_moving and self._cache:
+                _bsm_p30 = self._cache.price_at(entry_ts - 30)
+                _bsm_pnow = self._cache.price_at(entry_ts)
+                if _bsm_p30 and _bsm_pnow:
+                    if direction == "UP" and _bsm_pnow <= _bsm_p30:
+                        continue
+                    if direction == "DOWN" and _bsm_pnow >= _bsm_p30:
+                        continue
+
+            # Path efficiency filter: block very noisy price action (30s before entry)
+            if self.min_path_eff > 0 and self._cache:
+                import bisect as _pe_bisect
+                _pe_i0 = _pe_bisect.bisect_left(self._cache.btc_ts, entry_ts - 30)
+                _pe_i1 = _pe_bisect.bisect_right(self._cache.btc_ts, entry_ts)
+                if _pe_i1 - _pe_i0 >= 10:
+                    _pe_px = self._cache.btc_px[_pe_i0:_pe_i1]
+                    _pe_net = abs(_pe_px[-1] - _pe_px[0])
+                    _pe_path = sum(abs(_pe_px[i+1] - _pe_px[i]) for i in range(len(_pe_px)-1))
+                    _pe_eff = _pe_net / _pe_path if _pe_path > 0 else 0
+                    if _pe_eff < self.min_path_eff:
+                        continue
+
             # CLOB velocity filter: block slow/uncertain CLOB movement
             if self.block_slow_clob and self._cache:
                 _cv = self._cache.clob_velocity(ws, entry_ts, direction)
@@ -841,6 +866,39 @@ class PaperReplay:
             # conf2x: 2x when confidence >= 0.7
             if confidence >= 0.7 and _mega_mult > 1.0:
                 stake = round(stake * _mega_mult, 2)
+
+            # Dynamic sizing: quality_score based on accel + CLOB stability
+            if os.getenv("PAPER_DYNAMIC_SIZING", "false").lower() == "true" and self._cache:
+                import bisect as _qs_bisect
+                _qs = 1.0
+                _qs_i0 = _qs_bisect.bisect_left(self._cache.btc_ts, entry_ts - 30)
+                _qs_i1 = _qs_bisect.bisect_right(self._cache.btc_ts, entry_ts)
+                if _qs_i1 - _qs_i0 >= 10:
+                    _qs_px = self._cache.btc_px[_qs_i0:_qs_i1]
+                    _qs_mid = len(_qs_px) // 2
+                    _qs_v1 = _qs_px[-1] - _qs_px[_qs_mid]
+                    _qs_v2 = _qs_px[_qs_mid] - _qs_px[0]
+                    _qs_accel = _qs_v1 - _qs_v2
+                    if direction == "DOWN": _qs_accel = -_qs_accel
+                    if _qs_accel >= 18: _qs += 0.5
+                    elif _qs_accel >= 14: _qs += 0.25
+                    elif _qs_accel < 10: _qs -= 0.3
+                # CLOB ask stability
+                _qs_asks = []
+                for _qs_sec in range(0, 30, 3):
+                    _qs_o = self._cache.odds_at(ws, entry_ts - _qs_sec)
+                    if _qs_o:
+                        _qs_a = float(_qs_o.get("up_best_ask") or 0.5) if direction == "UP" \
+                            else float(_qs_o.get("down_best_ask") or 0.5)
+                        _qs_asks.append(_qs_a)
+                if len(_qs_asks) >= 5:
+                    _qs_m = sum(_qs_asks) / len(_qs_asks)
+                    _qs_std = (sum((a - _qs_m)**2 for a in _qs_asks) / len(_qs_asks))**0.5
+                    if _qs_std < 0.04: _qs += 0.5
+                    elif _qs_std < 0.055: _qs += 0.25
+                    elif _qs_std > 0.065: _qs -= 0.3
+                _qs = max(0.5, min(2.0, _qs))
+                stake = round(stake * _qs, 2)
 
             shares = stake / entry_price
             opened_at = entry_ts
@@ -1142,6 +1200,7 @@ def main():
     parser.add_argument("--min-efficiency-ratio", type=float, default=None, help="Min ER to enter (e.g. 0.3)")
     parser.add_argument("--require-immediate-momentum", action="store_true", help="Last 10s BTC must match direction")
     parser.add_argument("--prev-window-block", type=float, default=None, help="Block same-dir after prev window moved X%% (e.g. 0.10)")
+    parser.add_argument("--min-path-eff", type=float, default=None, help="Min price path efficiency in 30s before entry (e.g. 0.15)")
     parser.add_argument("--block-slow-clob", action="store_true", help="Block entry when CLOB velocity is slow")
     parser.add_argument("--slow-clob-lo", type=float, default=None, help="Slow CLOB velocity lower bound (default -0.05)")
     parser.add_argument("--slow-clob-hi", type=float, default=None, help="Slow CLOB velocity upper bound (default 0.05)")
@@ -1209,6 +1268,8 @@ def main():
         os.environ["REPLAY_REQUIRE_IMMEDIATE_MOMENTUM"] = "1"
     if args.prev_window_block is not None:
         os.environ["REPLAY_PREV_WINDOW_BLOCK_PCT"] = str(args.prev_window_block)
+    if hasattr(args, 'min_path_eff') and args.min_path_eff is not None:
+        os.environ["REPLAY_MIN_PATH_EFF"] = str(args.min_path_eff)
     if hasattr(args, 'block_slow_clob') and args.block_slow_clob:
         os.environ["REPLAY_BLOCK_SLOW_CLOB"] = "1"
     if hasattr(args, 'slow_clob_lo') and args.slow_clob_lo is not None:
