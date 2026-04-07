@@ -2083,7 +2083,7 @@ class TradingBot:
             "attempts": 1,
         }
         logger.info(
-            "Entry retry saved: dir=%s price=%.4f size=$%.2f source=%s (expires in 30s)",
+            "Entry retry saved: dir=%s price=%.4f size=$%.2f source=%s (expires in 10s)",
             direction, price, bet_size, source,
         )
 
@@ -2108,9 +2108,9 @@ class TradingBot:
 
         # Clear if older than 30 seconds
         age = now - float(retry["created_ts"])
-        if age > 30.0:
+        if age > 10.0:
             logger.info(
-                "Entry retry expired: %.1fs > 30s (dir=%s price=%.4f)",
+                "Entry retry expired: %.1fs > 10s (dir=%s price=%.4f)",
                 age, retry["direction"], retry["price"],
             )
             self._pending_entry_retry = None
