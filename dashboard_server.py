@@ -185,6 +185,10 @@ class ManagedProcess:
                 pass
         return True, "stopped"
 
+    def running(self) -> bool:
+        with self._lock:
+            return self._proc is not None and self._proc.poll() is None
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             running = self._proc is not None and self._proc.poll() is None
