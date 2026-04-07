@@ -228,22 +228,77 @@ data_collector (single process, 0.1s tick)
 - Heartbeat opt-in (not required)
 
 ## File Reference
+### BTC 5min (existing)
 - `main.py` — Live trading (reads signal_cache, places orders)
 - `paper_trade_sim.py` — Paper trading (reads signal_cache, simulates)
-- `data_collector.py` — CLOB polling + Jury + guards → signal_cache
-- `judges.py` — 3 judges + MomentumJudge (disabled) + Jury
-- `polymarket_client.py` — CLOB API + Playwright + HTTP patch
+- `data_collector.py` — CLOB polling + Jury + guards → signal_cache + extra markets data
+- `paper_replay.py` — Backtester for BTC 5min
+
+### BTC 15min (new, 2026-04-07)
+- `signal_generator_btc15.py` — Jury + gate → signal_cache_btc15
+- `paper_sim_btc15.py` — Paper trading → paper_trades_btc15
+- `live_btc15.py` — Live trading → live_trades_btc15
+
+### ETH 5min (new, 2026-04-07)
+- `signal_generator_eth5.py` — Jury + gate → signal_cache_eth5
+- `paper_sim_eth5.py` — Paper trading → paper_trades_eth5
+- `live_eth5.py` — Live trading → live_trades_eth5
+
+### Shared
+- `judges.py` — 3 judges + Jury (asset-agnostic)
 - `trade_gate.py` — Entry gate (EV, coinflip, probability)
-- `entry_parity.py` — Adaptive threshold (strictness from loss_streak)
 - `exit_policy.py` — Exit rules (hold-to-expiry, hard_adverse_flush)
+- `polymarket_client.py` — CLOB API + Playwright + HTTP patch + PTB scrape
+- `market_config.py` — Multi-market definitions (BTC_5M, BTC_15M, ETH_5M)
 - `config.py` — Settings via env (loads with override=True!)
-- `env/runtime.public.env` — Runtime knobs
-- `backtest.py` — Backtester
+- `entry_parity.py` — Adaptive threshold (strictness from loss_streak)
+- `env/runtime.public.env` — Runtime knobs (BTC5 + BTC15_ + ETH5_ sections)
+- `backtest.py` — Backtester (BTC 5min only)
+- `paper_replay_multi.py` — Multi-market backtester (BTC 15min + ETH 5min)
 - `db_config.py` — DB schema (MariaDB port 3400)
+- `dashboard_server.py` — API + process manager + multi-market + multi-account
+
+## Multi-Market Architecture (2026-04-07)
+```
+data_collector (single process)
+  ├→ BTC WebSocket → btc_ticks
+  ├→ ETH WebSocket → eth_ticks
+  ├→ CLOB polling → poly_odds (all 3 markets via slug)
+  ├→ Playwright PTB scrape → market_windows (all 3 markets, separate tabs)
+  ├→ Jury + signal_cache (BTC 5min ONLY - existing)
+  └→ Extra markets data collection (BTC 15min + ETH 5min odds)
+
+signal_generator_btc15 (separate process)
+  ├→ Reads btc_ticks + poly_odds (btc-updown-15m)
+  ├→ Runs Jury → signal_cache_btc15
+  └→ Computes BB/VWAP/drift/still/quality
+
+signal_generator_eth5 (separate process)
+  ├→ Reads eth_ticks + poly_odds (eth-updown-5m)
+  ├→ Runs Jury → signal_cache_eth5
+  └→ Computes BB/VWAP/drift/still/quality
+
+Each market has independent: signal_cache → paper_sim → live_trader
+Signal generators auto-start when paper/live is started from dashboard.
+```
+
+## Multi-Account Trading
+- accounts table: per-account API keys, Telegram, seed capital, stake
+- Main Account: reads from .env.secrets
+- Other accounts: reads from DB accounts table (NOT .env.secrets)
+- Each account can trade any market independently
+- /api/accounts/start accepts {account_id, market: "btc5"|"btc15"|"eth5"}
+- LIVE_ACCOUNT_MARKET_PROCS tracks (account_id, market) -> process
+
+## Database Tables
+### Per-market tables (BTC 15min suffix: _btc15, ETH 5min: _eth5)
+- signal_cache_btc15 / signal_cache_log_btc15
+- signal_cache_eth5 / signal_cache_log_eth5
+- paper_trades_btc15 / paper_trades_eth5
+- live_trades_btc15 / live_trades_eth5
 
 ## Database Connection
 - **Credentials in `.env.secrets`** (not `env/` dir, project root)
 - config.py loads `.env.secrets` via dotenv — must be loaded before DB calls
 - Port 3400, password in `.env.secrets` (MARIADB_PASSWORD)
 - If `connect_db()` fails with auth_gssapi_client, `.env.secrets` not loaded
-- `dashboard_server.py` — API + process manager
