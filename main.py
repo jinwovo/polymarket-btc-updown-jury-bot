@@ -4323,10 +4323,11 @@ class TradingBot:
             self._last_kelly_score = _k_score
             logger.info("Kelly score: %d (conf=%.2f move=%.3f%% spread=%.2f ask=%.3f)",
                         _k_score, _k_conf, _k_move, _k_spread, _k_ep)
-            # Store quality_score from signal_cache for dynamic sizing
-            if _sig_row and _sig_row.get("quality_score") is not None:
-                self._last_quality_score = float(_sig_row["quality_score"])
-                logger.info("Quality score: %.2f", self._last_quality_score)
+
+        # Store quality_score from signal_cache for dynamic sizing (outside Kelly block)
+        if _sig_row and _sig_row.get("quality_score") is not None:
+            self._last_quality_score = float(_sig_row["quality_score"])
+            logger.info("Quality score: %.2f", self._last_quality_score)
 
         bet_size = self._compute_entry_bet_size(
             decision.avg_confidence,
