@@ -600,10 +600,11 @@ class PolymarketClient:
                             current = btc_prices[1]
 
                 if current is None:
-                    logger.warning(
-                        "CP extraction failed. nf_prices=%r nf_count=%s all_prices=%r",
-                        nf_prices, data.get("nf_count", 0),
-                        data.get("all_prices", "")[:150],
+                    # Current Price removed from Polymarket UI since ~2026-04-08.
+                    # RTDS provides real-time price, so CP is not needed.
+                    logger.debug(
+                        "CP not found (Polymarket removed it). nf_count=%s",
+                        data.get("nf_count", 0),
                     )
         except Exception as e:
             logger.debug("Price extraction error: %s", e)
