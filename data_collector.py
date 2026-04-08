@@ -1274,7 +1274,7 @@ class DataCollector:
 
             except Exception as e:
                 logger.debug("Playwright sync error: %s", e)
-            await asyncio.sleep(3.0 if rtds_ok else 1.0)  # slower when RTDS is fine
+            await asyncio.sleep(30.0 if rtds_ok else 3.0)  # 30s when RTDS fine, 3s fallback
 
     # ------------------------------------------------------------------
     # Inline diffusion / lag helpers (mirror judges.py logic)
