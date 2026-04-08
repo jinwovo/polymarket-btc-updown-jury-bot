@@ -4951,13 +4951,20 @@ def _kill_existing(script_name: str):
             ["pgrep", "-f", f"python3? {script_name}"],
             capture_output=True, text=True, timeout=5,
         )
+        pids = []
         for line in result.stdout.strip().splitlines():
             pid = int(line.strip())
             if pid != my_pid:
+                pids.append(pid)
                 logging.getLogger("main").info("Killing existing %s (PID %d)", script_name, pid)
                 os.kill(pid, signal.SIGTERM)
-        if result.stdout.strip():
-            time.sleep(1)
+        if pids:
+            time.sleep(2)
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
     except Exception:
         pass
 
