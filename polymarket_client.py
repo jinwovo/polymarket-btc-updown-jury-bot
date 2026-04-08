@@ -462,7 +462,10 @@ class PolymarketClient:
         try:
             if cls._pw is None:
                 cls._pw = sync_playwright().start()
-            cls._pw_browser = cls._pw.chromium.launch(headless=True)
+            cls._pw_browser = cls._pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"],
+            )
             cls._pw_page = cls._pw_browser.new_page()
             logger.info("PTB scraper: Chromium browser started (persistent)")
             return True
@@ -777,6 +780,13 @@ class PolymarketClient:
                 except Exception:
                     pass
                 setattr(cls, attr, None)
+
+    @classmethod
+    def _restart_browser_sync(cls):
+        """Restart browser from the executor thread (avoids greenlet cross-thread crash).
+        MUST be called via run_in_executor, NOT from the async event loop thread."""
+        cls._reset_browser()
+        cls._ensure_browser()
 
     async def reload_scraper_page(self):
         """Force reload the Playwright page (fixes frozen/stale Polymarket page)."""

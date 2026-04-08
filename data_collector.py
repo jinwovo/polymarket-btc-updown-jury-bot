@@ -1261,7 +1261,13 @@ class DataCollector:
                         logger.warning("Playwright: %d fails, restarting browser", _pw_consecutive_fail)
                         _pw_consecutive_fail = 0
                         try:
-                            self.poly_client.close_scraper()
+                            # Restart browser ON the executor thread to avoid
+                            # greenlet cross-thread switch crash
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(
+                                self.poly_client._get_executor(),
+                                self.poly_client._restart_browser_sync,
+                            )
                         except Exception:
                             pass
                         await asyncio.sleep(3.0)
