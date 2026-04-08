@@ -4942,7 +4942,29 @@ class TradingBot:
         )
 
 
+def _kill_existing(script_name: str):
+    """Kill any existing process running the same script (prevents duplicates)."""
+    import subprocess
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"python3? {script_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            pid = int(line.strip())
+            if pid != my_pid:
+                logging.getLogger("main").info("Killing existing %s (PID %d)", script_name, pid)
+                os.kill(pid, signal.SIGTERM)
+        if result.stdout.strip():
+            time.sleep(1)
+    except Exception:
+        pass
+
+
 async def main():
+    _kill_existing("main.py")
+
     bot = TradingBot()
 
     loop = asyncio.get_event_loop()

@@ -2268,6 +2268,26 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
         conn.close()
 
 
+def _kill_existing(script_name: str):
+    """Kill any existing process running the same script (prevents duplicates)."""
+    import signal as _sig
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", f"python3? {script_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            pid = int(line.strip())
+            if pid != my_pid:
+                logger.info("Killing existing %s (PID %d)", script_name, pid)
+                os.kill(pid, _sig.SIGTERM)
+        if result.stdout.strip():
+            time.sleep(1)
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live paper-trading simulator")
     parser.add_argument("--stake", type=float, default=1000.0, help="Paper seed capital in USD (default: 1000)")
@@ -2280,6 +2300,8 @@ def main():
     )
     parser.add_argument("--status", action="store_true", help="Show paper trade status")
     args = parser.parse_args()
+
+    _kill_existing("paper_trade_sim.py")
 
     conn = connect_db()
     init_paper_table(conn)
