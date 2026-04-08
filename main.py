@@ -2962,7 +2962,8 @@ class TradingBot:
 
     async def start(self):
         # Preload Rust binary into OS cache
-        _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+        _rust_name = "polymarket-fast-order.exe" if os.name == "nt" else "polymarket-fast-order"
+        _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", _rust_name)
         if os.path.isfile(_rust_bin):
             try:
                 import subprocess

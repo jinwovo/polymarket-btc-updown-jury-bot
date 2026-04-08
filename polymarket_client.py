@@ -1460,7 +1460,8 @@ class PolymarketClient:
             _fok_size = max(5, math.floor(float(amount) / _fok_limit)) if _fok_limit > 0 else 0
 
             # Try Rust fast-order first (saves ~300ms)
-            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+            _rust_name = "polymarket-fast-order.exe" if os.name == "nt" else "polymarket-fast-order"
+            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", _rust_name)
             _use_rust = os.path.isfile(_rust_bin) and os.getenv("USE_RUST_ORDER", "true").lower() == "true"
 
             resp = None
@@ -1994,7 +1995,8 @@ class PolymarketClient:
 
         if mode == "LIMIT_FAK":
             # Try Rust fast-order first (~200ms vs ~1100ms Python)
-            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", "polymarket-fast-order.exe")
+            _rust_name = "polymarket-fast-order.exe" if os.name == "nt" else "polymarket-fast-order"
+            _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", _rust_name)
             _use_rust = os.path.isfile(_rust_bin) and os.getenv("USE_RUST_ORDER", "true").lower() == "true"
             if _use_rust:
                 try:
