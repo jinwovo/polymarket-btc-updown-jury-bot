@@ -361,6 +361,9 @@ class PaperReplay:
         self.require_momentum_agree = os.getenv("REPLAY_REQUIRE_MOMENTUM_AGREE", "0") == "1"
         self.min_score = int(os.getenv("REPLAY_MIN_SCORE", "0"))
         self.no_lag_arb = os.getenv("REPLAY_NO_LAG_ARB", "0") == "1"
+        self.bsr_extreme = os.getenv("REPLAY_BSR_EXTREME", "0") == "1"
+        self.bsr_lo = float(os.getenv("REPLAY_BSR_LO", "0.5"))   # below this = extreme sell
+        self.bsr_hi = float(os.getenv("REPLAY_BSR_HI", "2.0"))   # above this = extreme buy
         self.require_brt = os.getenv("REPLAY_REQUIRE_BRT", "0") == "1"
         self.require_bb_extreme = os.getenv("REPLAY_REQUIRE_BB_EXTREME", "0") == "1"
         self.bb_threshold = float(os.getenv("REPLAY_BB_THRESHOLD", "0.5"))
@@ -417,7 +420,7 @@ class PaperReplay:
             return fetch_all_dicts(self.conn, """
                 SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                        btc_price, start_price, seconds_elapsed, seconds_remaining,
-                       btc_move_pct,
+                       btc_move_pct, buy_sell_ratio,
                        gate_allow, gate_ev, gate_reason,
                        prev_outcome, odds_velocity, btc_accel_ok,
                        lag_arb_allow, lag_arb_direction, lag_arb_entry_price
@@ -428,7 +431,7 @@ class PaperReplay:
         return fetch_all_dicts(self.conn, """
             SELECT ts, direction, avg_confidence, max_edge, up_ask, down_ask,
                    btc_price, start_price, seconds_elapsed, seconds_remaining,
-                   btc_move_pct,
+                   btc_move_pct, buy_sell_ratio,
                    gate_allow, gate_ev, gate_reason,
                    prev_outcome, odds_velocity, btc_accel_ok,
                    lag_arb_allow, lag_arb_direction, lag_arb_entry_price
@@ -489,6 +492,16 @@ class PaperReplay:
                 continue
 
             # Judge entry: apply all filters
+            # BSR extreme filter: only enter when volume imbalance is strong
+            if self.bsr_extreme:
+                _bsr = entry.get("buy_sell_ratio")
+                if _bsr is not None:
+                    _bsr_f = float(_bsr)
+                    if self.bsr_lo <= _bsr_f <= self.bsr_hi:
+                        continue  # Skip neutral BSR
+                # If BSR is None, skip (can't confirm imbalance)
+                elif _bsr is None:
+                    continue
             # Edge/confidence quality filters
             if self.min_edge_filter > 0 and max_edge < self.min_edge_filter:
                 continue
@@ -573,25 +586,13 @@ class PaperReplay:
                 if _score < self.min_score:
                     continue
 
-            # If signal came early, paper would read it when elapsed >= entry_start_sec
+            # Only use gate_allow=1 entries at valid entry time.
+            # Early signals (elapsed < entry_start) are stale by the time paper_sim
+            # reaches entry_start -- market conditions will have changed. Skip them
+            # to match what paper_sim/live actually see in real-time.
             if scl_elapsed < self.entry_start_sec:
-                # Look up odds at entry_start_sec
-                check_ts = ws + self.entry_start_sec
-                if self._cache:
-                    odds_at = self._cache.odds_at(ws, check_ts)
-                else:
-                    odds_at = fetch_one_dict(self.conn, """
-                        SELECT up_best_ask, down_best_ask FROM poly_odds
-                        WHERE window_start = %s AND ts >= %s AND ts <= %s
-                        ORDER BY ts ASC LIMIT 1
-                    """, (ws, check_ts - 2, check_ts + 2))
-                if not odds_at:
-                    continue
-                up_ask = float(odds_at.get("up_best_ask") or 0.5)
-                down_ask = float(odds_at.get("down_best_ask") or 0.5)
-                elapsed = self.entry_start_sec
-                remaining = 300 - elapsed
-            else:
+                continue
+            if True:
                 up_ask = float(entry.get("up_ask") or 0.5)
                 down_ask = float(entry.get("down_ask") or 0.5)
                 elapsed = scl_elapsed
@@ -1186,6 +1187,9 @@ def main():
     parser.add_argument("--require-momentum-agree", action="store_true", help="Skip when 30s BTC trend conflicts with bet direction")
     parser.add_argument("--min-score", type=int, default=None, help="Min signal score to enter")
     parser.add_argument("--no-lag-arb", action="store_true", help="Disable lag_arb entries (gate_allow only)")
+    parser.add_argument("--bsr-extreme", action="store_true", help="Only enter when BSR is extreme (<0.5 or >2.0)")
+    parser.add_argument("--bsr-lo", type=float, default=None, help="BSR low threshold (default 0.5)")
+    parser.add_argument("--bsr-hi", type=float, default=None, help="BSR high threshold (default 2.0)")
     parser.add_argument("--require-brt", action="store_true", help="Only enter on Breakout-Retest-Continuation pattern")
     parser.add_argument("--require-bb-extreme", action="store_true", help="Only enter when BB position is extreme (|bb|>threshold)")
     parser.add_argument("--bb-threshold", type=float, default=None, help="BB extreme threshold (default 0.5)")
@@ -1240,6 +1244,12 @@ def main():
         os.environ["REPLAY_MIN_SCORE"] = str(args.min_score)
     if args.no_lag_arb:
         os.environ["REPLAY_NO_LAG_ARB"] = "1"
+    if args.bsr_extreme:
+        os.environ["REPLAY_BSR_EXTREME"] = "1"
+    if args.bsr_lo is not None:
+        os.environ["REPLAY_BSR_LO"] = str(args.bsr_lo)
+    if args.bsr_hi is not None:
+        os.environ["REPLAY_BSR_HI"] = str(args.bsr_hi)
     if args.require_brt:
         os.environ["REPLAY_REQUIRE_BRT"] = "1"
     if args.require_bb_extreme:

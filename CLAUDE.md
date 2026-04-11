@@ -104,20 +104,23 @@ data_collector (single process, 0.1s tick)
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason, bb_pos, vwap_agree, ask_drift
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
-## Current Strategy (2026-04-06)
+## Current Strategy (2026-04-11)
 - **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
-- **Technical filters (2026-04-06)**:
+- **Technical filters (2026-04-11)**:
   - BB Extreme: only enter when |Bollinger Band position| > 0.5 (1s tick, 60-tick window)
   - VWAP Agree: price must be above/below anchored VWAP matching bet direction
   - Ask Drift <= 0.08: skip when CLOB ask rose >8 cents from window start (edge gone)
-  - ENTRY_START=80s: 60-80s entries had 35% WR (CLOB unstable), 80s+ = 59% WR
+  - ENTRY_START=100s: parity sweep confirmed 100s optimal (PF2.51 @240h)
+  - MAX_ENTRY_PRICE=0.50: sweet spot (PF2.29 @168h, PF2.51 @240h, +$5187)
 - **Entry mode**: LIMIT_FAK via Rust binary (fallback Python). Rust v2: correct EIP-712 signing, normal exchange (not neg-risk)
 - **Exit**: hold-to-settlement (all early exits disabled)
 - **Sizing**: FIXED flat (Paper $100, Live = seed*LIVE_FIXED_SEED_PCT). No mega multiplier.
 - **Filters**: MIN_EDGE=0.12, ROI=0.150 (time-weighted: 0.06 at 60s remaining)
-- **Price range**: ask 0.35-0.58, spread < 0.20, opposite ask < 0.78
+- **Price range**: ask 0.35-0.50, spread < 0.20, opposite ask < 0.78
 - **Orderbook**: WebSocket primary (wss://ws-subscriptions-clob.polymarket.com/ws/market), REST fallback
-- **paper_replay (BB+VWAP+drift+start80)**: 480h 573t 54% PF1.39 +$10,312
+- **paper_replay (BB+VWAP+drift0.08+start100+a50, no lag_arb)**: 240h 93t 64.5% PF2.51 +$5,187
+- **Gate stability lock**: gate_allow=1 held for 5s in data_collector/paper_sim/live (prevents missing short-lived signals)
+- **Lag arb DISABLED**: paper_replay shows +$8.5K ideal but 300ms execution delay = 30% trades fail, WR drops to 51.6%. Not viable for live.
 
 ### Strategy Sweep Results (2026-04-02, $10 fixed, 20 days)
 - baseline (no filter): 489t 54.4% PF1.29 +$652

@@ -4032,7 +4032,7 @@ class TradingBot:
                         logger.info("Skip ask drift: %.3f > %.3f", float(_drift_val), _max_ask_drift)
                     return
 
-            elif _lock and _lock.get("ws") == _cur_ws and (_now - _lock["ts"]) < 2.0:
+            elif _lock and _lock.get("ws") == _cur_ws and (_now - _lock["ts"]) < 5.0:
                 # Use locked values — same as what paper will see
                 _gate_allow = 1
                 _gate_dir = _lock["dir"]

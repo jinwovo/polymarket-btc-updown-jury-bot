@@ -1361,10 +1361,30 @@ def open_trade_if_signal(
 
     # Entry gate checked by data_collector -> signal_cache.gate_allow
     # Paper reads result instead of re-running (same price = same result)
+    # Gate lock: once gate_allow=1, hold for 5s (same as data_collector stability lock)
+    if not hasattr(open_trade_if_signal, '_gate_lock'):
+        open_trade_if_signal._gate_lock = {}
+    _glock = open_trade_if_signal._gate_lock
     if cached:
         _gate_allow = int(cached.get("gate_allow") or 0)
         _gate_reason = str(cached.get("gate_reason") or "")
         _gate_ev = float(cached.get("gate_ev") or 0)
+        _gate_dir = str(cached.get("direction") or "")
+        # Lock gate_allow=1 for 5s so we don't miss short-lived signals
+        if _gate_allow and _gate_dir in ("UP", "DOWN"):
+            _glock["ws"] = window_start
+            _glock["ts"] = now_ts
+            _glock["dir"] = _gate_dir
+            _glock["ev"] = _gate_ev
+            _glock["reason"] = _gate_reason
+        elif (not _gate_allow
+              and _glock.get("ws") == window_start
+              and (now_ts - _glock.get("ts", 0)) < 5.0
+              and _glock.get("dir") == direction):
+            # Use locked gate values
+            _gate_allow = 1
+            _gate_ev = _glock.get("ev", 0)
+            _gate_reason = _glock.get("reason", "")
         # lag_arb DISABLED: 45% WR in paper_replay (loses money)
         if not _gate_allow:
             logger.debug("Entry blocked ws=%s: gate_allow=0 (%s)", window_start, _gate_reason)

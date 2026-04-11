@@ -727,6 +727,28 @@ class DataCollector:
                 except Exception as _ge:
                     logger.debug("Entry gate check failed: %s", _ge)
 
+            # -- Gate stability: once gate_allow=1, hold for 5s in signal_cache --
+            # paper_sim polls signal_cache every 0.1s but gate_allow=1 can be
+            # as short as a single tick (0.1s). This lock keeps gate_allow=1
+            # visible long enough for paper_sim/live to read and act on it.
+            _gs_allow = getattr(self, '_gate_stable_allow', 0)
+            _gs_until = getattr(self, '_gate_stable_until', 0.0)
+            _gs_ws = getattr(self, '_gate_stable_ws', 0)
+            if gate_allow:
+                # New gate_allow=1 -> start lock
+                self._gate_stable_allow = 1
+                self._gate_stable_until = _now_ts + 5.0
+                self._gate_stable_ws = int(self.current_window_start)
+                self._gate_stable_ev = gate_ev
+                self._gate_stable_reason = gate_reason
+            elif (_gs_ws == int(self.current_window_start)
+                  and _now_ts < _gs_until
+                  and decision.direction == getattr(self, '_stable_direction', '')):
+                # Within lock window, same direction -> keep gate_allow=1
+                gate_allow = 1
+                gate_ev = getattr(self, '_gate_stable_ev', gate_ev)
+                gate_reason = getattr(self, '_gate_stable_reason', gate_reason)
+
             # Lag Arb detection: BTC moved 0.04%+ but CLOB hasn't repriced (ask still >= threshold)
             # This exploits the Binance->Chainlink oracle lag (~30s average)
             _lag_arb_allow = 0
