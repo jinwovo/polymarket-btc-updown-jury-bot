@@ -1087,6 +1087,7 @@ def _backfill_unresolved_windows(conn) -> int:
         """SELECT window_start, window_end, btc_start_price
            FROM market_windows
            WHERE window_end < ?
+             AND slug LIKE 'btc-updown-5m%%'
              AND (actual_outcome IS NULL OR actual_outcome NOT IN ('UP', 'DOWN'))
            ORDER BY window_start ASC
            LIMIT 40""",
@@ -1140,7 +1141,8 @@ def _backfill_unresolved_windows(conn) -> int:
             _last_odds = fetch_one_dict(
                 conn,
                 """SELECT up_best_ask, down_best_ask FROM poly_odds
-                   WHERE window_start = ? AND ts >= ? AND ts <= ?
+                   WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'
+                     AND ts >= ? AND ts <= ?
                    ORDER BY ts DESC LIMIT 1""",
                 (ws, float(we) - 10, float(we) + 5),
             )
@@ -1164,7 +1166,7 @@ def _backfill_unresolved_windows(conn) -> int:
                SET btc_start_price = COALESCE(btc_start_price, ?),
                    btc_end_price = ?,
                    actual_outcome = ?
-               WHERE window_start = ?""",
+               WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'""",
             (float(start_price), float(end_price), outcome, ws),
         )
         updated += 1
