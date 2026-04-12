@@ -388,6 +388,13 @@ class PaperReplay:
         self.clob_exit_enabled = os.getenv("REPLAY_CLOB_EXIT", "0") == "1"
         self.clob_exit_remaining_sec = float(os.getenv("REPLAY_CLOB_EXIT_REMAINING", "10"))  # check at Ns remaining
 
+        # Score-based entry mode: replace AND-gate filters with point system
+        self.score_mode = os.getenv("REPLAY_SCORE_MODE", "0") == "1"
+        self.score_threshold = int(os.getenv("REPLAY_SCORE_THRESHOLD", "5"))
+        # In score mode, entry_start and max_entry_price are relaxed
+        self.score_entry_start = float(os.getenv("REPLAY_SCORE_ENTRY_START", "80"))
+        self.score_max_ask = float(os.getenv("REPLAY_SCORE_MAX_ASK", "0.55"))
+
     def _check_brt(self, ws: int, entry_ts: float, start_price: float) -> bool:
         """Breakout-Retest-Continuation: BTC broke out, retested start, continued."""
         if not self._cache or start_price <= 0:
@@ -413,6 +420,71 @@ class PaperReplay:
                 if (bo_dir == "UP" and m2 >= 0.02) or (bo_dir == "DOWN" and m2 <= -0.02):
                     return True
         return False
+
+    def _compute_entry_score(self, ws: int, entry_ts: float, direction: str,
+                              entry_price: float, gate_ev: float,
+                              confidence: float, elapsed: float) -> int:
+        """Compute entry quality score. Each indicator contributes points."""
+        score = 0
+        if not self._cache:
+            return 0
+
+        # 1. VWAP agree (+2) -- strongest directional confirmation
+        _vwap, _vwap_pct = self._cache.anchored_vwap(float(ws), entry_ts)
+        if _vwap is not None:
+            if (direction == "UP" and _vwap_pct > 0) or (direction == "DOWN" and _vwap_pct < 0):
+                score += 2
+
+        # 2. BB extreme (+1) -- price at Bollinger Band edge
+        import bisect as _bb_bisect
+        _bb_i = _bb_bisect.bisect_right(self._cache.btc_ts, entry_ts)
+        _bb_s = _bb_bisect.bisect_left(self._cache.btc_ts, entry_ts - 120)
+        if _bb_i - _bb_s >= 30:
+            _bb_prices = self._cache.btc_px[_bb_s:_bb_i]
+            _bb_window = _bb_prices[-min(60, len(_bb_prices)):]
+            _bb_mean = sum(_bb_window) / len(_bb_window)
+            _bb_std = (sum((p - _bb_mean)**2 for p in _bb_window) / len(_bb_window)) ** 0.5
+            if _bb_std > 0.01:
+                _bb_pos = (_bb_prices[-1] - _bb_mean) / (2 * _bb_std)
+                if abs(_bb_pos) >= 0.5:
+                    score += 1
+
+        # 3. Low ask drift (+1) -- CLOB hasn't priced in the move yet
+        _first_odds = self._cache.odds_at(ws, float(ws) + 5)
+        if _first_odds:
+            _init_ask = float(_first_odds.get("up_best_ask") or 0.5) if direction == "UP" \
+                else float(_first_odds.get("down_best_ask") or 0.5)
+            _ask_drift = entry_price - _init_ask
+            if _ask_drift <= 0.08:
+                score += 1
+
+        # 4. BTC still moving (+1) -- momentum continuing in our direction
+        _bsm_p20 = self._cache.price_at(entry_ts - 20)
+        _bsm_pnow = self._cache.price_at(entry_ts)
+        if _bsm_p20 and _bsm_pnow:
+            if (direction == "UP" and _bsm_pnow > _bsm_p20) or \
+               (direction == "DOWN" and _bsm_pnow < _bsm_p20):
+                score += 1
+
+        # 5. Late entry (+1) -- more data = better signal
+        if elapsed >= 150:
+            score += 1
+
+        # 6. Low ask (+2) -- better risk/reward
+        if entry_price <= 0.45:
+            score += 2
+        elif entry_price <= 0.48:
+            score += 1
+
+        # 7. High EV (+1) -- strong expected value from gate
+        if gate_ev >= 0.30:
+            score += 1
+
+        # 8. High confidence (+1) -- jury strongly agrees
+        if confidence >= 0.70:
+            score += 1
+
+        return score
 
     def _get_scl_entries(self, ws: int) -> list[dict]:
         """Get signal_cache_log entries for this window."""
@@ -491,6 +563,74 @@ class PaperReplay:
                     )
                 continue
 
+            # ---- SCORE MODE: bypass AND-gate filters, use point system ----
+            if self.score_mode:
+                up_ask = float(entry.get("up_ask") or 0.5)
+                down_ask = float(entry.get("down_ask") or 0.5)
+                entry_price = up_ask if direction == "UP" else down_ask
+                elapsed = scl_elapsed
+                remaining = float(entry.get("seconds_remaining") or (300 - elapsed))
+
+                # Hard filters only (can't relax these)
+                if elapsed < self.score_entry_start:
+                    continue
+                if elapsed > self.entry_end_sec:
+                    continue
+                if remaining < self.min_seconds_remaining:
+                    continue
+                if direction == "DOWN" and elapsed > self.down_entry_end_sec:
+                    continue
+                if entry_price <= 0.01 or entry_price >= 0.99:
+                    continue
+                if entry_price > self.score_max_ask:
+                    continue
+                if direction == "DOWN" and entry_price < self.down_min_entry_price:
+                    continue
+                spread = abs(up_ask - down_ask)
+                if spread > self.max_spread:
+                    continue
+
+                entry_ts = float(entry["ts"])
+
+                # Drift simulation
+                _drift_odds = self._cache.odds_at(ws, entry_ts + 0.5) if self._cache else None
+                if _drift_odds:
+                    later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
+                        else float(_drift_odds.get("down_best_ask") or entry_price)
+                    if 0.01 < later_price < 0.99:
+                        if later_price > self.score_max_ask:
+                            continue
+                        if later_price - entry_price > self.drift_max:
+                            continue
+                        entry_price = later_price
+
+                # Compute score
+                score = self._compute_entry_score(
+                    ws, entry_ts, direction, entry_price, gate_ev, confidence, elapsed)
+
+                if score < self.score_threshold:
+                    continue
+
+                # Sizing
+                _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
+                stake = _fixed_stake if _fixed_stake > 0 else round(self.initial_equity * 0.15, 2)
+
+                # Dynamic sizing by score (higher score = bigger bet)
+                if score >= 8:
+                    stake = round(stake * 2.0, 2)
+                elif score >= 6:
+                    stake = round(stake * 1.5, 2)
+                elif score <= 3:
+                    stake = round(stake * 0.5, 2)
+
+                shares = stake / entry_price
+                return ReplayTrade(
+                    window_start=ws, direction=direction,
+                    entry_price=entry_price, stake=stake, shares=shares,
+                    opened_at=entry_ts, confidence=confidence,
+                )
+
+            # ---- AND-GATE MODE (existing logic) ----
             # Judge entry: apply all filters
             # BSR extreme filter: only enter when volume imbalance is strong
             if self.bsr_extreme:
@@ -1213,6 +1353,10 @@ def main():
     parser.add_argument("--clob-exit-remaining", type=float, default=None, help="Seconds remaining to check CLOB exit (default 10)")
     parser.add_argument("--clob-exit-opp-threshold", type=float, default=None, help="Opposing ask threshold for CLOB exit (default 0.65)")
     parser.add_argument("--btc-still-lookback", type=float, default=None, help="BTC still moving lookback seconds (default 30)")
+    parser.add_argument("--score-mode", action="store_true", help="Use score-based entry instead of AND-gate filters")
+    parser.add_argument("--score-threshold", type=int, default=None, help="Min score to enter (default 5, max 10)")
+    parser.add_argument("--score-entry-start", type=float, default=None, help="Entry start sec in score mode (default 80)")
+    parser.add_argument("--score-max-ask", type=float, default=None, help="Max ask in score mode (default 0.55)")
     args = parser.parse_args()
 
     # CLI overrides (bypass config.py load_dotenv override=True)
@@ -1296,6 +1440,14 @@ def main():
         os.environ["REPLAY_CLOB_EXIT_OPP_THRESHOLD"] = str(args.clob_exit_opp_threshold)
     if args.btc_still_lookback is not None:
         os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
+    if args.score_mode:
+        os.environ["REPLAY_SCORE_MODE"] = "1"
+    if args.score_threshold is not None:
+        os.environ["REPLAY_SCORE_THRESHOLD"] = str(args.score_threshold)
+    if args.score_entry_start is not None:
+        os.environ["REPLAY_SCORE_ENTRY_START"] = str(args.score_entry_start)
+    if args.score_max_ask is not None:
+        os.environ["REPLAY_SCORE_MAX_ASK"] = str(args.score_max_ask)
 
     conn = connect_db()
     end_ts = _time_mod.time()
