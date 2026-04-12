@@ -64,6 +64,23 @@ class _RamCache:
         self.px_buy_vol = [float(r[3] or 0) for r in rows]
         self.px_sell_vol = [float(r[4] or 0) for r in rows]
 
+        # Cross-market: load BTC ticks for ETH (BTC-leads-ETH signal)
+        self.btc_ts: list[float] = []
+        self.btc_val: list[float] = []
+        if market.price_table != "btc_ticks":
+            cur.execute(
+                "SELECT ts, price FROM btc_ticks "
+                "WHERE ts >= %s AND ts <= %s ORDER BY ts",
+                (int(start_ts) - self._interval - 300, int(end_ts) + self._interval),
+            )
+            btc_rows = cur.fetchall()
+            self.btc_ts = [float(r[0]) for r in btc_rows]
+            self.btc_val = [float(r[1]) for r in btc_rows]
+            logger.info("  Cross-market: %d BTC ticks loaded", len(self.btc_ts))
+        else:
+            self.btc_ts = self.px_ts
+            self.btc_val = self.px_val
+
         # Poly odds -- filtered by slug prefix
         cur.execute(
             "SELECT ts, window_start, up_best_bid, up_best_ask, "
@@ -151,6 +168,33 @@ class _RamCache:
         if idx < 0:
             return None
         return self.px_val[idx]
+
+    def btc_price_at(self, ts: float):
+        """BTC price at timestamp (cross-market)."""
+        if not self.btc_ts:
+            return None
+        idx = bisect.bisect_right(self.btc_ts, ts) - 1
+        if idx < 0:
+            return None
+        return self.btc_val[idx]
+
+    def btc_move_pct_range(self, ts_start: float, ts_end: float):
+        """BTC price change % from ts_start to ts_end."""
+        p0 = self.btc_price_at(ts_start)
+        p1 = self.btc_price_at(ts_end)
+        if not p0 or not p1 or p0 <= 0:
+            return 0.0
+        return (p1 - p0) / p0 * 100.0
+
+    def volume_imbalance(self, ts_start: float, ts_end: float):
+        """Buy/sell volume ratio over a period. >1 = buy-heavy, <1 = sell-heavy."""
+        i0 = bisect.bisect_left(self.px_ts, ts_start)
+        i1 = bisect.bisect_right(self.px_ts, ts_end)
+        buy_v = sum(self.px_buy_vol[i0:i1])
+        sell_v = sum(self.px_sell_vol[i0:i1])
+        if sell_v <= 0:
+            return 2.0 if buy_v > 0 else 1.0
+        return buy_v / sell_v
 
     def prices_range(self, ts_start: float, ts_end: float):
         i0 = bisect.bisect_left(self.px_ts, ts_start)
@@ -335,6 +379,27 @@ class PaperReplayMulti:
         self.require_btc_still_moving = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
         self.btc_still_lookback = float(os.getenv("PAPER_BTC_STILL_LOOKBACK", "20"))
 
+        # Novel filters (cross-market)
+        self.btc_leads_sec = float(os.getenv("REPLAY_BTC_LEADS_SEC", "0"))
+        self.btc_leads_min_pct = float(os.getenv("REPLAY_BTC_LEADS_MIN_PCT", "0.03"))
+        self.clob_fade_sec = float(os.getenv("REPLAY_CLOB_FADE_SEC", "0"))
+        self.require_vol_agree = os.getenv("REPLAY_REQUIRE_VOL_AGREE", "0") == "1"
+        self.vol_agree_lookback = float(os.getenv("REPLAY_VOL_AGREE_LOOKBACK", "100"))
+
+        # Novel strategies
+        self.btc_override_sec = float(os.getenv("REPLAY_BTC_OVERRIDE_SEC", "0"))
+        self.btc_override_min_pct = float(os.getenv("REPLAY_BTC_OVERRIDE_MIN_PCT", "0.03"))
+        self.btc_early_entry = os.getenv("REPLAY_BTC_EARLY_ENTRY", "0") == "1"
+        self.btc_early_sec = float(os.getenv("REPLAY_BTC_EARLY_SEC", "35"))
+        self.btc_early_min_pct = float(os.getenv("REPLAY_BTC_EARLY_MIN_PCT", "0.03"))
+        self.loss_streak_reduce = int(os.getenv("REPLAY_LOSS_STREAK_REDUCE", "0"))
+        self.btc_active_min_range = float(os.getenv("REPLAY_BTC_ACTIVE_MIN_RANGE", "0"))
+        self.btc_active_lookback = float(os.getenv("REPLAY_BTC_ACTIVE_LOOKBACK", "300"))
+        self.profit_take_bid = float(os.getenv("REPLAY_PROFIT_TAKE_BID", "0"))
+        self.confidence_sizing = os.getenv("REPLAY_CONFIDENCE_SIZING", "0") == "1"
+        self.conf_sizing_btc_mult = float(os.getenv("REPLAY_CONF_SIZING_BTC_MULT", "2.0"))
+        self.conf_sizing_full_mult = float(os.getenv("REPLAY_CONF_SIZING_FULL_MULT", "3.0"))
+
         # Fixed stake
         self._stake_override = stake_override
 
@@ -484,8 +549,52 @@ class PaperReplayMulti:
                     if direction == "DOWN" and p_now >= p_before:
                         continue
 
+            # --- NOVEL FILTERS (SCL path) ---
+
+            # BTC-leads-ETH
+            if self.btc_leads_sec > 0 and self._cache:
+                btc_chg = self._cache.btc_move_pct_range(float(ws), float(ws) + self.btc_leads_sec)
+                if abs(btc_chg) < self.btc_leads_min_pct:
+                    continue
+                btc_dir = "UP" if btc_chg > 0 else "DOWN"
+                if btc_dir != direction:
+                    continue
+
+            # CLOB Fade
+            if self.clob_fade_sec > 0 and self._cache:
+                early_odds = self._cache.odds_at(ws, float(ws) + self.clob_fade_sec)
+                if early_odds:
+                    e_up_ask = float(early_odds.get("up_best_ask") or 0.5)
+                    e_dn_ask = float(early_odds.get("down_best_ask") or 0.5)
+                    if abs(e_up_ask - e_dn_ask) > 0.02:
+                        clob_lean = "UP" if e_up_ask > e_dn_ask else "DOWN"
+                        if direction == clob_lean:
+                            continue
+
+            # Volume imbalance
+            if self.require_vol_agree and self._cache:
+                vol_ratio = self._cache.volume_imbalance(float(ws), entry_ts)
+                if direction == "UP" and vol_ratio < 1.0:
+                    continue
+                if direction == "DOWN" and vol_ratio > 1.0:
+                    continue
+
+            # BTC activity filter (SCL path)
+            if self.btc_active_min_range > 0 and self._cache:
+                i_s = bisect.bisect_left(self._cache.btc_ts, entry_ts - self.btc_active_lookback)
+                i_e = bisect.bisect_right(self._cache.btc_ts, entry_ts)
+                if i_e - i_s >= 10:
+                    btc_range = self._cache.btc_val[i_s:i_e]
+                    btc_hi = max(btc_range)
+                    btc_lo = min(btc_range)
+                    btc_mid = (btc_hi + btc_lo) / 2
+                    if btc_mid > 0:
+                        range_pct = (btc_hi - btc_lo) / btc_mid * 100
+                        if range_pct < self.btc_active_min_range:
+                            continue
+
             # Sizing
-            stake = self._get_stake(entry_price, confidence)
+            stake = self._get_stake(entry_price, confidence, ws=ws, entry_ts=entry_ts, direction=direction)
             shares = stake / entry_price
 
             return ReplayTrade(
@@ -527,6 +636,14 @@ class PaperReplayMulti:
             direction = decision.direction
             confidence = decision.avg_confidence
             max_edge = decision.max_edge
+
+            # BTC-direction override: flip jury direction when BTC strongly disagrees
+            if self.btc_override_sec > 0 and self._cache:
+                btc_chg = self._cache.btc_move_pct_range(float(ws), float(ws) + self.btc_override_sec)
+                if abs(btc_chg) >= self.btc_override_min_pct:
+                    btc_dir = "UP" if btc_chg > 0 else "DOWN"
+                    if btc_dir != direction:
+                        direction = btc_dir  # override jury with BTC
 
             # Edge/confidence quality filters
             if self.min_edge_filter > 0 and max_edge < self.min_edge_filter:
@@ -656,6 +773,59 @@ class PaperReplayMulti:
                         t += scan_step
                         continue
 
+            # --- NOVEL FILTERS ---
+
+            # BTC-leads-ETH: BTC price direction must confirm entry direction
+            if self.btc_leads_sec > 0 and self._cache:
+                btc_chg = self._cache.btc_move_pct_range(float(ws), float(ws) + self.btc_leads_sec)
+                if abs(btc_chg) < self.btc_leads_min_pct:
+                    t += scan_step
+                    continue
+                btc_dir = "UP" if btc_chg > 0 else "DOWN"
+                if btc_dir != direction:
+                    t += scan_step
+                    continue
+
+            # CLOB Fade: early CLOB direction is systematically wrong, bet against it
+            if self.clob_fade_sec > 0 and self._cache:
+                early_odds = self._cache.odds_at(ws, float(ws) + self.clob_fade_sec)
+                if early_odds:
+                    e_up_ask = float(early_odds.get("up_best_ask") or 0.5)
+                    e_dn_ask = float(early_odds.get("down_best_ask") or 0.5)
+                    # CLOB lean = direction with higher ask (market expects this)
+                    # Fade = bet opposite
+                    if abs(e_up_ask - e_dn_ask) > 0.02:
+                        clob_lean = "UP" if e_up_ask > e_dn_ask else "DOWN"
+                        # We want to FADE the CLOB, so our direction should be OPPOSITE to CLOB lean
+                        if direction == clob_lean:
+                            t += scan_step
+                            continue
+
+            # Volume imbalance: buy/sell ratio must confirm direction
+            if self.require_vol_agree and self._cache:
+                vol_ratio = self._cache.volume_imbalance(float(ws), t)
+                if direction == "UP" and vol_ratio < 1.0:
+                    t += scan_step
+                    continue
+                if direction == "DOWN" and vol_ratio > 1.0:
+                    t += scan_step
+                    continue
+
+            # BTC activity filter: skip dead markets where BTC range is tiny
+            if self.btc_active_min_range > 0 and self._cache:
+                i_s = bisect.bisect_left(self._cache.btc_ts, t - self.btc_active_lookback)
+                i_e = bisect.bisect_right(self._cache.btc_ts, t)
+                if i_e - i_s >= 10:
+                    btc_range = self._cache.btc_val[i_s:i_e]
+                    btc_hi = max(btc_range)
+                    btc_lo = min(btc_range)
+                    btc_mid = (btc_hi + btc_lo) / 2
+                    if btc_mid > 0:
+                        range_pct = (btc_hi - btc_lo) / btc_mid * 100
+                        if range_pct < self.btc_active_min_range:
+                            t += scan_step
+                            continue
+
             # Score filter (11 signals)
             if self.min_score > 0:
                 _score = 0
@@ -706,7 +876,7 @@ class PaperReplayMulti:
                     continue
 
             # Sizing
-            stake = self._get_stake(entry_price, confidence)
+            stake = self._get_stake(entry_price, confidence, ws=ws, entry_ts=t, direction=direction)
             shares = stake / entry_price
 
             return ReplayTrade(
@@ -719,44 +889,111 @@ class PaperReplayMulti:
 
         return None
 
-    def _get_stake(self, entry_price: float, confidence: float) -> float:
+    def _get_stake(self, entry_price: float, confidence: float,
+                   ws: int = 0, entry_ts: float = 0, direction: str = "") -> float:
         """Compute stake size."""
         if self._stake_override > 0:
-            return self._stake_override
+            base_stake = self._stake_override
+        else:
+            _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
+            if _fixed_stake > 0:
+                base_stake = _fixed_stake
+            else:
+                # Default: 15% of initial equity
+                base_stake = round(self.initial_equity * 0.15, 2)
 
-        _fixed_stake = float(os.getenv("PAPER_FIXED_STAKE", "0"))
-        if _fixed_stake > 0:
-            return _fixed_stake
+                # Kelly-style sizing
+                if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true":
+                    _k_score = 0
+                    if confidence >= 0.7:
+                        _k_score += 1
+                    if entry_price <= 0.48:
+                        _k_score += 1
+                    if _k_score >= 2:
+                        base_stake = round(base_stake * 1.5, 2)
+                    elif _k_score == 0:
+                        base_stake = round(base_stake * 0.5, 2)
 
-        # Default: 15% of initial equity
-        stake = round(self.initial_equity * 0.15, 2)
+                # conf2x
+                _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "2.0"))
+                if confidence >= 0.7 and _mega_mult > 1.0:
+                    base_stake = round(base_stake * _mega_mult, 2)
 
-        # Kelly-style sizing
-        if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true":
-            _k_score = 0
-            if confidence >= 0.7:
-                _k_score += 1
-            if entry_price <= 0.48:
-                _k_score += 1
-            if _k_score >= 2:
-                stake = round(stake * 1.5, 2)
-            elif _k_score == 0:
-                stake = round(stake * 0.5, 2)
+        # Loss streak reduction: halve stake after N consecutive losses
+        if self.loss_streak_reduce > 0 and hasattr(self, 'trades') and len(self.trades) >= self.loss_streak_reduce:
+            recent = self.trades[-self.loss_streak_reduce:]
+            if all(not t.won for t in recent):
+                base_stake = round(base_stake * 0.5, 2)
 
-        # conf2x
-        _mega_mult = float(os.getenv("PAPER_MEGA_MULTIPLIER", "2.0"))
-        if confidence >= 0.7 and _mega_mult > 1.0:
-            stake = round(stake * _mega_mult, 2)
+        # Confidence-based sizing: multiply stake when signals align
+        if self.confidence_sizing and self._cache and ws > 0 and direction:
+            btc_chg = self._cache.btc_move_pct_range(float(ws), float(ws) + 30)
+            btc_agrees = (abs(btc_chg) >= 0.03 and
+                          ("UP" if btc_chg > 0 else "DOWN") == direction)
 
-        return stake
+            if btc_agrees:
+                # Check BB + VWAP for full confidence
+                _has_bb = False
+                _has_vwap = False
+                if entry_ts > 0:
+                    _bb_s = bisect.bisect_left(self._cache.px_ts, entry_ts - 120)
+                    _bb_i = bisect.bisect_right(self._cache.px_ts, entry_ts)
+                    if _bb_i - _bb_s >= 30:
+                        _bb_px = self._cache.px_val[_bb_s:_bb_i]
+                        _bb_w = _bb_px[-min(60, len(_bb_px)):]
+                        _bb_m = sum(_bb_w) / len(_bb_w)
+                        _bb_sd = (sum((p - _bb_m) ** 2 for p in _bb_w) / len(_bb_w)) ** 0.5
+                        if _bb_sd > 0.01:
+                            _bb_p = (_bb_px[-1] - _bb_m) / (2 * _bb_sd)
+                            _has_bb = abs(_bb_p) > 0.5
+
+                    _vwap, _vwap_pct = self._cache.anchored_vwap(float(ws), entry_ts)
+                    if _vwap is not None:
+                        if (direction == "UP" and _vwap_pct > 0) or \
+                           (direction == "DOWN" and _vwap_pct < 0):
+                            _has_vwap = True
+
+                if _has_bb and _has_vwap:
+                    base_stake = round(base_stake * self.conf_sizing_full_mult, 2)
+                else:
+                    base_stake = round(base_stake * self.conf_sizing_btc_mult, 2)
+
+        return base_stake
 
     # ------------------------------------------------------------------
-    # Exit: hold to settlement (simple binary outcome)
+    # Exit: hold to settlement OR profit-take at CLOB bid threshold
     # ------------------------------------------------------------------
     def _simulate_exit(self, trade: ReplayTrade, outcome: str | None) -> None:
-        """Hold to settlement. Binary market = just compare direction vs outcome."""
+        """Exit via profit-take (if enabled) or hold to settlement."""
+
+        # Profit-take: scan CLOB bids after entry, sell if bid >= threshold
+        if self.profit_take_bid > 0 and self._cache:
+            scan_step = 5.0
+            t = trade.opened_at + 5.0  # start checking 5s after entry
+            t_end = float(trade.window_end) - 5.0
+
+            while t <= t_end:
+                odds = self._cache.odds_at(trade.window_start, t)
+                if odds:
+                    if trade.direction == "UP":
+                        bid = float(odds.get("up_best_bid") or 0)
+                    else:
+                        bid = float(odds.get("down_best_bid") or 0)
+
+                    if bid >= self.profit_take_bid:
+                        # Sell at bid price (taker fee applies)
+                        sell_value = trade.shares * bid
+                        raw_pnl = sell_value - trade.stake
+                        # Taker fee on sell
+                        trade.pnl = raw_pnl - (sell_value * self.taker_fee_rate)
+                        trade.won = trade.pnl > 0
+                        trade.close_reason = f"profit_take_bid={bid:.3f}"
+                        trade.closed_at = t
+                        return
+                t += scan_step
+
+        # Fall through to settlement
         if outcome not in ("UP", "DOWN"):
-            # No outcome data -- skip
             trade.pnl = 0.0
             trade.close_reason = "no_outcome"
             trade.closed_at = trade.window_end
@@ -771,6 +1008,55 @@ class PaperReplayMulti:
         trade.won = won
         trade.close_reason = "expiry_settlement"
         trade.closed_at = trade.window_end
+
+    # ------------------------------------------------------------------
+    # BTC early entry: enter at 30-40s when BTC has clearly moved,
+    # before CLOB reprices ETH, capturing mispricing edge
+    # ------------------------------------------------------------------
+    def _simulate_btc_early_entry(self, ws: int) -> ReplayTrade | None:
+        """Enter early based on BTC direction, before ETH CLOB reprices."""
+        if not self._cache or not self.btc_early_entry:
+            return None
+
+        we = ws + self.interval
+        check_ts = float(ws) + self.btc_early_sec
+
+        # Check BTC direction
+        btc_chg = self._cache.btc_move_pct_range(float(ws), check_ts)
+        if abs(btc_chg) < self.btc_early_min_pct:
+            return None
+
+        direction = "UP" if btc_chg > 0 else "DOWN"
+
+        # Get ETH CLOB price at this early time (should still be near 0.50)
+        odds = self._cache.odds_at(ws, check_ts)
+        if not odds:
+            return None
+
+        up_ask = float(odds.get("up_best_ask") or 0.5)
+        down_ask = float(odds.get("down_best_ask") or 0.5)
+        entry_price = up_ask if direction == "UP" else down_ask
+
+        if entry_price <= 0.01 or entry_price >= 0.99:
+            return None
+        if entry_price > self.max_entry_price:
+            return None
+        if direction == "DOWN" and entry_price < self.down_min_entry_price:
+            return None
+
+        # Spread check
+        spread = abs(up_ask - down_ask)
+        if spread > self.max_spread:
+            return None
+
+        stake = self._get_stake(entry_price, 0.6)
+        shares = stake / entry_price
+
+        return ReplayTrade(
+            window_start=ws, window_end=we, direction=direction,
+            entry_price=entry_price, stake=stake, shares=shares,
+            opened_at=check_ts, confidence=0.6,
+        )
 
     # ------------------------------------------------------------------
     # Main replay loop
@@ -817,11 +1103,14 @@ class PaperReplayMulti:
             ws = int(w["window_start"])
             outcome = w["actual_outcome"]
 
+            # Strategy 0: BTC early entry (before jury, captures mispricing)
+            trade = self._simulate_btc_early_entry(ws)
+
             # Strategy 1: try signal_cache_log entries (if exist)
-            scl_entries = self._cache.get_scl_entries(ws)
-            trade = None
-            if scl_entries:
-                trade = self._simulate_entry_from_scl(ws, scl_entries)
+            if trade is None:
+                scl_entries = self._cache.get_scl_entries(ws)
+                if scl_entries:
+                    trade = self._simulate_entry_from_scl(ws, scl_entries)
 
             # Strategy 2: inline jury evaluation
             if trade is None:
@@ -891,6 +1180,42 @@ def main():
                         help="Price must still move in direction at entry")
     parser.add_argument("--btc-still-lookback", type=float, default=None,
                         help="Lookback seconds for still-moving check (default 20)")
+    # Novel cross-market filters
+    parser.add_argument("--btc-leads-sec", type=float, default=None,
+                        help="BTC-leads-ETH: check BTC direction over first N sec of window")
+    parser.add_argument("--btc-leads-min-pct", type=float, default=None,
+                        help="BTC-leads-ETH: min BTC move %% (default 0.03)")
+    parser.add_argument("--clob-fade-sec", type=float, default=None,
+                        help="CLOB Fade: only enter against early CLOB lean at N sec")
+    parser.add_argument("--require-vol-agree", action="store_true",
+                        help="Volume imbalance must agree with direction")
+    parser.add_argument("--vol-agree-lookback", type=float, default=None,
+                        help="Volume lookback seconds (default 100)")
+    # Novel strategies
+    parser.add_argument("--btc-override-sec", type=float, default=None,
+                        help="BTC direction override: flip jury when BTC disagrees over N sec")
+    parser.add_argument("--btc-override-min-pct", type=float, default=None,
+                        help="BTC override min move %% (default 0.03)")
+    parser.add_argument("--btc-early-entry", action="store_true",
+                        help="Enter early at 35s when BTC has clearly moved (before CLOB reprices)")
+    parser.add_argument("--btc-early-sec", type=float, default=None,
+                        help="BTC early entry check time (default 35s)")
+    parser.add_argument("--btc-early-min-pct", type=float, default=None,
+                        help="BTC early entry min move %% (default 0.03)")
+    parser.add_argument("--loss-streak-reduce", type=int, default=None,
+                        help="Halve stake after N consecutive losses (e.g., 3)")
+    parser.add_argument("--btc-active-min-range", type=float, default=None,
+                        help="Skip when BTC 5min range < X%% (dead market filter)")
+    parser.add_argument("--btc-active-lookback", type=float, default=None,
+                        help="BTC activity lookback seconds (default 300)")
+    parser.add_argument("--profit-take-bid", type=float, default=None,
+                        help="Sell when CLOB bid reaches this price (e.g., 0.75)")
+    parser.add_argument("--confidence-sizing", action="store_true",
+                        help="Variable sizing: 2x when BTC-leads, 3x when BB+VWAP+BTC all agree")
+    parser.add_argument("--conf-sizing-btc-mult", type=float, default=None,
+                        help="Multiplier when BTC-leads agrees (default 2.0)")
+    parser.add_argument("--conf-sizing-full-mult", type=float, default=None,
+                        help="Multiplier when BB+VWAP+BTC all agree (default 3.0)")
     args = parser.parse_args()
 
     # CLI overrides -> env (set both PAPER_ and market-specific prefix)
@@ -932,6 +1257,42 @@ def main():
     if args.btc_still_lookback is not None:
         os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
         os.environ[f"{_pfx}BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
+    # Novel filters
+    if args.btc_leads_sec is not None:
+        os.environ["REPLAY_BTC_LEADS_SEC"] = str(args.btc_leads_sec)
+    if args.btc_leads_min_pct is not None:
+        os.environ["REPLAY_BTC_LEADS_MIN_PCT"] = str(args.btc_leads_min_pct)
+    if args.clob_fade_sec is not None:
+        os.environ["REPLAY_CLOB_FADE_SEC"] = str(args.clob_fade_sec)
+    if args.require_vol_agree:
+        os.environ["REPLAY_REQUIRE_VOL_AGREE"] = "1"
+    if args.vol_agree_lookback is not None:
+        os.environ["REPLAY_VOL_AGREE_LOOKBACK"] = str(args.vol_agree_lookback)
+    # Novel strategies
+    if args.loss_streak_reduce is not None:
+        os.environ["REPLAY_LOSS_STREAK_REDUCE"] = str(args.loss_streak_reduce)
+    if args.profit_take_bid is not None:
+        os.environ["REPLAY_PROFIT_TAKE_BID"] = str(args.profit_take_bid)
+    if args.btc_active_min_range is not None:
+        os.environ["REPLAY_BTC_ACTIVE_MIN_RANGE"] = str(args.btc_active_min_range)
+    if args.btc_active_lookback is not None:
+        os.environ["REPLAY_BTC_ACTIVE_LOOKBACK"] = str(args.btc_active_lookback)
+    if args.btc_override_sec is not None:
+        os.environ["REPLAY_BTC_OVERRIDE_SEC"] = str(args.btc_override_sec)
+    if args.btc_override_min_pct is not None:
+        os.environ["REPLAY_BTC_OVERRIDE_MIN_PCT"] = str(args.btc_override_min_pct)
+    if args.btc_early_entry:
+        os.environ["REPLAY_BTC_EARLY_ENTRY"] = "1"
+    if args.btc_early_sec is not None:
+        os.environ["REPLAY_BTC_EARLY_SEC"] = str(args.btc_early_sec)
+    if args.btc_early_min_pct is not None:
+        os.environ["REPLAY_BTC_EARLY_MIN_PCT"] = str(args.btc_early_min_pct)
+    if args.confidence_sizing:
+        os.environ["REPLAY_CONFIDENCE_SIZING"] = "1"
+    if args.conf_sizing_btc_mult is not None:
+        os.environ["REPLAY_CONF_SIZING_BTC_MULT"] = str(args.conf_sizing_btc_mult)
+    if args.conf_sizing_full_mult is not None:
+        os.environ["REPLAY_CONF_SIZING_FULL_MULT"] = str(args.conf_sizing_full_mult)
     logger.info("Market: %s (interval=%ds, price_table=%s, slug=%s)",
                 market.label, market.interval_seconds, market.price_table,
                 market.slug_prefix)

@@ -18,7 +18,9 @@
       "Bash(\"C:/Program Files/MariaDB 11.7/bin/mariadb.exe\" -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)",
       "Read(//c/Program Files/**)",
       "Bash(ls -d \"C:/Program Files/MariaDB\"*/)",
-      "Bash(\"C:/Program Files/MariaDB 12.2/bin/mariadb.exe\" -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)"
+      "Bash(\"C:/Program Files/MariaDB 12.2/bin/mariadb.exe\" -h 127.0.0.1 -P 3400 -u root -e \"SHOW TABLES\" polymarket_btc_updown)",
+      "Bash(python paper_replay.py --last-hours 24 --stake 100)",
+      "Bash(python paper_replay.py --last-hours 168 --stake 100)"
     ]
   }
 }

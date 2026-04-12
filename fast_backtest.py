@@ -53,7 +53,7 @@ class FastData:
         mw = fetch_all_dicts(conn, """
             SELECT window_start, actual_outcome, btc_start_price, btc_end_price
             FROM market_windows WHERE actual_outcome IN ('UP','DOWN') AND btc_start_price > 0
-              AND window_start >= %s ORDER BY window_start
+              AND slug LIKE 'btc-updown-5m%%' AND window_start >= %s ORDER BY window_start
         """, (int(start_ts),))
         self.windows = mw
         t4 = time.time()

@@ -106,7 +106,7 @@ class _RamCache:
         self._end_ts = end_ts
 
         # Preload market_windows for fast outcome lookup
-        cur.execute("SELECT window_start, actual_outcome, btc_start_price FROM market_windows WHERE window_start >= %s AND window_start <= %s",
+        cur.execute("SELECT window_start, actual_outcome, btc_start_price FROM market_windows WHERE window_start >= %s AND window_start <= %s AND slug LIKE 'btc-updown-5m%%'",
                     (int(start_ts) - 300, int(end_ts) + 300))
         self._mw_map = {}
         for r in cur.fetchall():
@@ -974,7 +974,7 @@ class PaperReplay:
                 _btc_entry_val = _price_at_or_near(self.conn, opened_at, prefer_before=True)
                 current_btc = float(btc_now) if btc_now else 0.0
                 _mw_row = fetch_one_dict(self.conn,
-                    "SELECT btc_start_price FROM market_windows WHERE window_start = %s", (ws,))
+                    "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'", (ws,))
                 start_btc = float(_mw_row.get("btc_start_price") or current_btc) if _mw_row and current_btc > 0 else current_btc
 
             btc_move_entry = None

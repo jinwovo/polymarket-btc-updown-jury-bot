@@ -101,10 +101,19 @@ REQUIRE_VWAP_AGREE = env(MARKET, "REQUIRE_VWAP_AGREE", "false").lower() == "true
 REQUIRE_BTC_STILL_MOVING = env(MARKET, "REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
 MIN_BET_SIZE = float(env(MARKET, "MIN_BET_SIZE", "1.00"))
 
-# Telegram
-TELEGRAM_ENABLED = env(MARKET, "TELEGRAM_ENABLED", "false").lower() == "true"
-TELEGRAM_BOT_TOKEN = env(MARKET, "TELEGRAM_BOT_TOKEN", "") or os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = env(MARKET, "TELEGRAM_CHAT_ID", "") or os.getenv("LIVE_TELEGRAM_CHAT_ID", "")
+# Novel filters (2026-04-12) -- must match paper_sim_eth5
+BTC_ACTIVE_MIN_RANGE = float(env(MARKET, "BTC_ACTIVE_MIN_RANGE", "0.05"))
+BTC_ACTIVE_LOOKBACK = float(env(MARKET, "BTC_ACTIVE_LOOKBACK", "300"))
+CONF_SIZING_ENABLED = env(MARKET, "CONF_SIZING_ENABLED", "true").lower() == "true"
+CONF_SIZING_FULL_MULT = float(env(MARKET, "CONF_SIZING_FULL_MULT", "3.0"))
+BTC_LEADS_SEC = float(env(MARKET, "BTC_LEADS_SEC", "30"))
+BTC_LEADS_MIN_PCT = float(env(MARKET, "BTC_LEADS_MIN_PCT", "0.03"))
+
+# Telegram -- auto-enable if BTC 5min telegram is configured
+TELEGRAM_BOT_TOKEN = env(MARKET, "TELEGRAM_BOT_TOKEN", "") or os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = env(MARKET, "TELEGRAM_CHAT_ID", "") or os.getenv("LIVE_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+_tg_explicit = env(MARKET, "TELEGRAM_ENABLED", "")
+TELEGRAM_ENABLED = (_tg_explicit.lower() == "true") if _tg_explicit else bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +133,86 @@ def _safe_prob(value) -> float | None:
     if 0.0 < v < 1.0:
         return v
     return None
+
+
+def _btc_price_at(conn, ts: float) -> float | None:
+    """Get BTC price at timestamp from btc_ticks."""
+    row = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts <= %s ORDER BY ts DESC LIMIT 1", (float(ts),))
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def _check_btc_activity(conn, now_ts: float) -> bool:
+    """Return False if BTC market is dead (range < threshold)."""
+    if BTC_ACTIVE_MIN_RANGE <= 0:
+        return True
+    row = fetch_one(conn,
+        "SELECT MIN(price), MAX(price) FROM btc_ticks WHERE ts >= %s AND ts <= %s",
+        (now_ts - BTC_ACTIVE_LOOKBACK, now_ts))
+    if not row or row[0] is None or row[1] is None:
+        return True  # no data -> pass
+    lo, hi = float(row[0]), float(row[1])
+    mid = (lo + hi) / 2
+    if mid <= 0:
+        return True
+    rng = (hi - lo) / mid * 100.0
+    if rng < BTC_ACTIVE_MIN_RANGE:
+        logger.debug("Skip dead BTC market: range=%.4f%% < %.4f%%", rng, BTC_ACTIVE_MIN_RANGE)
+        return False
+    return True
+
+
+def _compute_confidence_mult(conn, direction: str, ws: int, entry_ts: float) -> float:
+    """Compute stake multiplier: 3x when BB+VWAP+BTC-leads all agree, else 1x."""
+    if not CONF_SIZING_ENABLED:
+        return 1.0
+
+    # BTC-leads check
+    btc_start = _btc_price_at(conn, float(ws))
+    btc_check = _btc_price_at(conn, float(ws) + BTC_LEADS_SEC)
+    if not btc_start or not btc_check or btc_start <= 0:
+        return 1.0
+    btc_chg = (btc_check - btc_start) / btc_start * 100.0
+    if abs(btc_chg) < BTC_LEADS_MIN_PCT:
+        return 1.0
+    btc_dir = "UP" if btc_chg > 0 else "DOWN"
+    if btc_dir != direction:
+        return 1.0
+
+    # BB extreme check (ETH prices, 60-tick window)
+    bb_rows = fetch_all_dicts(conn,
+        "SELECT price FROM %s WHERE ts <= %%s ORDER BY ts DESC LIMIT 60" % PRICE_TABLE,
+        (entry_ts,))
+    if len(bb_rows) < 30:
+        return 1.0
+    prices = [float(r["price"]) for r in bb_rows]
+    bb_mean = sum(prices) / len(prices)
+    bb_std = (sum((p - bb_mean) ** 2 for p in prices) / len(prices)) ** 0.5
+    if bb_std <= 0.01:
+        return 1.0
+    bb_pos = (prices[0] - bb_mean) / (2 * bb_std)
+    if abs(bb_pos) <= 0.5:
+        return 1.0
+
+    # VWAP agree check
+    vwap_rows = fetch_all_dicts(conn,
+        "SELECT price, volume FROM %s WHERE ts >= %%s AND ts <= %%s ORDER BY ts" % PRICE_TABLE,
+        (float(ws), entry_ts))
+    if len(vwap_rows) < 5:
+        return 1.0
+    sum_pv = sum(float(r["price"]) * float(r.get("volume") or 0) for r in vwap_rows)
+    sum_v = sum(float(r.get("volume") or 0) for r in vwap_rows)
+    if sum_v <= 0:
+        return 1.0
+    vwap = sum_pv / sum_v
+    cur_price = float(vwap_rows[-1]["price"])
+    vwap_agree = (direction == "UP" and cur_price > vwap) or \
+                 (direction == "DOWN" and cur_price < vwap)
+    if not vwap_agree:
+        return 1.0
+
+    logger.info("Full confidence: BTC-leads(%.3f%%) + BB(%.2f) + VWAP -> %.1fx ws=%s",
+                btc_chg, bb_pos, CONF_SIZING_FULL_MULT, ws)
+    return CONF_SIZING_FULL_MULT
 
 
 def _eth_slug_for_ts(start_ts: int) -> str:
@@ -288,10 +377,7 @@ def _check_entry(
                       window_start, direction, cached.get("gate_reason", ""))
         return False
 
-    # guards_passed from signal generator
-    if not int(cached.get("guards_passed") or 0):
-        logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
-        return False
+    # Guards skipped for ETH -- too strict, matches paper_replay parity
 
     # Ask prices from signal cache
     up_ask = _safe_prob(cached.get("up_ask"))
@@ -373,6 +459,10 @@ def _check_entry(
             logger.debug("Skip ETH not still moving ws=%s", window_start)
             return False
 
+    # BTC activity filter: skip dead markets (must match paper_sim_eth5)
+    if not _check_btc_activity(conn, now_ts):
+        return False
+
     # No duplicate trade for this window
     exists = fetch_one(
         conn,
@@ -422,6 +512,11 @@ def _check_entry(
 
     # Sizing
     stake = round(base_stake, 2)
+
+    # Confidence sizing: multiply when BB+VWAP+BTC-leads all agree (must match paper)
+    conf_mult = _compute_confidence_mult(conn, direction, window_start, now_ts)
+    if conf_mult > 1.0:
+        stake = round(stake * conf_mult, 2)
 
     # Dynamic sizing via quality_score
     qs = cached.get("quality_score")

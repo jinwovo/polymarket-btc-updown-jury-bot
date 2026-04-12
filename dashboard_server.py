@@ -768,7 +768,8 @@ def _get_latest_window(conn, now_ts: float) -> Optional[dict]:
     row = fetch_one_dict(
         conn,
         """SELECT * FROM market_windows
-           WHERE window_start <= ? AND window_end > ?
+           WHERE slug LIKE 'btc-updown-5m%%'
+             AND window_start <= ? AND window_end > ?
            ORDER BY window_start DESC
            LIMIT 1""",
         (int(now_ts), int(now_ts)),
@@ -777,7 +778,7 @@ def _get_latest_window(conn, now_ts: float) -> Optional[dict]:
         return row
     return fetch_one_dict(
         conn,
-        "SELECT * FROM market_windows ORDER BY window_start DESC LIMIT 1"
+        "SELECT * FROM market_windows WHERE slug LIKE 'btc-updown-5m%%' ORDER BY window_start DESC LIMIT 1"
     )
 
 
@@ -810,6 +811,144 @@ def _get_market_start_price(
     return _to_float(db_value)
 
 
+def _get_latest_eth_tick(conn) -> Optional[dict]:
+    return fetch_one_dict(
+        conn,
+        "SELECT ts, price FROM eth_ticks ORDER BY ts DESC LIMIT 1"
+    )
+
+
+def _get_latest_eth_window(conn, now_ts: float) -> Optional[dict]:
+    row = fetch_one_dict(
+        conn,
+        """SELECT * FROM market_windows
+           WHERE slug LIKE 'eth-updown-5m%%'
+             AND window_start <= ? AND window_end > ?
+           ORDER BY window_start DESC
+           LIMIT 1""",
+        (int(now_ts), int(now_ts)),
+    )
+    if row:
+        return row
+    return fetch_one_dict(
+        conn,
+        "SELECT * FROM market_windows WHERE slug LIKE 'eth-updown-5m%%' ORDER BY window_start DESC LIMIT 1"
+    )
+
+
+def _get_latest_eth_odds(conn, window_start: Optional[int]) -> Optional[dict]:
+    if window_start is None:
+        return fetch_one_dict(
+            conn,
+            "SELECT * FROM poly_odds WHERE slug LIKE 'eth-updown-5m%%' ORDER BY ts DESC LIMIT 1"
+        )
+    return fetch_one_dict(
+        conn,
+        """SELECT * FROM poly_odds
+           WHERE window_start = ? AND slug LIKE 'eth-updown-5m%%'
+           ORDER BY ts DESC
+           LIMIT 1""",
+        (window_start,),
+    )
+
+
+def _get_eth_signal(conn) -> Optional[dict]:
+    """Read latest ETH 5min signal from signal_cache_eth5."""
+    try:
+        row = fetch_one_dict(conn, "SELECT * FROM signal_cache_eth5 ORDER BY ts DESC LIMIT 1")
+        if not row:
+            return None
+        direction = str(row.get("direction") or "").upper()
+        gate_allow = bool(row.get("gate_allow"))
+        gate_reason = str(row.get("gate_reason") or "")
+
+        # Parse judges_json for vote counts
+        vote_counts = {"UP": 0, "DOWN": 0, "ABSTAIN": 0}
+        judges_json_str = row.get("judges_json") or "[]"
+        try:
+            judges_list = json.loads(judges_json_str) if isinstance(judges_json_str, str) else judges_json_str
+            for j in judges_list:
+                v = str(j.get("vote", "ABSTAIN")).upper()
+                if v in vote_counts:
+                    vote_counts[v] += 1
+        except Exception:
+            pass
+
+        if gate_allow and direction in ("UP", "DOWN"):
+            action_label = f"BUY {direction}"
+            summary = gate_reason or f"votes UP={vote_counts['UP']} DOWN={vote_counts['DOWN']} ABSTAIN={vote_counts['ABSTAIN']}"
+        else:
+            action_label = "WAIT"
+            summary = f"votes UP={vote_counts['UP']} DOWN={vote_counts['DOWN']} ABSTAIN={vote_counts['ABSTAIN']}"
+
+        return {
+            "direction": direction if direction in ("UP", "DOWN") else "NO_TRADE",
+            "actionable": gate_allow and direction in ("UP", "DOWN"),
+            "action_label": action_label,
+            "reason": summary,
+            "gate_allow": gate_allow,
+            "gate_ev": _to_float(row.get("gate_ev")),
+            "confidence": _to_float(row.get("avg_confidence")),
+            "bb_pos": _to_float(row.get("bb_pos")),
+            "vwap_agree": bool(row.get("vwap_agree")),
+            "ask_drift": _to_float(row.get("ask_drift")),
+        }
+    except Exception:
+        return None
+
+
+def _build_eth_snapshot(conn, now_ts: float) -> dict:
+    """Build ETH 5min status for the snapshot response."""
+    eth_tick = _get_latest_eth_tick(conn)
+    eth_window = _get_latest_eth_window(conn, now_ts)
+    eth_ws = _to_int(eth_window["window_start"]) if eth_window else None
+    eth_odds = _get_latest_eth_odds(conn, eth_ws)
+
+    eth_price = _to_float(eth_tick["price"]) if eth_tick else None
+    eth_start = _to_float(eth_window["btc_start_price"]) if eth_window else None
+    eth_change = (
+        ((eth_price - eth_start) / eth_start) * 100.0
+        if eth_price is not None and eth_start is not None and eth_start > 0
+        else None
+    )
+
+    if eth_window:
+        _ws = _to_int(eth_window["window_start"])
+        _we = _to_int(eth_window["window_end"])
+        if _ws is not None and _we is not None:
+            _elapsed = max(0.0, now_ts - float(_ws))
+            _remain = max(0.0, float(_we) - now_ts)
+            _progress = min(100.0, max(0.0, (_elapsed / max(_we - _ws, 1)) * 100.0))
+        else:
+            _elapsed = _remain = _progress = 0.0
+    else:
+        _ws = _we = None
+        _elapsed = _remain = _progress = 0.0
+
+    return {
+        "window": {
+            "slug": str(eth_window["slug"]) if eth_window and eth_window.get("slug") else None,
+            "window_start": _ws,
+            "window_end": _we,
+            "seconds_elapsed": _elapsed,
+            "seconds_remaining": _remain,
+            "progress_pct": _progress,
+        },
+        "market": {
+            "eth_price": eth_price,
+            "eth_start_price": eth_start,
+            "eth_change_pct": eth_change,
+            "up_mid": _to_float(eth_odds["up_mid"]) if eth_odds else None,
+            "down_mid": _to_float(eth_odds["down_mid"]) if eth_odds else None,
+            "up_bid": _to_float(eth_odds["up_best_bid"]) if eth_odds else None,
+            "up_ask": _to_float(eth_odds["up_best_ask"]) if eth_odds else None,
+            "down_bid": _to_float(eth_odds["down_best_bid"]) if eth_odds else None,
+            "down_ask": _to_float(eth_odds["down_best_ask"]) if eth_odds else None,
+        },
+        "signal": _get_eth_signal(conn),
+    }
+
+
 def _get_recent_results(conn, limit: int = 20) -> list[str]:
     rows = fetch_all_dicts(
         conn,
@@ -817,6 +956,7 @@ def _get_recent_results(conn, limit: int = 20) -> list[str]:
                SELECT window_start, actual_outcome
                FROM market_windows
                WHERE actual_outcome IN ('UP', 'DOWN')
+                 AND slug LIKE 'btc-updown-5m%%'
                ORDER BY window_start DESC
                LIMIT ?
            ) t
@@ -905,6 +1045,7 @@ def _window_rows(conn, limit: int = 12) -> list[dict]:
         conn,
         """SELECT window_start, window_end, slug, btc_start_price, btc_end_price, actual_outcome
            FROM market_windows
+           WHERE slug LIKE 'btc-updown-5m%%'
            ORDER BY window_start DESC
            LIMIT ?""",
         (limit,),
@@ -1598,7 +1739,7 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     conn,
                     """SELECT slug, btc_start_price, btc_end_price, actual_outcome
                        FROM market_windows
-                       WHERE window_start = ?
+                       WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'
                        LIMIT 1""",
                     (ws,),
                 )
@@ -1737,6 +1878,399 @@ def build_paper_trade_history(limit: int = 30, offset: int = 0) -> dict:
         conn.close()
 
 
+def _build_market_paper_history(table: str, slug_pattern: str, query_string: str) -> dict:
+    """Build paper trade history for multi-market tables (btc15, eth5).
+
+    Returns same format as build_paper_trade_history so frontend can reuse UI.
+    """
+    from urllib.parse import parse_qs as _pqs
+    _qs = _pqs(query_string)
+    lim = max(1, min(int(_qs.get("limit", ["30"])[0]), 200))
+    off = max(0, int(_qs.get("offset", ["0"])[0]))
+
+    conn = _connect_db()
+    try:
+        rows = fetch_all_dicts(
+            conn,
+            f"""SELECT id, window_start, window_end, direction, stake, entry_price,
+                       payout_multiple, shares, potential_win_pnl,
+                       signal_confidence, signal_reason, close_reason, status,
+                       opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                FROM {table}
+                WHERE archived_at IS NULL
+                ORDER BY window_start DESC
+                LIMIT %s OFFSET %s""",
+            (lim, off),
+        )
+
+        count_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table} WHERE archived_at IS NULL")
+        count = int(count_row[0]) if count_row else len(rows)
+
+        stats_row = fetch_one(
+            conn,
+            f"""SELECT
+                   SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END),
+                   COALESCE(SUM(pnl), 0)
+               FROM {table}
+               WHERE archived_at IS NULL""",
+        )
+        open_cnt = int(stats_row[0] or 0) if stats_row else 0
+        closed_cnt = int(stats_row[1] or 0) if stats_row else 0
+        wins = int(stats_row[2] or 0) if stats_row else 0
+        losses = int(stats_row[3] or 0) if stats_row else 0
+        total_pnl = float(stats_row[4] or 0.0) if stats_row else 0.0
+
+        initial_capital = None
+        try:
+            first_cap_row = fetch_one(
+                conn,
+                f"SELECT initial_capital FROM {table} WHERE initial_capital IS NOT NULL AND archived_at IS NULL ORDER BY window_start ASC LIMIT 1",
+            )
+            if first_cap_row and first_cap_row[0] is not None:
+                initial_capital = float(first_cap_row[0])
+        except Exception:
+            pass
+        if initial_capital is None:
+            first_stake_row = fetch_one(
+                conn,
+                f"SELECT stake FROM {table} WHERE archived_at IS NULL ORDER BY window_start ASC LIMIT 1",
+            )
+            initial_capital = float(first_stake_row[0]) if first_stake_row and first_stake_row[0] is not None else 1000.0
+        current_equity = initial_capital + total_pnl
+        equity_roi_pct = ((total_pnl / initial_capital) * 100.0) if initial_capital > 0 else 0.0
+
+        # Drawdown / streak
+        closed_rows = fetch_all_dicts(
+            conn,
+            f"""SELECT id, pnl FROM {table}
+                WHERE status='CLOSED' AND archived_at IS NULL
+                ORDER BY COALESCE(closed_at, window_end) ASC, id ASC""",
+        )
+        bust_count = 0
+        max_drawdown_pct = 0.0
+        max_consecutive_losses = 0
+        running_loss_streak = 0
+        peak_equity = initial_capital
+        equity_cursor = initial_capital
+        prev_equity = initial_capital
+        for cr in closed_rows:
+            pnl = _to_float(cr.get("pnl")) or 0.0
+            equity_cursor += pnl
+            if prev_equity > 0.0 and equity_cursor <= 0.0:
+                bust_count += 1
+            prev_equity = equity_cursor
+            if pnl < 0.0:
+                running_loss_streak += 1
+                if running_loss_streak > max_consecutive_losses:
+                    max_consecutive_losses = running_loss_streak
+            else:
+                running_loss_streak = 0
+            if equity_cursor > peak_equity:
+                peak_equity = equity_cursor
+            if peak_equity > 0.0:
+                dd_pct = ((peak_equity - equity_cursor) / peak_equity) * 100.0
+                if dd_pct > max_drawdown_pct:
+                    max_drawdown_pct = dd_pct
+
+        # Build items
+        items: list[dict] = []
+        for r in rows:
+            ws = _to_int(r.get("window_start"))
+            opened_at = _to_float(r.get("opened_at"))
+            closed_at = _to_float(r.get("closed_at"))
+
+            window_row = None
+            if ws is not None:
+                window_row = fetch_one_dict(
+                    conn,
+                    "SELECT slug, btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE %s LIMIT 1",
+                    (ws, slug_pattern),
+                )
+
+            odds_row = None
+            if ws is not None and opened_at is not None:
+                odds_row = fetch_one_dict(
+                    conn,
+                    "SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask FROM poly_odds WHERE window_start = %s AND slug LIKE %s ORDER BY ABS(ts - %s) ASC LIMIT 1",
+                    (ws, slug_pattern, opened_at),
+                )
+
+            odds_close_row = None
+            if ws is not None and closed_at is not None:
+                odds_close_row = fetch_one_dict(
+                    conn,
+                    "SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask FROM poly_odds WHERE window_start = %s AND slug LIKE %s ORDER BY ABS(ts - %s) ASC LIMIT 1",
+                    (ws, slug_pattern, closed_at),
+                )
+
+            direction = str(r.get("direction") or "NO_TRADE")
+            entry_price = _to_float(r.get("entry_price"))
+            shares = _to_float(r.get("shares"))
+            stake = _to_float(r.get("stake"))
+            won = _to_int(r.get("won"))
+            close_reason = str(r.get("close_reason") or "") if r.get("close_reason") else None
+            to_win_pnl = _to_float(r.get("potential_win_pnl"))
+            if to_win_pnl is None and shares is not None and stake is not None:
+                to_win_pnl = shares - stake
+
+            entry_side_price = None
+            if odds_row:
+                if direction == "UP":
+                    entry_side_price = _to_float(odds_row.get("up_best_ask")) or _to_float(odds_row.get("up_mid"))
+                elif direction == "DOWN":
+                    entry_side_price = _to_float(odds_row.get("down_best_ask")) or _to_float(odds_row.get("down_mid"))
+
+            items.append({
+                "id": _to_int(r.get("id")),
+                "window_start": ws,
+                "window_end": _to_int(r.get("window_end")),
+                "direction": direction,
+                "stake": stake,
+                "entry_price": entry_price,
+                "payout_multiple": _to_float(r.get("payout_multiple")),
+                "shares": shares,
+                "to_win_total": shares,
+                "to_win_pnl": to_win_pnl,
+                "entry_side_price_at_signal": entry_side_price,
+                "signal_confidence": _to_float(r.get("signal_confidence")),
+                "signal_reason": str(r.get("signal_reason") or ""),
+                "close_reason": close_reason,
+                "status": str(r.get("status") or "OPEN"),
+                "opened_at": opened_at,
+                "opened_at_utc": datetime.fromtimestamp(opened_at, tz=timezone.utc).isoformat() if opened_at else None,
+                "closed_at": closed_at,
+                "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
+                "won": won,
+                "pnl": _to_float(r.get("pnl")),
+                "roi_pct": _to_float(r.get("roi_pct")),
+                "window": {
+                    "slug": str(window_row.get("slug")) if window_row and window_row.get("slug") else None,
+                    "btc_start_price": _to_float(window_row.get("btc_start_price")) if window_row else None,
+                    "btc_end_price": _to_float(window_row.get("btc_end_price")) if window_row else None,
+                    "actual_outcome": str(window_row.get("actual_outcome")) if window_row and window_row.get("actual_outcome") else None,
+                },
+                "odds_at_entry": {
+                    "up_ask": _to_float(odds_row.get("up_best_ask")) if odds_row else None,
+                    "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
+                    "up_bid": _to_float(odds_row.get("up_best_bid")) if odds_row else None,
+                    "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
+                },
+                "odds_at_close": {
+                    "ts": _to_float(odds_close_row.get("ts")) if odds_close_row else None,
+                    "up_mid": _to_float(odds_close_row.get("up_mid")) if odds_close_row else None,
+                    "down_mid": _to_float(odds_close_row.get("down_mid")) if odds_close_row else None,
+                    "up_bid": _to_float(odds_close_row.get("up_best_bid")) if odds_close_row else None,
+                    "up_ask": _to_float(odds_close_row.get("up_best_ask")) if odds_close_row else None,
+                    "down_bid": _to_float(odds_close_row.get("down_best_bid")) if odds_close_row else None,
+                    "down_ask": _to_float(odds_close_row.get("down_best_ask")) if odds_close_row else None,
+                },
+                "exit": _build_exit_snapshot(
+                    direction=direction,
+                    status=str(r.get("status") or "OPEN"),
+                    won=won,
+                    close_reason=close_reason,
+                    odds_close_row=odds_close_row,
+                ),
+            })
+
+        return {
+            "ok": True,
+            "items": items,
+            "count": count,
+            "limit": lim,
+            "offset": off,
+            "summary": {
+                "open": open_cnt,
+                "closed": closed_cnt,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": (wins / closed_cnt) if closed_cnt > 0 else 0.0,
+                "total_pnl": total_pnl,
+                "initial_capital": initial_capital,
+                "current_equity": current_equity,
+                "equity_roi_pct": equity_roi_pct,
+                "bust_count": bust_count,
+                "is_account_busted": current_equity <= 0.0,
+                "max_drawdown_pct": max_drawdown_pct,
+                "max_consecutive_losses": max_consecutive_losses,
+            },
+        }
+    finally:
+        conn.close()
+
+
+def _build_market_live_history(table: str, slug_pattern: str, query_string: str) -> dict:
+    """Build live trade history for multi-market tables (btc15, eth5).
+
+    Returns same format as build_live_trade_history so frontend can reuse UI.
+    """
+    from urllib.parse import parse_qs as _pqs
+    _qs = _pqs(query_string)
+    lim = max(1, min(int(_qs.get("limit", ["30"])[0]), 200))
+    off = max(0, int(_qs.get("offset", ["0"])[0]))
+
+    conn = _connect_db()
+    try:
+        rows = fetch_all_dicts(
+            conn,
+            f"""SELECT id, window_start, window_end, direction, stake, entry_price,
+                       payout_multiple, shares, potential_win_pnl,
+                       signal_confidence, signal_reason, entry_source, close_reason, status,
+                       opened_at, closed_at, actual_outcome, won, pnl, roi_pct
+                FROM {table}
+                ORDER BY window_start DESC
+                LIMIT %s OFFSET %s""",
+            (lim, off),
+        )
+
+        count_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table}")
+        count = int(count_row[0]) if count_row else len(rows)
+
+        stats_row = fetch_one(
+            conn,
+            f"""SELECT
+                   SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN won=0 AND status='CLOSED' THEN 1 ELSE 0 END),
+                   COALESCE(SUM(pnl), 0),
+                   AVG(CASE WHEN status='CLOSED' THEN roi_pct ELSE NULL END),
+                   AVG(CASE WHEN status='CLOSED' THEN stake ELSE NULL END)
+               FROM {table}""",
+        )
+        open_cnt = int(stats_row[0] or 0) if stats_row else 0
+        closed_cnt = int(stats_row[1] or 0) if stats_row else 0
+        wins = int(stats_row[2] or 0) if stats_row else 0
+        losses = int(stats_row[3] or 0) if stats_row else 0
+        total_pnl = float(stats_row[4] or 0.0) if stats_row else 0.0
+        avg_roi_pct = float(stats_row[5] or 0.0) if stats_row and stats_row[5] is not None else 0.0
+        avg_stake = float(stats_row[6] or 0.0) if stats_row and stats_row[6] is not None else 0.0
+
+        items: list[dict] = []
+        for r in rows:
+            ws = _to_int(r.get("window_start"))
+            opened_at = _to_float(r.get("opened_at"))
+            closed_at = _to_float(r.get("closed_at"))
+
+            window_row = None
+            if ws is not None:
+                window_row = fetch_one_dict(
+                    conn,
+                    "SELECT slug, btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE %s LIMIT 1",
+                    (ws, slug_pattern),
+                )
+
+            odds_row = None
+            if ws is not None and opened_at is not None:
+                odds_row = fetch_one_dict(
+                    conn,
+                    "SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask FROM poly_odds WHERE window_start = %s AND slug LIKE %s ORDER BY ABS(ts - %s) ASC LIMIT 1",
+                    (ws, slug_pattern, opened_at),
+                )
+
+            odds_close_row = None
+            if ws is not None and closed_at is not None:
+                odds_close_row = fetch_one_dict(
+                    conn,
+                    "SELECT ts, up_mid, down_mid, up_best_bid, up_best_ask, down_best_bid, down_best_ask FROM poly_odds WHERE window_start = %s AND slug LIKE %s ORDER BY ABS(ts - %s) ASC LIMIT 1",
+                    (ws, slug_pattern, closed_at),
+                )
+
+            direction = str(r.get("direction") or "NO_TRADE")
+            entry_price = _to_float(r.get("entry_price"))
+            shares = _to_float(r.get("shares"))
+            stake = _to_float(r.get("stake"))
+            won = _to_int(r.get("won"))
+            close_reason = str(r.get("close_reason") or "") if r.get("close_reason") else None
+            to_win_pnl = _to_float(r.get("potential_win_pnl"))
+            if to_win_pnl is None and shares is not None and stake is not None:
+                to_win_pnl = shares - stake
+
+            entry_side_price = None
+            if odds_row:
+                if direction == "UP":
+                    entry_side_price = _to_float(odds_row.get("up_best_ask")) or _to_float(odds_row.get("up_mid"))
+                elif direction == "DOWN":
+                    entry_side_price = _to_float(odds_row.get("down_best_ask")) or _to_float(odds_row.get("down_mid"))
+
+            items.append({
+                "id": _to_int(r.get("id")),
+                "window_start": ws,
+                "window_end": _to_int(r.get("window_end")),
+                "direction": direction,
+                "stake": stake,
+                "entry_price": entry_price,
+                "entry_side_price_at_signal": entry_side_price,
+                "payout_multiple": _to_float(r.get("payout_multiple")),
+                "shares": shares,
+                "to_win_total": shares,
+                "to_win_pnl": to_win_pnl,
+                "signal_confidence": _to_float(r.get("signal_confidence")),
+                "signal_reason": str(r.get("signal_reason") or ""),
+                "entry_source": str(r.get("entry_source") or "") if r.get("entry_source") else None,
+                "close_reason": close_reason,
+                "status": str(r.get("status") or "OPEN"),
+                "opened_at": opened_at,
+                "opened_at_utc": datetime.fromtimestamp(opened_at, tz=timezone.utc).isoformat() if opened_at else None,
+                "closed_at": closed_at,
+                "actual_outcome": str(r.get("actual_outcome")) if r.get("actual_outcome") else None,
+                "won": won,
+                "pnl": _to_float(r.get("pnl")),
+                "roi_pct": _to_float(r.get("roi_pct")),
+                "window": {
+                    "slug": str(window_row.get("slug")) if window_row and window_row.get("slug") else None,
+                    "btc_start_price": _to_float(window_row.get("btc_start_price")) if window_row else None,
+                    "btc_end_price": _to_float(window_row.get("btc_end_price")) if window_row else None,
+                    "actual_outcome": str(window_row.get("actual_outcome")) if window_row and window_row.get("actual_outcome") else None,
+                },
+                "odds_at_entry": {
+                    "up_ask": _to_float(odds_row.get("up_best_ask")) if odds_row else None,
+                    "down_ask": _to_float(odds_row.get("down_best_ask")) if odds_row else None,
+                    "up_bid": _to_float(odds_row.get("up_best_bid")) if odds_row else None,
+                    "down_bid": _to_float(odds_row.get("down_best_bid")) if odds_row else None,
+                },
+                "odds_at_close": {
+                    "ts": _to_float(odds_close_row.get("ts")) if odds_close_row else None,
+                    "up_mid": _to_float(odds_close_row.get("up_mid")) if odds_close_row else None,
+                    "down_mid": _to_float(odds_close_row.get("down_mid")) if odds_close_row else None,
+                    "up_bid": _to_float(odds_close_row.get("up_best_bid")) if odds_close_row else None,
+                    "up_ask": _to_float(odds_close_row.get("up_best_ask")) if odds_close_row else None,
+                    "down_bid": _to_float(odds_close_row.get("down_best_bid")) if odds_close_row else None,
+                    "down_ask": _to_float(odds_close_row.get("down_best_ask")) if odds_close_row else None,
+                },
+                "exit": _build_exit_snapshot(
+                    direction=direction,
+                    status=str(r.get("status") or "OPEN"),
+                    won=won,
+                    close_reason=close_reason,
+                    odds_close_row=odds_close_row,
+                ),
+            })
+
+        return {
+            "ok": True,
+            "items": items,
+            "count": count,
+            "limit": lim,
+            "offset": off,
+            "summary": {
+                "open": open_cnt,
+                "closed": closed_cnt,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": (wins / closed_cnt) if closed_cnt > 0 else 0.0,
+                "total_pnl": total_pnl,
+                "avg_roi_pct": avg_roi_pct,
+                "avg_stake": avg_stake,
+            },
+        }
+    finally:
+        conn.close()
+
+
 def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
     lim = max(1, min(int(limit), 200))
     off = max(0, int(offset))
@@ -1807,7 +2341,7 @@ def build_live_trade_history(limit: int = 30, offset: int = 0) -> dict:
                     conn,
                     """SELECT slug, btc_start_price, btc_end_price, actual_outcome
                        FROM market_windows
-                       WHERE window_start = ?
+                       WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'
                        LIMIT 1""",
                     (ws,),
                 )
@@ -2010,6 +2544,12 @@ def build_snapshot() -> dict:
         if inserted:
             conn.commit()
 
+        # ETH 5min snapshot
+        try:
+            eth5 = _build_eth_snapshot(conn, now_ts)
+        except Exception:
+            eth5 = None
+
         snapshot = {
             "ok": True,
             "server_time": now_ts,
@@ -2037,6 +2577,7 @@ def build_snapshot() -> dict:
             "last_actionable_signal": last_actionable_signal,
             "stats": _stats(conn),
             "recent_windows": recent_windows,
+            "eth5": eth5,
         }
         return snapshot
     finally:
@@ -2621,42 +3162,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Multi-market paper/live history (GET)
         _mm_paper_get = {
-            "/api/btc15/paper-history": "paper_trades_btc15",
-            "/api/eth5/paper-history": "paper_trades_eth5",
+            "/api/btc15/paper-history": ("paper_trades_btc15", "btc-updown-15m%"),
+            "/api/eth5/paper-history": ("paper_trades_eth5", "eth-updown-5m%"),
         }
         if path in _mm_paper_get:
             try:
-                table = _mm_paper_get[path]
-                conn = connect_db()
-                _qs_h = parse_qs(parsed.query)
-                limit = int(_qs_h.get("limit", ["50"])[0])
-                offset = int(_qs_h.get("offset", ["0"])[0])
-                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} WHERE archived_at IS NULL ORDER BY opened_at DESC LIMIT %s OFFSET %s", (limit, offset))
-                total_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table} WHERE archived_at IS NULL")
-                total = int(total_row[0]) if total_row else 0
-                conn.close()
-                self._send_json({"ok": True, "trades": rows, "total": total})
+                table, slug_pat = _mm_paper_get[path]
+                self._send_json(_build_market_paper_history(table, slug_pat, parsed.query))
             except Exception as e:
+                logger.exception("multi-market paper-history error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
         _mm_live_get = {
-            "/api/btc15/live-trade-history": "live_trades_btc15",
-            "/api/eth5/live-trade-history": "live_trades_eth5",
+            "/api/btc15/live-trade-history": ("live_trades_btc15", "btc-updown-15m%"),
+            "/api/eth5/live-trade-history": ("live_trades_eth5", "eth-updown-5m%"),
         }
         if path in _mm_live_get:
             try:
-                table = _mm_live_get[path]
-                conn = connect_db()
-                _qs_h = parse_qs(parsed.query)
-                limit = int(_qs_h.get("limit", ["50"])[0])
-                offset = int(_qs_h.get("offset", ["0"])[0])
-                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} ORDER BY opened_at DESC LIMIT %s OFFSET %s", (limit, offset))
-                total_row = fetch_one(conn, f"SELECT COUNT(*) FROM {table}")
-                total = int(total_row[0]) if total_row else 0
-                conn.close()
-                self._send_json({"ok": True, "trades": rows, "total": total})
+                table, slug_pat = _mm_live_get[path]
+                self._send_json(_build_market_live_history(table, slug_pat, parsed.query))
             except Exception as e:
+                logger.exception("multi-market live-history error")
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
@@ -3051,34 +3578,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, **proc.status()})
             return
 
-        # Multi-market paper history
-        _mm_paper_tables = {
-            "/api/btc15/paper-history": "paper_trades_btc15",
-            "/api/eth5/paper-history": "paper_trades_eth5",
+        # Multi-market paper history (POST fallback - reuse GET handler)
+        _mm_paper_post = {
+            "/api/btc15/paper-history": ("paper_trades_btc15", "btc-updown-15m%"),
+            "/api/eth5/paper-history": ("paper_trades_eth5", "eth-updown-5m%"),
         }
-        if path in _mm_paper_tables:
+        if path in _mm_paper_post:
             try:
-                table = _mm_paper_tables[path]
-                conn = connect_db()
-                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} WHERE archived_at IS NULL ORDER BY opened_at DESC LIMIT 50")
-                conn.close()
-                self._send_json({"ok": True, "trades": rows})
+                table, slug_pat = _mm_paper_post[path]
+                self._send_json(_build_market_paper_history(table, slug_pat, parsed.query))
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 
-        # Multi-market live history
-        _mm_live_tables = {
-            "/api/btc15/live-trade-history": "live_trades_btc15",
-            "/api/eth5/live-trade-history": "live_trades_eth5",
+        # Multi-market live history (POST fallback)
+        _mm_live_post = {
+            "/api/btc15/live-trade-history": ("live_trades_btc15", "btc-updown-15m%"),
+            "/api/eth5/live-trade-history": ("live_trades_eth5", "eth-updown-5m%"),
         }
-        if path in _mm_live_tables:
+        if path in _mm_live_post:
             try:
-                table = _mm_live_tables[path]
-                conn = connect_db()
-                rows = fetch_all_dicts(conn, f"SELECT * FROM {table} ORDER BY opened_at DESC LIMIT 50")
-                conn.close()
-                self._send_json({"ok": True, "trades": rows})
+                table, slug_pat = _mm_live_post[path]
+                self._send_json(_build_market_live_history(table, slug_pat, parsed.query))
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return

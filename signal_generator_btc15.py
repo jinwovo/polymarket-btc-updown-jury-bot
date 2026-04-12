@@ -437,10 +437,12 @@ class BTC15SignalGenerator:
             gate_allow = 0
             gate_ev = None
             gate_reason = None
-            if decision.direction in ("UP", "DOWN") and guards_passed:
+            _has_valid_asks = (up_ask is not None and dn_ask is not None
+                               and 0.01 < up_ask < 0.99 and 0.01 < dn_ask < 0.99)
+            if decision.direction in ("UP", "DOWN") and _has_valid_asks:
                 try:
                     from trade_gate import evaluate_entry_gate
-                    entry_price = float(dn_ask if decision.direction == "DOWN" else up_ask) if (up_ask and dn_ask) else 0.5
+                    entry_price = float(dn_ask if decision.direction == "DOWN" else up_ask)
 
                     down_min = _env_float("DOWN_MIN_ENTRY_PRICE", "0.30")
                     max_ask = _env_float("MAX_ENTRY_PRICE", "0.58")

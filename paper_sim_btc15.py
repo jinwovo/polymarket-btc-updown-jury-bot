@@ -33,6 +33,7 @@ from db_config import (
     init_market_schema,
 )
 from trade_gate import apply_fee_to_pnl
+from telegram_notifier import send_telegram_message
 
 # ---------------------------------------------------------------------------
 # Logging -- bot_paper_btc15.log
@@ -78,6 +79,24 @@ SIGNAL_TABLE = BTC_15M.signal_cache_table       # signal_cache_btc15
 TRADES_TABLE = BTC_15M.paper_trades_table        # paper_trades_btc15
 PRICE_TABLE = BTC_15M.price_table                # btc_ticks
 SLUG_PREFIX = BTC_15M.slug_prefix                # btc-updown-15m
+
+
+# ---------------------------------------------------------------------------
+# Telegram -- reuse BTC 5min settings
+# ---------------------------------------------------------------------------
+def _tg_send(text: str):
+    """Send Telegram notification using BTC 5min's live telegram settings."""
+    try:
+        enabled = bool(getattr(config.trading, "paper_telegram_notify_open", False))
+        if not enabled:
+            return
+        token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+        chat_id = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+        if not token or not chat_id:
+            return
+        send_telegram_message(token=token, chat_id=chat_id, text=text)
+    except Exception as e:
+        logger.debug("Telegram send failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +184,7 @@ def _check_entry(conn, cached: dict, base_stake: float, sizing_mode: str) -> boo
                       window_start, direction, cached.get("gate_reason", ""))
         return False
 
-    # guards_passed from signal generator
-    if not int(cached.get("guards_passed") or 0):
-        logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
-        return False
+    # Guards skipped -- too strict, matches paper_replay parity
 
     # Ask prices from signal cache
     up_ask = _safe_prob(cached.get("up_ask"))
@@ -330,6 +346,13 @@ def _check_entry(conn, cached: dict, base_stake: float, sizing_mode: str) -> boo
         float(bb_pos_val) if bb_pos_val is not None else 0.0,
         float(drift_val) if drift_val is not None else 0.0,
     )
+    _tg_send(
+        f"[BTC15 PAPER OPEN]\n"
+        f"side: {direction}\n"
+        f"stake: ${stake:,.2f} @ {entry_price:.3f}\n"
+        f"payout: {payout_multiple:.2f}x\n"
+        f"window: {window_start}"
+    )
     return True
 
 
@@ -423,6 +446,12 @@ def _resolve_open_trades(conn) -> int:
         logger.warning(
             "%s ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
             tag, ws, direction, outcome, pnl, roi_pct,
+        )
+        _tg_send(
+            f"[BTC15 PAPER {'WIN' if won else 'LOSS'}]\n"
+            f"side: {direction} | outcome: {outcome}\n"
+            f"pnl: ${pnl:+.2f} | roi: {roi_pct:+.1f}%\n"
+            f"window: {ws}"
         )
 
     return resolved

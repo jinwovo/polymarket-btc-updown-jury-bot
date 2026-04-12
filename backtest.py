@@ -189,7 +189,7 @@ def load_data(
 
     windows_rows = fetch_all_dicts(
         conn,
-        f"SELECT * FROM market_windows WHERE actual_outcome IS NOT NULL {w_where} "
+        f"SELECT * FROM market_windows WHERE actual_outcome IS NOT NULL AND slug LIKE 'btc-updown-5m%%' {w_where} "
         f"ORDER BY window_start",
         tuple(w_params),
     )

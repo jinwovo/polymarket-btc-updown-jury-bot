@@ -823,8 +823,8 @@ class LiveBTC15Trader:
                 # Telegram correction notice
                 try:
                     won = 1 if direction == poly_outcome else 0
-                    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-                    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+                    tg_token = os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+                    tg_chat = os.getenv("LIVE_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
                     if tg_token and tg_chat:
                         send_telegram_message(
                             token=tg_token, chat_id=tg_chat,
@@ -855,8 +855,8 @@ class LiveBTC15Trader:
     def _send_trade_open_telegram(self, direction: str, stake: float, price: float, ws: int):
         """Send trade-open notification via Telegram."""
         try:
-            tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-            tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+            tg_token = os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+            tg_chat = os.getenv("LIVE_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
             if not tg_token or not tg_chat:
                 return
             dry_tag = " [DRY-RUN]" if self.dry_run else ""
@@ -877,8 +877,8 @@ class LiveBTC15Trader:
     def _send_trade_close_telegram(self, trade: dict, actual_outcome: str):
         """Send trade-close notification via Telegram."""
         try:
-            tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-            tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+            tg_token = os.getenv("LIVE_TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+            tg_chat = os.getenv("LIVE_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
             if not tg_token or not tg_chat:
                 return
             direction = str(trade["direction"])

@@ -2545,12 +2545,6 @@ class TradingBot:
             return
 
         direction = str(pending.get("direction") or "").upper()
-        if direction == "UP":
-            side_bid = _safe_prob(market.up_best_bid) or _safe_prob(market.up_price)
-        elif direction == "DOWN":
-            side_bid = _safe_prob(market.down_best_bid) or _safe_prob(market.down_price)
-        else:
-            side_bid = None
 
         token_id = str(pending.get("token_id") or "")
         requested_shares = float(pending.get("shares") or 0.0)
@@ -2561,42 +2555,27 @@ class TradingBot:
             phase="post-settlement-exit",
         )
         stake = float(pending.get("stake") or 0.0)
-        if not token_id or shares <= 0.0 or stake <= 0.0 or side_bid is None:
+        if not token_id or shares <= 0.0 or stake <= 0.0:
             logger.warning(
-                "Post-settlement exit skipped (attempt %s/%s): invalid quote/token",
+                "Post-settlement exit skipped (attempt %s/%s): invalid token/shares/stake",
                 int(pending.get("attempt_index") or 0),
                 len(offsets),
             )
             if int(pending.get("attempt_index") or 0) >= len(offsets):
                 self._pending_settlement_exit = None
-                # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
             return
 
-        est_notional = float(shares * float(side_bid))
-        est_pnl = float(apply_fee_to_pnl(est_notional - stake, stake))
-        est_roi_pct = float((est_pnl / stake) * 100.0) if stake > 0.0 else 0.0
-        min_bid = float(config.trading.live_settlement_exit_min_bid)
-        min_roi = float(config.trading.live_settlement_exit_min_roi_pct)
-        if float(side_bid) < min_bid or float(est_roi_pct) < min_roi:
-            logger.info(
-                "Post-settlement exit skipped (attempt %s/%s): bid=%.3f roi=%+.2f%% (need bid>=%.3f roi>=%.2f%%)",
-                int(pending.get("attempt_index") or 0),
-                len(offsets),
-                float(side_bid),
-                float(est_roi_pct),
-                float(min_bid),
-                float(min_roi),
-            )
-            if int(pending.get("attempt_index") or 0) >= len(offsets):
-                self._pending_settlement_exit = None
-                # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
-            return
-
-        exit_result = await self.poly_client.place_exit_order(
+        # Maker GTC SELL @ 0.99 (0% fee). Share settles at $1.00.
+        # GTC polls internally for 120s -- no need for bid/ROI checks.
+        logger.info(
+            "Post-settlement maker exit: slug=%s dir=%s shares=%.2f GTC SELL @0.99",
+            str(pending.get("slug") or ""),
+            direction,
+            float(shares),
+        )
+        exit_result = await self.poly_client.place_settlement_exit_order(
             token_id=str(token_id),
-            side="SELL",
             shares=float(shares),
-            reference_bid=float(side_bid),
         )
 
         if exit_result is None:
@@ -2611,7 +2590,7 @@ class TradingBot:
             )
         elif not bool(exit_result.get("filled", False)):
             logger.warning(
-                "Post-settlement exit not filled: status=%s reason=%s",
+                "Post-settlement exit not filled (GTC timeout): status=%s reason=%s",
                 exit_result.get("status"),
                 exit_result.get("reason"),
             )
@@ -2628,9 +2607,10 @@ class TradingBot:
                 executed_price = float(exit_result.get("executed_price") or 0.0)
                 if executed_notional <= 0.0 and executed_size > 0.0 and 0.0 < executed_price < 1.0:
                     executed_notional = float(executed_size * executed_price)
-                realized_pnl = float(apply_fee_to_pnl(executed_notional - stake, stake))
+                # Maker = 0% fee, no apply_fee_to_pnl needed
+                realized_pnl = float(executed_notional - stake)
                 logger.info(
-                    "Post-settlement exit success: slug=%s dir=%s fill_px=%.3f pnl=$%+.2f roi=%+.2f%%",
+                    "Post-settlement exit success (maker): slug=%s dir=%s fill_px=%.3f pnl=$%+.2f roi=%+.2f%%",
                     str(pending.get("slug") or ""),
                     direction,
                     float(executed_price),
@@ -2643,7 +2623,6 @@ class TradingBot:
 
         if int(pending.get("attempt_index") or 0) >= len(offsets):
             self._pending_settlement_exit = None
-            # await self._maybe_auto_claim(now_ts=float(now_ts), force=True, reason="post_settlement_fallback")
 
     async def _maybe_auto_claim(self, *, now_ts: float, force: bool = False, reason: str = "periodic"):
         if config.trading.dry_run:

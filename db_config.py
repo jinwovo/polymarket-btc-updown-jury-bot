@@ -219,7 +219,7 @@ def init_market_schema(conn):
         """,
         """
         CREATE TABLE IF NOT EXISTS market_windows (
-            window_start BIGINT PRIMARY KEY,
+            window_start BIGINT NOT NULL,
             window_end BIGINT NOT NULL,
             slug VARCHAR(191) NOT NULL,
             btc_start_price DOUBLE NULL,
@@ -228,8 +228,10 @@ def init_market_schema(conn):
             condition_id VARCHAR(191) NULL,
             up_token_id VARCHAR(255) NULL,
             down_token_id VARCHAR(255) NULL,
+            PRIMARY KEY (window_start, slug),
             INDEX idx_window_end (window_end),
-            INDEX idx_outcome (actual_outcome)
+            INDEX idx_outcome (actual_outcome),
+            INDEX idx_slug (slug)
         ) ENGINE=InnoDB
         """,
         """

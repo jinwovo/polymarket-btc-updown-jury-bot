@@ -102,10 +102,14 @@ class DataCollector:
         self._running = False
         # Shared Jury -- evaluates signal for both paper and live
         self._jury = Jury(threshold=int(os.getenv("JURY_THRESHOLD", "2")))
-        # RTDS WebSocket state
+        # RTDS WebSocket state (BTC)
         self._rtds_price: float = 0.0
         self._rtds_updated_at: float = 0.0
         self._rtds_alive: bool = False
+        # RTDS WebSocket state (ETH)
+        self._eth_rtds_price: float = 0.0
+        self._eth_rtds_updated_at: float = 0.0
+        self._eth_cal_offset: float = 0.0  # binance_eth - chainlink_eth
         # Trade event tracking (for server console display)
         self._last_paper_trade_id: int = 0
         self._last_live_trade_id: int = 0
@@ -789,7 +793,7 @@ class DataCollector:
             _btc_accel_ok = None
             try:
                 _pw = self.current_window_start - 300
-                _pr = fetch_one_dict(self.db, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_pw,))
+                _pr = fetch_one_dict(self.db, "SELECT actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'", (_pw,))
                 if _pr and _pr.get("actual_outcome"):
                     _prev_outcome = str(_pr["actual_outcome"])
             except Exception as _e:
@@ -1080,8 +1084,8 @@ class DataCollector:
                     execute_write(
                         self.db,
                         """UPDATE market_windows
-                           SET btc_start_price = ?
-                           WHERE window_start = %s""",
+                           SET btc_start_price = %s
+                           WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'""",
                         (adj_px, self.current_window_start),
                     )
                     self.db.commit()
@@ -1140,8 +1144,8 @@ class DataCollector:
             execute_write(
                 self.db,
                 """UPDATE market_windows
-                   SET btc_start_price = ?
-                   WHERE window_start = %s""",
+                   SET btc_start_price = %s
+                   WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'""",
                 (scraped_ptb, self.current_window_start),
             )
             self.db.commit()
@@ -1153,10 +1157,11 @@ class DataCollector:
         )
 
     async def _rtds_price_loop(self):
-        """Stream Chainlink BTC/USD from RTDS WebSocket (~1s updates).
+        """Stream Chainlink BTC/USD + ETH/USD from RTDS WebSocket (~1s updates).
         Auto-reconnect on disconnect. Primary price source."""
         import websockets as _ws
-        _last_log = 0.0
+        _last_log_btc = 0.0
+        _last_log_eth = 0.0
         _reconnect_delay = 1.0
 
         while self._running:
@@ -1164,13 +1169,20 @@ class DataCollector:
                 async with _ws.connect("wss://ws-live-data.polymarket.com", ping_interval=None, close_timeout=10, open_timeout=10) as ws:
                     await ws.send(json.dumps({
                         "action": "subscribe",
-                        "subscriptions": [{
-                            "topic": "crypto_prices_chainlink",
-                            "type": "*",
-                            "filters": '{"symbol":"btc/usd"}'
-                        }]
+                        "subscriptions": [
+                            {
+                                "topic": "crypto_prices_chainlink",
+                                "type": "*",
+                                "filters": '{"symbol":"btc/usd"}'
+                            },
+                            {
+                                "topic": "crypto_prices_chainlink",
+                                "type": "*",
+                                "filters": '{"symbol":"eth/usd"}'
+                            },
+                        ]
                     }))
-                    logger.warning("RTDS Chainlink feed connected (streaming)")
+                    logger.warning("RTDS Chainlink feed connected (BTC + ETH)")
                     _reconnect_delay = 1.0
                     self._rtds_alive = True
 
@@ -1192,39 +1204,67 @@ class DataCollector:
 
                         payload = data.get("payload", {})
                         chainlink_price = None
+                        _symbol = ""
                         if isinstance(payload, dict):
+                            _symbol = str(payload.get("symbol", "")).lower()
                             if "value" in payload:
                                 chainlink_price = float(payload["value"])
                             elif "data" in payload and isinstance(payload["data"], list):
                                 for d in payload["data"]:
                                     if "value" in d:
                                         chainlink_price = float(d["value"])
+                                    if not _symbol and "symbol" in d:
+                                        _symbol = str(d["symbol"]).lower()
 
-                        if not chainlink_price or chainlink_price < 10000:
+                        if not chainlink_price or chainlink_price <= 0:
                             continue
 
+                        # Classify: symbol field or price range fallback
+                        _is_btc = "btc" in _symbol or (not _symbol and chainlink_price >= 10000)
+                        _is_eth = "eth" in _symbol or (not _symbol and 100 < chainlink_price < 10000)
+
                         now = time.time()
-                        self._rtds_price = chainlink_price
-                        self._rtds_updated_at = now
 
-                        binance_now = self.btc_price
-                        if binance_now and binance_now > 0:
-                            new_offset = binance_now - chainlink_price
-                            old_offset = self._chainlink.offset
-                            self._chainlink.offset = new_offset
-                            self._chainlink.chainlink_price = chainlink_price
-                            self._chainlink.binance_at_update = binance_now
-                            self._chainlink.chainlink_updated_at = now
-                            self._chainlink.polymarket_sync_active = True
-                            self.btc_price_adjusted = chainlink_price
+                        if _is_btc:
+                            self._rtds_price = chainlink_price
+                            self._rtds_updated_at = now
 
-                            offset_delta = abs(new_offset - old_offset)
-                            if offset_delta > 5.0 or (now - _last_log) > 60.0:
-                                logger.info(
-                                    "RTDS: $%.2f (binance=$%.2f offset=$%.2f)",
-                                    chainlink_price, binance_now, new_offset,
-                                )
-                                _last_log = now
+                            binance_now = self.btc_price
+                            if binance_now and binance_now > 0:
+                                new_offset = binance_now - chainlink_price
+                                old_offset = self._chainlink.offset
+                                self._chainlink.offset = new_offset
+                                self._chainlink.chainlink_price = chainlink_price
+                                self._chainlink.binance_at_update = binance_now
+                                self._chainlink.chainlink_updated_at = now
+                                self._chainlink.polymarket_sync_active = True
+                                self.btc_price_adjusted = chainlink_price
+
+                                offset_delta = abs(new_offset - old_offset)
+                                if offset_delta > 5.0 or (now - _last_log_btc) > 60.0:
+                                    logger.info(
+                                        "RTDS BTC: $%.2f (binance=$%.2f offset=$%.2f)",
+                                        chainlink_price, binance_now, new_offset,
+                                    )
+                                    _last_log_btc = now
+
+                        elif _is_eth:
+                            self._eth_rtds_price = chainlink_price
+                            self._eth_rtds_updated_at = now
+
+                            binance_eth = globals().get("_eth_price", {}).get("price", 0)
+                            if binance_eth and binance_eth > 0:
+                                new_offset = binance_eth - chainlink_price
+                                old_offset = self._eth_cal_offset
+                                self._eth_cal_offset = new_offset
+
+                                offset_delta = abs(new_offset - old_offset)
+                                if offset_delta > 1.0 or (now - _last_log_eth) > 60.0:
+                                    logger.info(
+                                        "RTDS ETH: $%.2f (binance=$%.2f offset=$%.2f)",
+                                        chainlink_price, binance_eth, new_offset,
+                                    )
+                                    _last_log_eth = now
 
             except Exception as e:
                 self._rtds_alive = False
@@ -1396,7 +1436,7 @@ class DataCollector:
         if start_price is None:
             row = fetch_one(
                 self.db,
-                "SELECT btc_start_price FROM market_windows WHERE window_start = %s",
+                "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'",
                 (self.current_window_start,),
             )
             if row and row[0] is not None:
@@ -1509,7 +1549,7 @@ class DataCollector:
             # Get start price from DB (should be official PTB)
             row = fetch_one(
                 self.db,
-                "SELECT btc_start_price FROM market_windows WHERE window_start = %s",
+                "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'",
                 (window_start,),
             )
 
@@ -1523,8 +1563,8 @@ class DataCollector:
             execute_write(
                 self.db,
                 """UPDATE market_windows
-                   SET btc_end_price = ?, actual_outcome = ?
-                   WHERE window_start = %s""",
+                   SET btc_end_price = %s, actual_outcome = %s
+                   WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'""",
                 (end_price, outcome, window_start),
             )
             self.db.commit()
@@ -1562,7 +1602,7 @@ class DataCollector:
                     if fp is not None and fp > 10000:
                         execute_write(
                             self.db,
-                            "UPDATE market_windows SET btc_end_price = ? WHERE window_start = %s",
+                            "UPDATE market_windows SET btc_end_price = %s WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'",
                             (fp, window_start),
                         )
                         self.db.commit()
@@ -1575,7 +1615,7 @@ class DataCollector:
                 # -- Read current DB state --
                 row = fetch_one(
                     self.db,
-                    "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = %s",
+                    "SELECT btc_start_price, btc_end_price, actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'",
                     (window_start,),
                 )
                 if row is None:
@@ -1610,16 +1650,16 @@ class DataCollector:
                     execute_write(
                         self.db,
                         """UPDATE market_windows
-                           SET btc_start_price = ?, actual_outcome = COALESCE(?, actual_outcome)
-                           WHERE window_start = %s""",
+                           SET btc_start_price = %s, actual_outcome = COALESCE(%s, actual_outcome)
+                           WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'""",
                         (ptb_f, outcome, window_start),
                     )
                 elif outcome is not None:
                     execute_write(
                         self.db,
                         """UPDATE market_windows
-                           SET actual_outcome = ?
-                           WHERE window_start = %s AND actual_outcome != ?""",
+                           SET actual_outcome = %s
+                           WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%' AND actual_outcome != %s""",
                         (outcome, window_start, outcome),
                     )
                 self.db.commit()
@@ -2091,8 +2131,36 @@ _EXTRA_MARKETS = [
     {"slug_prefix": "btc-updown-15m", "interval": 900, "price_source": "btc", "label": "BTC15m"},
     {"slug_prefix": "eth-updown-5m", "interval": 300, "price_source": "eth", "label": "ETH5m"},
 ]
-# ETH price from Binance (simple polling, not WebSocket)
-_eth_price = {"price": 0.0, "ts": 0.0}
+# ETH price from Binance (raw + Chainlink-calibrated)
+_eth_price = {"price": 0.0, "adjusted": 0.0, "ts": 0.0}
+
+async def _scrape_extra_ptb(self, slug: str, window_start: int, label: str):
+    """Scrape PTB for extra market window via separate Playwright tab.
+    Runs ~3s after window start to let page load. Updates DB if PTB found."""
+    await asyncio.sleep(3.0)
+    try:
+        ptb, current = await self.poly_client.scrape_ptb_separate(slug)
+        if ptb is not None and ptb > 0:
+            prev_row = fetch_one(self.db, "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug = %s", (window_start, slug))
+            prev = float(prev_row[0]) if prev_row and prev_row[0] else 0
+            delta = abs(ptb - prev) if prev else 0
+            execute_write(self.db, "UPDATE market_windows SET btc_start_price = %s WHERE window_start = %s AND slug = %s", (ptb, window_start, slug))
+            self.db.commit()
+            logger.info("Extra PTB scraped: %s %s $%.2f (was $%.2f, delta=$%.2f)", label, slug, ptb, prev, delta)
+
+            # Also use current price for ETH calibration if available
+            if current and current > 100 and current < 10000:
+                _cal_age = time.time() - getattr(self, '_eth_rtds_updated_at', 0.0)
+                binance_eth = _eth_price.get("price", 0)
+                if binance_eth > 0 and _cal_age > 30:
+                    # RTDS stale, use Playwright current for calibration
+                    self._eth_cal_offset = binance_eth - current
+                    self._eth_rtds_updated_at = time.time()
+                    logger.info("ETH calibration from Playwright: $%.2f (offset=$%.2f)", current, self._eth_cal_offset)
+        else:
+            logger.debug("Extra PTB not found for %s %s", label, slug)
+    except Exception as e:
+        logger.debug("Extra PTB scrape error %s: %s", label, e)
 
 async def _extra_market_poll(self):
     """Poll odds + record windows for extra markets (data collection only, no trading)."""
@@ -2118,16 +2186,22 @@ async def _extra_market_poll(self):
     while self._running:
         try:
             now = time.time()
-            # Poll ETH price from Binance (every 2s)
+            # Poll ETH price from Binance (every 2s, only when WS hasn't updated)
             if now - _eth_price["ts"] > 2.0:
                 try:
                     resp_eth = await _http.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "ETHUSDT"})
                     if resp_eth.status_code == 200:
-                        _eth_price["price"] = float(resp_eth.json().get("price", 0))
+                        _raw_eth = float(resp_eth.json().get("price", 0))
+                        _eth_price["price"] = _raw_eth
                         _eth_price["ts"] = now
-                        # Store eth tick
+                        # Apply Chainlink calibration
+                        _cal_age = now - getattr(self, '_eth_rtds_updated_at', 0.0)
+                        _cal_off = getattr(self, '_eth_cal_offset', 0.0)
+                        _cal_eth = (_raw_eth - _cal_off) if (_cal_age < 120 and abs(_cal_off) > 0.01) else _raw_eth
+                        _eth_price["adjusted"] = _cal_eth
+                        # Store calibrated eth tick
                         execute_write(self.db, "INSERT INTO eth_ticks (ts, price) VALUES (%s, %s) ON DUPLICATE KEY UPDATE price=VALUES(price)",
-                                     (now, _eth_price["price"]))
+                                     (now, _cal_eth))
                 except Exception:
                     pass
 
@@ -2162,16 +2236,18 @@ async def _extra_market_poll(self):
                             start_price = 0
                             if mkt["price_source"] == "btc" and self.btc_price_adjusted:
                                 start_price = self.btc_price_adjusted
-                            elif mkt["price_source"] == "eth" and _eth_price["price"] > 0:
-                                start_price = _eth_price["price"]
+                            elif mkt["price_source"] == "eth" and _eth_price.get("adjusted", _eth_price["price"]) > 0:
+                                start_price = _eth_price.get("adjusted", _eth_price["price"])
                             execute_write(self.db, """
                                 INSERT IGNORE INTO market_windows (window_start, window_end, slug, btc_start_price)
                                 VALUES (%s, %s, %s, %s)
                             """, (ws, ws + interval, slug, start_price))
                             self.db.commit()
                             logger.info("Extra market: %s window=%s start=$%.2f", mkt["label"], slug, start_price)
-                            # PTB scrape disabled: Playwright sync API + async thread = greenlet crash
-                            # Start price from btc_ticks/eth_ticks is good enough for now
+                            # Scrape exact PTB via separate Playwright tab (~3s after window start)
+                            asyncio.get_event_loop().create_task(
+                                self._scrape_extra_ptb(slug, ws, mkt["label"])
+                            )
                     except Exception as e:
                         logger.debug("Extra market discover %s: %s", prefix, e)
                         continue
@@ -2226,10 +2302,10 @@ async def _extra_market_poll(self):
                     end_price = 0
                     if mkt["price_source"] == "btc" and self.btc_price_adjusted:
                         end_price = self.btc_price_adjusted
-                    elif mkt["price_source"] == "eth" and _eth_price["price"] > 0:
-                        end_price = _eth_price["price"]
+                    elif mkt["price_source"] == "eth" and _eth_price.get("adjusted", _eth_price["price"]) > 0:
+                        end_price = _eth_price.get("adjusted", _eth_price["price"])
                     if end_price > 0:
-                        start_px = float(fetch_one(self.db, "SELECT btc_start_price FROM market_windows WHERE window_start = %s", (ws,))[0] or 0)
+                        start_px = float(fetch_one(self.db, "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug = %s", (ws, slug))[0] or 0)
                         outcome = "UP" if end_price >= start_px else "DOWN" if start_px > 0 else "UNKNOWN"
                         execute_write(self.db, """
                             UPDATE market_windows SET btc_end_price = %s, actual_outcome = %s
@@ -2340,7 +2416,8 @@ async def _extra_markets_ws_loop(self):
             _reconnect_delay = min(_reconnect_delay * 2, 15.0)
 
 async def _eth_ws(self):
-    """ETH/USDT price feed via Binance WebSocket (1-second ticks)."""
+    """ETH/USDT price feed via Binance WebSocket (1-second ticks).
+    Stores Chainlink-calibrated price when RTDS ETH is alive."""
     _eth_url = "wss://stream.binance.com:9443/ws/ethusdt@trade"
     while self._running:
         try:
@@ -2356,6 +2433,14 @@ async def _eth_ws(self):
                     volume = float(data.get("q", 0))
                     _eth_price["price"] = price
                     _eth_price["ts"] = ts
+                    # Apply Chainlink calibration (same as BTC: adjusted = raw - offset)
+                    _cal_age = ts - getattr(self, '_eth_rtds_updated_at', 0.0)
+                    _cal_offset = getattr(self, '_eth_cal_offset', 0.0)
+                    if _cal_age < 120 and abs(_cal_offset) > 0.01:
+                        calibrated = price - _cal_offset
+                    else:
+                        calibrated = price
+                    _eth_price["adjusted"] = calibrated
                     # Store 1 tick per second (bucket)
                     bucket = round(ts, 0)
                     if bucket != _last_bucket:
@@ -2366,7 +2451,7 @@ async def _eth_ws(self):
                         try:
                             execute_write(self.db,
                                 "INSERT INTO eth_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE price=VALUES(price), volume=VALUES(volume), buy_volume=VALUES(buy_volume), sell_volume=VALUES(sell_volume)",
-                                (bucket, price, volume, buy_vol, sell_vol))
+                                (bucket, calibrated, volume, buy_vol, sell_vol))
                         except Exception:
                             pass
         except Exception as e:
@@ -2380,6 +2465,7 @@ _current = {}
 DataCollector._extra_markets_collector = _extra_market_poll
 DataCollector._extra_markets_ws = _extra_markets_ws_loop
 DataCollector._eth_ws_loop = _eth_ws
+DataCollector._scrape_extra_ptb = _scrape_extra_ptb
 
 
 if __name__ == "__main__":

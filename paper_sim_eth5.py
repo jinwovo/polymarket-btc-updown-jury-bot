@@ -28,6 +28,7 @@ from db_config import (
     init_market_schema,
 )
 from trade_gate import apply_fee_to_pnl
+from telegram_notifier import send_telegram_message
 
 # ---------------------------------------------------------------------------
 # Logging -- bot_paper_eth5.log (ASCII only)
@@ -90,6 +91,38 @@ FIXED_STAKE_DEFAULT = _env_float("FIXED_STAKE", "100")
 MIN_BET = _env_float("MIN_BET", "10")
 OPPOSITE_MAX_ASK = _env_float("OPPOSITE_MAX_ASK", "0.78")
 
+# Technical entry filters
+REQUIRE_VWAP_AGREE = env(MARKET, "REQUIRE_VWAP_AGREE", "true").lower() == "true"
+REQUIRE_BB_EXTREME = env(MARKET, "REQUIRE_BB_EXTREME", "false").lower() == "true"
+BB_THRESHOLD = _env_float("BB_THRESHOLD", "0.5")
+MAX_ASK_DRIFT = _env_float("MAX_ASK_DRIFT", "999")
+
+# Novel filters (2026-04-12)
+BTC_ACTIVE_MIN_RANGE = _env_float("BTC_ACTIVE_MIN_RANGE", "0.05")
+BTC_ACTIVE_LOOKBACK = _env_float("BTC_ACTIVE_LOOKBACK", "300")
+CONF_SIZING_ENABLED = env(MARKET, "CONF_SIZING_ENABLED", "true").lower() == "true"
+CONF_SIZING_FULL_MULT = _env_float("CONF_SIZING_FULL_MULT", "3.0")
+BTC_LEADS_SEC = _env_float("BTC_LEADS_SEC", "30")
+BTC_LEADS_MIN_PCT = _env_float("BTC_LEADS_MIN_PCT", "0.03")
+
+
+# ---------------------------------------------------------------------------
+# Telegram -- reuse BTC 5min settings
+# ---------------------------------------------------------------------------
+def _tg_send(text: str):
+    """Send Telegram notification using BTC 5min's live telegram settings."""
+    try:
+        enabled = bool(getattr(config.trading, "paper_telegram_notify_open", False))
+        if not enabled:
+            return
+        token = str(getattr(config.trading, "live_telegram_bot_token", "") or "").strip()
+        chat_id = str(getattr(config.trading, "live_telegram_chat_id", "") or "").strip()
+        if not token or not chat_id:
+            return
+        send_telegram_message(token=token, chat_id=chat_id, text=text)
+    except Exception as e:
+        logger.debug("Telegram send failed: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,6 +161,98 @@ def _eth_price_at(conn, ts: float) -> float | None:
     if row and row[0] is not None:
         return float(row[0])
     return None
+
+
+def _btc_price_at(conn, ts: float) -> float | None:
+    """Get BTC price at timestamp from btc_ticks."""
+    row = fetch_one(conn, "SELECT price FROM btc_ticks WHERE ts <= %s ORDER BY ts DESC LIMIT 1", (float(ts),))
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def _btc_range_pct(conn, ts: float, lookback: float) -> float:
+    """BTC price range % over lookback seconds."""
+    row = fetch_one(conn,
+        "SELECT MIN(price), MAX(price) FROM btc_ticks WHERE ts >= %s AND ts <= %s",
+        (ts - lookback, ts))
+    if not row or row[0] is None or row[1] is None:
+        return 999.0  # no data -> pass filter
+    lo, hi = float(row[0]), float(row[1])
+    mid = (lo + hi) / 2
+    if mid <= 0:
+        return 999.0
+    return (hi - lo) / mid * 100.0
+
+
+def _check_btc_activity(conn, now_ts: float) -> bool:
+    """Return False if BTC market is dead (range < threshold)."""
+    if BTC_ACTIVE_MIN_RANGE <= 0:
+        return True
+    rng = _btc_range_pct(conn, now_ts, BTC_ACTIVE_LOOKBACK)
+    if rng < BTC_ACTIVE_MIN_RANGE:
+        logger.debug("Skip dead BTC market: range=%.4f%% < %.4f%%", rng, BTC_ACTIVE_MIN_RANGE)
+        return False
+    return True
+
+
+def _compute_confidence_mult(conn, direction: str, ws: int, entry_ts: float) -> float:
+    """Compute stake multiplier based on BB+VWAP+BTC-leads agreement.
+    Returns 1.0 (no boost) or CONF_SIZING_FULL_MULT (all agree)."""
+    if not CONF_SIZING_ENABLED:
+        return 1.0
+
+    # BTC-leads check
+    btc_start = _btc_price_at(conn, float(ws))
+    btc_check = _btc_price_at(conn, float(ws) + BTC_LEADS_SEC)
+    if not btc_start or not btc_check or btc_start <= 0:
+        return 1.0
+    btc_chg = (btc_check - btc_start) / btc_start * 100.0
+    if abs(btc_chg) < BTC_LEADS_MIN_PCT:
+        return 1.0
+    btc_dir = "UP" if btc_chg > 0 else "DOWN"
+    if btc_dir != direction:
+        return 1.0
+
+    # BB extreme check (ETH prices, 60-tick window)
+    rows = fetch_one(conn,
+        "SELECT price FROM %s WHERE ts <= %%s ORDER BY ts DESC LIMIT 60" % PRICE_TABLE,
+        (entry_ts,))
+    # Need bulk query
+    from db_config import fetch_all_dicts as _fa
+    bb_rows = _fa(conn,
+        "SELECT price FROM %s WHERE ts <= %%s ORDER BY ts DESC LIMIT 60" % PRICE_TABLE,
+        (entry_ts,))
+    if len(bb_rows) < 30:
+        return 1.0
+    prices = [float(r["price"]) for r in bb_rows]
+    bb_mean = sum(prices) / len(prices)
+    bb_std = (sum((p - bb_mean) ** 2 for p in prices) / len(prices)) ** 0.5
+    if bb_std <= 0.01:
+        return 1.0
+    bb_pos = (prices[0] - bb_mean) / (2 * bb_std)  # prices[0] is most recent
+    if abs(bb_pos) <= 0.5:
+        return 1.0
+
+    # VWAP agree check
+    vwap_rows = _fa(conn,
+        "SELECT price, volume FROM %s WHERE ts >= %%s AND ts <= %%s ORDER BY ts" % PRICE_TABLE,
+        (float(ws), entry_ts))
+    if len(vwap_rows) < 5:
+        return 1.0
+    sum_pv = sum(float(r["price"]) * float(r.get("volume") or 0) for r in vwap_rows)
+    sum_v = sum(float(r.get("volume") or 0) for r in vwap_rows)
+    if sum_v <= 0:
+        return 1.0
+    vwap = sum_pv / sum_v
+    cur_price = float(vwap_rows[-1]["price"])
+    vwap_agree = (direction == "UP" and cur_price > vwap) or \
+                 (direction == "DOWN" and cur_price < vwap)
+    if not vwap_agree:
+        return 1.0
+
+    # All three agree!
+    logger.info("Full confidence: BTC-leads(%.3f%%) + BB(%.2f) + VWAP -> %.1fx ws=%s",
+                btc_chg, bb_pos, CONF_SIZING_FULL_MULT, ws)
+    return CONF_SIZING_FULL_MULT
 
 
 def _current_window_start(now: float) -> int:
@@ -297,12 +422,8 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     if direction == "DOWN" and elapsed > DOWN_ENTRY_END_SEC:
         return False
 
-    # Guards and gate from signal generator
-    guards_passed = int(cached.get("guards_passed") or 0)
+    # Gate from signal generator (guards skipped -- too strict for ETH, matches paper_replay)
     gate_allow = int(cached.get("gate_allow") or 0)
-    if not guards_passed:
-        logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
-        return False
 
     # Gate lock: hold gate_allow=1 for 5s (consumer-side backup)
     if not hasattr(_open_trade, '_gate_lock'):
@@ -377,6 +498,27 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
             return False
         logger.info("Score OK: %d/%d dir=%s ask=%.3f ws=%s", score, MIN_ENTRY_SCORE, direction, entry_price, window_start)
 
+    # Technical filters from signal_cache
+    if REQUIRE_VWAP_AGREE:
+        vwap_ok = int(cached.get("vwap_agree") or 0)
+        if not vwap_ok:
+            logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
+            return False
+    if REQUIRE_BB_EXTREME:
+        bb = float(cached.get("bb_pos") or 0)
+        if abs(bb) < BB_THRESHOLD:
+            logger.debug("Skip BB not extreme: %.2f < %.1f ws=%s", abs(bb), BB_THRESHOLD, window_start)
+            return False
+    if MAX_ASK_DRIFT < 900:
+        drift = float(cached.get("ask_drift") or 0)
+        if drift > MAX_ASK_DRIFT:
+            logger.debug("Skip ask drift=%.3f > %.3f ws=%s", drift, MAX_ASK_DRIFT, window_start)
+            return False
+
+    # BTC activity filter: skip dead markets
+    if not _check_btc_activity(conn, now_ts):
+        return False
+
     # Already traded this window?
     exists = fetch_one(
         conn,
@@ -386,15 +528,14 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     if exists:
         return False
 
-    # Determine stake
-    if sizing_mode == "fixed":
-        stake = round(float(FIXED_STAKE_DEFAULT), 2)
-        # Override from CLI/env
-        _cli_stake = float(stake_amount)
-        if _cli_stake > 0:
-            stake = round(_cli_stake, 2)
-    else:
-        stake = round(float(stake_amount), 2)
+    # Determine stake: always use env FIXED_STAKE for per-trade amount
+    # stake_amount param = seed capital (for equity tracking), NOT per-trade
+    stake = round(float(FIXED_STAKE_DEFAULT), 2)
+
+    # Confidence sizing: multiply when BB+VWAP+BTC-leads all agree
+    conf_mult = _compute_confidence_mult(conn, direction, window_start, now_ts)
+    if conf_mult > 1.0:
+        stake = round(stake * conf_mult, 2)
 
     if stake < MIN_BET:
         logger.warning("Stake too small: $%.2f < $%.2f", stake, MIN_BET)
@@ -440,6 +581,13 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
         "OPEN ws=%s dir=%s stake=$%.2f ask=%.3f ev=%+.3f%% conf=%.3f",
         window_start, direction, stake, entry_price,
         gate_ev * 100.0, confidence,
+    )
+    _tg_send(
+        f"[ETH5 PAPER OPEN]\n"
+        f"side: {direction}\n"
+        f"stake: ${stake:,.2f} @ {entry_price:.3f}\n"
+        f"payout: {payout_multiple:.2f}x\n"
+        f"window: {window_start}"
     )
     return True
 
@@ -508,6 +656,12 @@ def _resolve_trades(conn) -> int:
         logger.warning(
             "%s ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
             label, ws, direction, outcome, pnl, roi_pct,
+        )
+        _tg_send(
+            f"[ETH5 PAPER {'WIN' if won else 'LOSS'}]\n"
+            f"side: {direction} | outcome: {outcome}\n"
+            f"pnl: ${pnl:+.2f} | roi: {roi_pct:+.1f}%\n"
+            f"window: {ws}"
         )
 
     if resolved:
@@ -616,11 +770,11 @@ def run_loop(stake: float, sizing_mode: str):
     poll_interval = 0.1
 
     logger.warning(
-        "ETH 5min paper sim started: stake=$%.2f mode=%s interval=%ds "
-        "entry=%.0f-%.0fs remain>=%.0fs max_ask=%.3f score>=%d",
-        stake, sizing_mode, INTERVAL,
+        "ETH 5min paper sim started: seed=$%.2f per_trade=$%.2f mode=%s interval=%ds "
+        "entry=%.0f-%.0fs remain>=%.0fs max_ask=%.3f score>=%d vwap=%s bb=%s",
+        stake, FIXED_STAKE_DEFAULT, sizing_mode, INTERVAL,
         ENTRY_START_SEC, ENTRY_END_SEC, MIN_SECONDS_REMAINING,
-        MAX_ENTRY_PRICE, MIN_ENTRY_SCORE,
+        MAX_ENTRY_PRICE, MIN_ENTRY_SCORE, REQUIRE_VWAP_AGREE, REQUIRE_BB_EXTREME,
     )
 
     try:

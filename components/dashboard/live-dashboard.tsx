@@ -102,6 +102,39 @@ interface SnapshotResponse {
     actual_outcome: "UP" | "DOWN" | null;
     change_pct: number | null;
   }>;
+  eth5?: {
+    window?: {
+      slug: string | null;
+      window_start: number | null;
+      window_end: number | null;
+      seconds_elapsed: number;
+      seconds_remaining: number;
+      progress_pct: number;
+    };
+    market?: {
+      eth_price: number | null;
+      eth_start_price: number | null;
+      eth_change_pct: number | null;
+      up_mid: number | null;
+      down_mid: number | null;
+      up_bid: number | null;
+      up_ask: number | null;
+      down_bid: number | null;
+      down_ask: number | null;
+    };
+    signal?: {
+      direction: string;
+      actionable: boolean;
+      action_label: string;
+      reason: string;
+      gate_allow: boolean;
+      gate_ev: number | null;
+      confidence: number | null;
+      bb_pos: number | null;
+      vwap_agree: boolean;
+      ask_drift: number | null;
+    };
+  } | null;
 }
 
 interface HistoryResponse {
@@ -526,13 +559,13 @@ export function LiveDashboard() {
     live: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
   }
   const [btc15Status, setBtc15Status] = useState<MarketControlStatus | null>(null);
-  const [btc15PaperStake, setBtc15PaperStake] = useState("100");
+  const [btc15PaperStake, setBtc15PaperStake] = useState("1000");
   const [btc15PaperSizing, setBtc15PaperSizing] = useState("fixed");
   const [btc15LiveStake, setBtc15LiveStake] = useState("15");
   const [btc15LiveSizing, setBtc15LiveSizing] = useState("fixed");
 
   const [eth5Status, setEth5Status] = useState<MarketControlStatus | null>(null);
-  const [eth5PaperStake, setEth5PaperStake] = useState("100");
+  const [eth5PaperStake, setEth5PaperStake] = useState("1000");
   const [eth5PaperSizing, setEth5PaperSizing] = useState("fixed");
   const [eth5LiveStake, setEth5LiveStake] = useState("15");
   const [eth5LiveSizing, setEth5LiveSizing] = useState("fixed");
@@ -1529,6 +1562,30 @@ export function LiveDashboard() {
     return windowInfo?.progress_pct ?? 0;
   }, [windowInfo?.window_start, windowInfo?.window_end, windowInfo?.progress_pct, nowSec]);
 
+  // ETH 5min computed values
+  const eth5 = snapshot?.eth5;
+  const eth5Signal = eth5?.signal;
+  const eth5Market = eth5?.market;
+  const eth5Window = eth5?.window;
+  const eth5UpAsk = eth5Market?.up_ask ?? eth5Market?.up_mid ?? null;
+  const eth5DownAsk = eth5Market?.down_ask ?? eth5Market?.down_mid ?? null;
+
+  const eth5Remaining = useMemo(() => {
+    if (eth5Window?.window_end) {
+      return Math.max(0, eth5Window.window_end - nowSec);
+    }
+    return eth5Window?.seconds_remaining ?? 0;
+  }, [eth5Window?.window_end, eth5Window?.seconds_remaining, nowSec]);
+
+  const eth5Progress = useMemo(() => {
+    if (eth5Window?.window_start && eth5Window?.window_end) {
+      const total = Math.max(1, eth5Window.window_end - eth5Window.window_start);
+      const elapsed = Math.min(total, Math.max(0, nowSec - eth5Window.window_start));
+      return (elapsed / total) * 100;
+    }
+    return eth5Window?.progress_pct ?? 0;
+  }, [eth5Window?.window_start, eth5Window?.window_end, eth5Window?.progress_pct, nowSec]);
+
   const bannerTone = useMemo(() => {
     if (!signal) return "neutral";
     if (signal.actionable && signal.direction === "UP") return "up";
@@ -1655,6 +1712,52 @@ export function LiveDashboard() {
             <CardContent className="space-y-2">
               <p className="truncate text-sm text-muted-foreground">{windowInfo?.slug ?? "no active window"}</p>
               <Progress value={computedProgress} />
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* ETH 5min Status Cards */}
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Card>
+            <CardHeader>
+              <CardDescription className="tiny-label">ETH 5min Action</CardDescription>
+              <CardTitle className="text-3xl">{eth5Signal?.action_label ?? "WAIT"}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">{eth5Signal?.reason ?? "No signal yet"}</CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardDescription className="tiny-label">ETH Window Move</CardDescription>
+              <CardTitle className="font-mono text-3xl">{formatPct(eth5Market?.eth_change_pct)}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              ETH {formatNumber(eth5Market?.eth_price)} | Start {formatNumber(eth5Market?.eth_start_price)}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardDescription className="tiny-label">ETH Polymarket Odds (Ask)</CardDescription>
+              <CardTitle className="font-mono text-2xl">
+                UP {formatNumber(eth5UpAsk, 3)} / DOWN {formatNumber(eth5DownAsk, 3)}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              bid UP/DOWN{" "}
+              {formatNumber(eth5Market?.up_bid, 3)} / {formatNumber(eth5Market?.down_bid, 3)} | ask UP/DOWN{" "}
+              {formatNumber(eth5Market?.up_ask, 3)} / {formatNumber(eth5Market?.down_ask, 3)}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardDescription className="tiny-label">ETH Window Countdown</CardDescription>
+              <CardTitle className="font-mono text-3xl">{formatCountdown(eth5Remaining)}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <p className="truncate text-sm text-muted-foreground">{eth5Window?.slug ?? "no active window"}</p>
+              <Progress value={eth5Progress} />
             </CardContent>
           </Card>
         </section>

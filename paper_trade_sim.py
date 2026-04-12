@@ -1245,7 +1245,7 @@ def open_trade_if_signal(
     }
     win_row = fetch_one_dict(
         conn,
-        "SELECT up_token_id, down_token_id FROM market_windows WHERE window_start = ?",
+        "SELECT up_token_id, down_token_id FROM market_windows WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'",
         (window_start,),
     )
     if win_row:
@@ -1842,7 +1842,7 @@ def resolve_open_trades(conn) -> int:
         ws = int(row["window_start"])
         outcome_row = fetch_one(
             conn,
-            "SELECT actual_outcome FROM market_windows WHERE window_start = ?",
+            "SELECT actual_outcome FROM market_windows WHERE window_start = ? AND slug LIKE 'btc-updown-5m%%'",
             (ws,),
         )
         direction = str(row["direction"])

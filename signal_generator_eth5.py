@@ -57,16 +57,19 @@ MIN_PRICES = 20           # minimum ticks before running jury
 _log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _log_datefmt = "%Y-%m-%d %H:%M:%S"
 
+logger = logging.getLogger("signal_eth5")
+logger.setLevel(logging.INFO)
+logger.propagate = False  # don't duplicate to root logger
+
 _file_handler = logging.FileHandler("bot_signal_eth5.log", encoding="utf-8")
 _file_handler.setLevel(logging.INFO)
 _file_handler.setFormatter(logging.Formatter(_log_fmt, _log_datefmt))
+logger.addHandler(_file_handler)
 
 _console_handler = logging.StreamHandler(sys.stdout)
 _console_handler.setLevel(logging.WARNING)
 _console_handler.setFormatter(logging.Formatter(_log_fmt, _log_datefmt))
-
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
-logger = logging.getLogger("signal_eth5")
+logger.addHandler(_console_handler)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -550,7 +553,11 @@ class ETH5SignalGenerator:
         trend_move_pct = None
         guards_passed = 0
 
-        if decision.direction in ("UP", "DOWN") and start_price > 0:
+        # Require valid CLOB prices before running guards/gate
+        _has_valid_asks = (up_ask is not None and dn_ask is not None
+                          and 0.01 < up_ask < 0.99 and 0.01 < dn_ask < 0.99)
+
+        if decision.direction in ("UP", "DOWN") and start_price > 0 and _has_valid_asks:
             btc_move_pct = ((eth_price - start_price) / start_price) * 100.0
             try:
                 guard = evaluate_market_guards(
@@ -589,12 +596,9 @@ class ETH5SignalGenerator:
         gate_allow = 0
         gate_ev = None
         gate_reason = None
-        if decision.direction in ("UP", "DOWN") and guards_passed:
+        if decision.direction in ("UP", "DOWN") and _has_valid_asks:
             try:
-                entry_price = (
-                    float(dn_ask if decision.direction == "DOWN" else up_ask)
-                    if (up_ask and dn_ask) else 0.5
-                )
+                entry_price = float(dn_ask if decision.direction == "DOWN" else up_ask)
                 # Price range filter
                 down_min = _env_float("DOWN_MIN_ENTRY_PRICE", 0.30)
                 max_ask = _env_float("MAX_ENTRY_PRICE", 0.70)

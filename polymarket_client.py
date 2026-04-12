@@ -814,6 +814,18 @@ class PolymarketClient:
                     pass
         return None, None
 
+    async def scrape_ptb_separate(self, slug: str) -> tuple[Optional[float], Optional[float]]:
+        """Scrape PTB + Current price using a SEPARATE TAB (async wrapper).
+        Main page stays untouched. Works for any market slug (BTC or ETH)."""
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(
+                self._get_executor(), self._scrape_ptb_separate_tab, slug
+            )
+        except Exception as e:
+            logger.debug("PTB separate tab scrape error for %s: %s", slug, e)
+            return None, None
+
     async def scrape_final_price(self, slug: str, **kwargs) -> Optional[float]:
         """Scrape Final price from resolved window using a separate browser tab.
         Does NOT interrupt the main page or price sync loop."""
@@ -2233,6 +2245,49 @@ class PolymarketClient:
             price=price,
             size=float(sz),
             order_type="FAK",
+        )
+
+    async def place_settlement_exit_order(
+        self,
+        token_id: str,
+        shares: float,
+    ) -> Optional[dict]:
+        """
+        Post-settlement exit: maker GTC SELL @ 0.99.
+        Maker = 0% fee. Share settles at $1.00, buyer profits $0.01/share.
+        Polls up to 120s with 5s interval; auto-cancels on timeout.
+        """
+        sz = float(shares or 0.0)
+        if sz <= 0.0:
+            return {
+                "ok": True,
+                "mode": "LIMIT_GTC",
+                "side": "SELL",
+                "token_id": str(token_id),
+                "order_id": None,
+                "status": "invalid_size",
+                "requested_amount": 0.0,
+                "requested_size": 0.0,
+                "requested_price": 0.99,
+                "executed_notional": 0.0,
+                "executed_size": 0.0,
+                "executed_price": None,
+                "filled": False,
+                "accepted": False,
+                "timed_out": False,
+                "cancel_attempted": False,
+                "cancelled": False,
+                "reason": "skip settlement exit: computed size <= 0",
+            }
+
+        return await self.place_limit_order(
+            token_id=token_id,
+            side="SELL",
+            price=0.99,
+            size=float(sz),
+            order_type="GTC",
+            timeout_seconds=120.0,
+            poll_interval_seconds=5.0,
         )
 
     def _normalize_hex_bytes32(self, value: Any) -> Optional[bytes]:

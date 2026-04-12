@@ -197,7 +197,7 @@ def rebuild(last_hours: float, clear: bool = False):
             # 1) prev_outcome: previous window's result
             try:
                 _pw = ws - 300
-                _pr = fetch_one(conn, "SELECT actual_outcome FROM market_windows WHERE window_start = %s", (_pw,))
+                _pr = fetch_one(conn, "SELECT actual_outcome FROM market_windows WHERE window_start = %s AND slug LIKE 'btc-updown-5m%%'", (_pw,))
                 if _pr and _pr[0]:
                     _prev_outcome = str(_pr[0])
             except Exception:
