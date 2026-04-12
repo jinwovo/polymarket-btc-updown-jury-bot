@@ -303,6 +303,24 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     if not guards_passed:
         logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
         return False
+
+    # Gate lock: hold gate_allow=1 for 5s (consumer-side backup)
+    if not hasattr(_open_trade, '_gate_lock'):
+        _open_trade._gate_lock = {}
+    _glock = _open_trade._gate_lock
+    _gate_dir = str(cached.get("direction") or "")
+    if gate_allow and _gate_dir in ("UP", "DOWN"):
+        _glock["ws"] = window_start
+        _glock["ts"] = now_ts
+        _glock["dir"] = _gate_dir
+        _glock["ev"] = float(cached.get("gate_ev") or 0)
+        _glock["reason"] = str(cached.get("gate_reason") or "")
+    elif (not gate_allow
+          and _glock.get("ws") == window_start
+          and (now_ts - _glock.get("ts", 0)) < 5.0
+          and _glock.get("dir") == direction):
+        gate_allow = 1
+
     if not gate_allow:
         gate_reason = str(cached.get("gate_reason") or "")
         logger.debug("Skip gate_allow=0 ws=%s: %s", window_start, gate_reason)

@@ -893,13 +893,18 @@ def main():
                         help="Lookback seconds for still-moving check (default 20)")
     args = parser.parse_args()
 
-    # CLI overrides -> env
+    # CLI overrides -> env (set both PAPER_ and market-specific prefix)
+    market = get_market(args.market)
+    _pfx = market.env_prefix  # e.g. "BTC15_", "ETH5_"
     if args.entry_start is not None:
         os.environ["PAPER_ENTRY_START_SEC"] = str(args.entry_start)
+        os.environ[f"{_pfx}ENTRY_START_SEC"] = str(args.entry_start)
     if args.max_ask is not None:
         os.environ["PAPER_MAX_ENTRY_PRICE"] = str(args.max_ask)
+        os.environ[f"{_pfx}MAX_ENTRY_PRICE"] = str(args.max_ask)
     if args.stake is not None:
         os.environ["PAPER_FIXED_STAKE"] = str(args.stake)
+        os.environ[f"{_pfx}FIXED_STAKE"] = str(args.stake)
     if args.min_edge is not None:
         os.environ["REPLAY_MIN_EDGE"] = str(args.min_edge)
     if args.min_conf is not None:
@@ -914,16 +919,19 @@ def main():
         os.environ["REPLAY_MIN_SCORE"] = str(args.min_score)
     if args.require_bb_extreme:
         os.environ["REPLAY_REQUIRE_BB_EXTREME"] = "1"
+        os.environ[f"{_pfx}REQUIRE_BB_EXTREME"] = "true"
     if args.bb_threshold is not None:
         os.environ["REPLAY_BB_THRESHOLD"] = str(args.bb_threshold)
+        os.environ[f"{_pfx}BB_THRESHOLD"] = str(args.bb_threshold)
     if args.require_vwap_agree:
         os.environ["REPLAY_REQUIRE_VWAP_AGREE"] = "1"
+        os.environ[f"{_pfx}REQUIRE_VWAP_AGREE"] = "true"
     if args.require_btc_still_moving:
         os.environ["PAPER_REQUIRE_BTC_STILL_MOVING"] = "true"
+        os.environ[f"{_pfx}REQUIRE_BTC_STILL_MOVING"] = "true"
     if args.btc_still_lookback is not None:
         os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
-
-    market = get_market(args.market)
+        os.environ[f"{_pfx}BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
     logger.info("Market: %s (interval=%ds, price_table=%s, slug=%s)",
                 market.label, market.interval_seconds, market.price_table,
                 market.slug_prefix)

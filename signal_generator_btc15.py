@@ -479,6 +479,22 @@ class BTC15SignalGenerator:
                 except Exception as ge:
                     logger.debug("Entry gate check failed: %s", ge)
 
+            # -- Gate stability: once gate_allow=1, hold for 5s --
+            _gs_until = getattr(self, '_gate_stable_until', 0.0)
+            _gs_ws = getattr(self, '_gate_stable_ws', 0)
+            if gate_allow:
+                self._gate_stable_until = now_ts + 5.0
+                self._gate_stable_ws = ws
+                self._gate_stable_ev = gate_ev
+                self._gate_stable_reason = gate_reason
+                self._gate_stable_dir = decision.direction
+            elif (_gs_ws == ws
+                  and now_ts < _gs_until
+                  and decision.direction == getattr(self, '_gate_stable_dir', '')):
+                gate_allow = 1
+                gate_ev = getattr(self, '_gate_stable_ev', gate_ev)
+                gate_reason = getattr(self, '_gate_stable_reason', gate_reason)
+
             # -- Lag Arb detection --
             lag_arb_allow = 0
             lag_arb_direction = None

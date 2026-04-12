@@ -2012,7 +2012,7 @@ class PolymarketClient:
                     _funder = os.getenv("POLYMARKET_FUNDER", "")
                     # FAK limit = max entry price (not exact ask). Fills at best available.
                     # This prevents "no liquidity" when exact ask has no orders but nearby does.
-                    _fak_limit = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.54"))
+                    _fak_limit = round(reference_ask + 0.05, 2)  # limit = ask + 5c protection
                     _fak_limit = round(min(max(_fak_limit, working_ask), 0.99), 2)
                     _fak_size = max(1, int(amount / _fak_limit))  # size based on max price
                     logger.info("Rust FAK: limit=%.3f (ask=%.3f, max=%.3f) size=%d", _fak_limit, working_ask, _fak_limit, _fak_size)

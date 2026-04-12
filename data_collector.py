@@ -741,6 +741,7 @@ class DataCollector:
                 self._gate_stable_ws = int(self.current_window_start)
                 self._gate_stable_ev = gate_ev
                 self._gate_stable_reason = gate_reason
+                self._stable_direction = decision.direction
             elif (_gs_ws == int(self.current_window_start)
                   and _now_ts < _gs_until
                   and decision.direction == getattr(self, '_stable_direction', '')):

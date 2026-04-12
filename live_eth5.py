@@ -268,8 +268,21 @@ def _check_entry(
                      seconds_elapsed, DOWN_ENTRY_END_SEC)
         return False
 
-    # gate_allow from signal generator
+    # gate_allow from signal generator (with 5s lock)
     gate_allow = int(cached.get("gate_allow") or 0)
+    if not hasattr(_check_entry, '_gate_lock'):
+        _check_entry._gate_lock = {}
+    _glock = _check_entry._gate_lock
+    _gate_dir = str(cached.get("direction") or "")
+    if gate_allow and _gate_dir in ("UP", "DOWN"):
+        _glock["ws"] = window_start
+        _glock["ts"] = now_ts
+        _glock["dir"] = _gate_dir
+    elif (not gate_allow
+          and _glock.get("ws") == window_start
+          and (now_ts - _glock.get("ts", 0)) < 5.0
+          and _glock.get("dir") == direction):
+        gate_allow = 1
     if not gate_allow:
         logger.debug("Skip gate_allow=0 ws=%s dir=%s reason=%s",
                       window_start, direction, cached.get("gate_reason", ""))
