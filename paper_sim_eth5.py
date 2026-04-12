@@ -326,18 +326,67 @@ def _read_signal(conn) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _settle_outcome(conn, window_start: int, window_end: int) -> str | None:
-    """Determine UP/DOWN by comparing eth_ticks price at window_end vs window_start.
-    Returns None if prices not yet available."""
+    """Determine UP/DOWN outcome for ETH 5-min window.
+
+    Priority:
+    1. Gamma API finalPrice (authoritative Chainlink settlement)
+    2. CLOB odds near expiry (93%+ accurate)
+    3. eth_ticks price comparison (fallback)
+
+    Returns None if no data available yet.
+    """
+    # --- 1. Try Gamma API first (authoritative) ---
+    try:
+        import httpx
+        slug = f"eth-updown-5m-{window_start}"
+        resp = httpx.get(
+            f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+            timeout=5,
+        )
+        events = resp.json()
+        if events:
+            meta = events[0].get("eventMetadata") or {}
+            if meta.get("priceToBeat") is not None and meta.get("finalPrice") is not None:
+                gamma_ptb = float(meta["priceToBeat"])
+                gamma_final = float(meta["finalPrice"])
+                outcome = "UP" if gamma_final >= gamma_ptb else "DOWN"
+                logger.info(
+                    "Settlement via Gamma: ws=%s ptb=$%.2f final=$%.2f outcome=%s",
+                    window_start, gamma_ptb, gamma_final, outcome,
+                )
+                return outcome
+    except Exception:
+        pass
+
+    # --- 2. CLOB odds near expiry (last 10s of window) ---
+    _last_odds = fetch_one_dict(
+        conn,
+        """SELECT up_best_ask, down_best_ask FROM poly_odds
+           WHERE window_start = %s AND slug LIKE 'eth-updown-5m%%'
+             AND ts >= %s AND ts <= %s
+           ORDER BY ts DESC LIMIT 1""",
+        (window_start, float(window_end) - 10, float(window_end) + 5),
+    )
+    if _last_odds:
+        _lo_up = float(_last_odds.get("up_best_ask") or 0.5)
+        _lo_dn = float(_last_odds.get("down_best_ask") or 0.5)
+        if abs(_lo_up - _lo_dn) > 0.20:  # confident enough
+            outcome = "UP" if _lo_up > _lo_dn else "DOWN"
+            logger.info(
+                "Settlement via CLOB: ws=%s up_ask=%.3f dn_ask=%.3f outcome=%s",
+                window_start, _lo_up, _lo_dn, outcome,
+            )
+            return outcome
+
+    # --- 3. Fallback: eth_ticks price comparison ---
     start_price = _eth_price_at(conn, float(window_start))
     if start_price is None:
         return None
 
-    # Use price at or slightly before window_end
     end_price = _eth_price_at(conn, float(window_end))
     if end_price is None:
         return None
 
-    # Need at least one tick after window_end - 5s to consider settled
     check_row = fetch_one(
         conn,
         "SELECT ts FROM %s WHERE ts >= %%s ORDER BY ts ASC LIMIT 1" % PRICE_TABLE,
@@ -350,6 +399,99 @@ def _settle_outcome(conn, window_start: int, window_end: int) -> str | None:
         return "UP"
     else:
         return "DOWN"
+
+
+def _backfill_unresolved_trades(conn) -> int:
+    """Re-settle trades that may have wrong outcome (Gamma API now available).
+
+    BTC 5min does this for market_windows; we do it for paper_trades_eth5 directly.
+    Checks closed trades in last 30min and re-verifies via Gamma API.
+    """
+    now_ts = time.time()
+    rows = fetch_all_dicts(
+        conn,
+        """SELECT id, window_start, window_end, direction, stake, shares,
+                  actual_outcome, pnl
+           FROM %s
+           WHERE status = 'CLOSED' AND archived_at IS NULL
+             AND closed_at > %%s
+           ORDER BY window_start ASC
+           LIMIT 20""" % TRADES_TABLE,
+        (now_ts - 1800,),  # last 30min
+    )
+    if not rows:
+        return 0
+
+    updated = 0
+    for row in rows:
+        ws = int(row["window_start"])
+        we = int(row.get("window_end") or (ws + INTERVAL))
+        old_outcome = str(row.get("actual_outcome") or "")
+
+        # Try Gamma API
+        try:
+            import httpx
+            slug = f"eth-updown-5m-{ws}"
+            resp = httpx.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                timeout=5,
+            )
+            events = resp.json()
+            if not events:
+                continue
+            meta = events[0].get("eventMetadata") or {}
+            if meta.get("priceToBeat") is None or meta.get("finalPrice") is None:
+                continue
+            gamma_ptb = float(meta["priceToBeat"])
+            gamma_final = float(meta["finalPrice"])
+            new_outcome = "UP" if gamma_final >= gamma_ptb else "DOWN"
+        except Exception:
+            continue
+
+        if new_outcome == old_outcome:
+            continue  # already correct
+
+        # Outcome changed - recalculate PnL
+        direction = str(row["direction"])
+        stake = float(row["stake"])
+        shares = float(row["shares"])
+        won = 1 if new_outcome == direction else 0
+        if won:
+            raw_pnl = shares - stake
+            pnl = apply_fee_to_pnl(raw_pnl, stake)
+        else:
+            pnl = -stake
+        roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
+
+        execute_write(
+            conn,
+            """UPDATE %s
+               SET actual_outcome=%%s, won=%%s, pnl=%%s, roi_pct=%%s,
+                   close_reason='expiry_settlement_corrected'
+               WHERE id=%%s""" % TRADES_TABLE,
+            (new_outcome, won, pnl, roi_pct, int(row["id"])),
+        )
+        updated += 1
+        old_label = "WIN" if float(row.get("pnl") or 0) > 0 else "LOSS"
+        new_label = "WIN" if pnl > 0 else "LOSS"
+        logger.warning(
+            "BACKFILL CORRECTED ws=%s: %s->%s (%s->%s) pnl=$%+.2f->$%+.2f",
+            ws, old_outcome, new_outcome, old_label, new_label,
+            float(row.get("pnl") or 0), pnl,
+        )
+        _tg_send(
+            f"[ETH5 PAPER CORRECTED]\n"
+            f"window: {ws}\n"
+            f"outcome: {old_outcome} -> {new_outcome}\n"
+            f"result: {old_label} -> {new_label}\n"
+            f"pnl: ${float(row.get('pnl') or 0):+.2f} -> ${pnl:+.2f}\n"
+            f"source: Gamma API (ptb=${gamma_ptb:,.2f} final=${gamma_final:,.2f})"
+        )
+
+    if updated:
+        conn.commit()
+        logger.warning("Backfilled %d ETH5 trades from Gamma API", updated)
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +964,13 @@ def run_loop(stake: float, sizing_mode: str):
                     time.sleep(poll_interval)
                     continue
                 _resolve_trades(conn)
+                # Backfill every 60s (Gamma API rate limit)
+                if not hasattr(run_loop, '_last_backfill'):
+                    run_loop._last_backfill = 0.0
+                _now = time.time()
+                if _now - run_loop._last_backfill >= 60.0:
+                    run_loop._last_backfill = _now
+                    _backfill_unresolved_trades(conn)
                 cached = _read_signal(conn)
                 if cached:
                     _open_trade(conn, cached, stake, sizing_mode)
