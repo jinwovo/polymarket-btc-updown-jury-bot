@@ -404,6 +404,7 @@ class PolymarketClient:
         self._clob_client = None
         self._odds_polling = False
         self._claim_unsupported_logged = False
+        self._daemon_proc: Optional[Any] = None  # Rust order daemon subprocess
 
     async def _fetch_price_to_beat(self, slug: str) -> Optional[float]:
         """Fetch official Price to Beat from Gamma eventMetadata."""
@@ -435,6 +436,71 @@ class PolymarketClient:
     async def fetch_price_to_beat(self, slug: str) -> Optional[float]:
         """Public wrapper for runtime loops to refresh official start reference."""
         return await self._fetch_price_to_beat(slug)
+
+    # -- Rust order daemon (persistent process, TLS keep-alive) --
+    def _start_daemon(self) -> bool:
+        """Start the Rust order daemon if not already running."""
+        import subprocess as _sp
+        if self._daemon_proc and self._daemon_proc.poll() is None:
+            return True  # already alive
+        _name = "polymarket-order-daemon.exe" if os.name == "nt" else "polymarket-order-daemon"
+        _bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", _name)
+        if not os.path.isfile(_bin):
+            return False
+        _pk = os.getenv("POLYMARKET_PRIVATE_KEY", "")
+        _ak = os.getenv("POLYMARKET_API_KEY", "")
+        _as = os.getenv("POLYMARKET_API_SECRET", "")
+        _ap = os.getenv("POLYMARKET_API_PASSPHRASE", "")
+        if not all([_pk, _ak, _as, _ap]):
+            return False
+        try:
+            self._daemon_proc = _sp.Popen(
+                [_bin, _pk, _ak, _as, _ap],
+                stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE,
+                text=True, bufsize=1,
+            )
+            # Wait for ready signal
+            ready = self._daemon_proc.stdout.readline().strip()
+            if '"ready"' in ready:
+                logger.info("Rust order daemon started (pid=%d)", self._daemon_proc.pid)
+                return True
+            else:
+                logger.warning("Daemon unexpected ready: %s", ready[:100])
+                self._daemon_proc.kill()
+                self._daemon_proc = None
+                return False
+        except Exception as e:
+            logger.warning("Failed to start Rust daemon: %s", e)
+            self._daemon_proc = None
+            return False
+
+    def _daemon_order(self, token_id: str, price: float, size: float,
+                      side: str, fee_bps: int = 1000, neg_risk: bool = False,
+                      funder: str = "") -> Optional[dict]:
+        """Send order to daemon, return result dict or None on failure."""
+        if not self._daemon_proc or self._daemon_proc.poll() is not None:
+            return None
+        req = json.dumps({
+            "token_id": token_id, "price": price, "size": size,
+            "side": side, "order_type": "FAK",
+            "fee_rate_bps": fee_bps, "neg_risk": neg_risk, "funder": funder,
+        })
+        try:
+            self._daemon_proc.stdin.write(req + "\n")
+            self._daemon_proc.stdin.flush()
+            resp_line = self._daemon_proc.stdout.readline().strip()
+            if resp_line:
+                return json.loads(resp_line)
+            return None
+        except Exception as e:
+            logger.warning("Daemon communication error: %s", e)
+            # Kill broken daemon so next call restarts it
+            try:
+                self._daemon_proc.kill()
+            except Exception:
+                pass
+            self._daemon_proc = None
+            return None
 
     # -- Persistent headless browser for PTB scraping --
     _pw = None           # Playwright instance
@@ -1994,7 +2060,40 @@ class PolymarketClient:
             }
 
         if mode == "LIMIT_FAK":
-            # Try Rust fast-order first (~200ms vs ~1100ms Python)
+            # Try Rust daemon first (~100-200ms, TLS keep-alive)
+            _use_daemon = os.getenv("USE_RUST_DAEMON", "true").lower() == "true"
+            if _use_daemon and self._start_daemon():
+                try:
+                    _fak_limit = round(reference_ask + 0.05, 2)
+                    _fak_limit = round(min(max(_fak_limit, working_ask), 0.99), 2)
+                    _fak_size = max(1, int(amount / _fak_limit))
+                    _funder = os.getenv("POLYMARKET_FUNDER", "")
+                    logger.info("Rust daemon FAK: limit=%.3f (ask=%.3f) size=%d", _fak_limit, working_ask, _fak_size)
+                    _t0 = asyncio.get_event_loop().time()
+                    _dr = await asyncio.to_thread(
+                        self._daemon_order, str(token_id), _fak_limit, float(_fak_size),
+                        side, 1000, False, _funder,
+                    )
+                    _elapsed = (asyncio.get_event_loop().time() - _t0) * 1000
+                    if _dr:
+                        logger.info("Rust daemon: %dms filled=%s status=%s err=%s",
+                                   int(_elapsed), _dr.get("filled"), _dr.get("status"), str(_dr.get("error",""))[:60])
+                        if _dr.get("filled"):
+                            return self._normalize_execution_result(
+                                mode="LIMIT_FAK", side=side, token_id=token_id,
+                                requested_amount=float(size * working_ask),
+                                default_price=float(working_ask),
+                                requested_size=float(size),
+                                raw_payload={"orderID": _dr.get("order_id",""), "status": "MATCHED", "transactionsHashes": []},
+                                order_id_hint=_dr.get("order_id",""),
+                                status_hint="matched",
+                            )
+                        elif not _dr.get("ok"):
+                            logger.warning("Daemon FAK failed (%s), trying subprocess", str(_dr.get("error",""))[:80])
+                except Exception as _de:
+                    logger.warning("Daemon order exception: %s, trying subprocess", _de)
+
+            # Fallback: Try Rust subprocess (~500ms, new TLS per order)
             _rust_name = "polymarket-fast-order.exe" if os.name == "nt" else "polymarket-fast-order"
             _rust_bin = os.path.join(os.path.dirname(__file__), "rust_order", "target", "release", _rust_name)
             _use_rust = os.path.isfile(_rust_bin) and os.getenv("USE_RUST_ORDER", "true").lower() == "true"
@@ -2127,7 +2226,7 @@ class PolymarketClient:
                 "reason": "skip exit: no valid live bid",
             }
 
-        price = float(working_bid)
+        price = min(float(working_bid), 0.99)  # Polymarket max price = 0.99
         return await self.place_limit_order(
             token_id=token_id,
             side=side_norm,
