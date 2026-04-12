@@ -582,12 +582,31 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
         window_start, direction, stake, entry_price,
         gate_ev * 100.0, confidence,
     )
+
+    # Detailed Telegram (same format as BTC 5min)
+    _eth_start = _eth_price_at(conn, float(window_start))
+    _eth_now = _eth_price_at(conn, opened_at)
+    _reason_text = str(gate_reason or "").strip().replace("\n", " ")
+    if len(_reason_text) > 260:
+        _reason_text = f"{_reason_text[:257]}..."
+    _now_utc = datetime.now(timezone.utc).isoformat()
     _tg_send(
         f"[ETH5 PAPER OPEN]\n"
+        f"time(UTC): {_now_utc}\n"
         f"side: {direction}\n"
-        f"stake: ${stake:,.2f} @ {entry_price:.3f}\n"
-        f"payout: {payout_multiple:.2f}x\n"
-        f"window: {window_start}"
+        f"slug: eth-updown-5m\n"
+        f"window_start: {window_start}\n"
+        f"stake: ${float(stake):,.2f}\n"
+        f"entry odds: {float(entry_price):.3f}\n"
+        f"Polymarket ask (UP/DOWN): "
+        f"{f'{float(up_ask):.3f}' if up_ask else '--'} / "
+        f"{f'{float(down_ask):.3f}' if down_ask else '--'}\n"
+        f"5m start price: {f'${float(_eth_start):,.2f}' if _eth_start else '--'}\n"
+        f"current ETH: {f'${float(_eth_now):,.2f}' if _eth_now else '--'}\n"
+        f"to-win total: ${float(shares):,.2f}\n"
+        f"expected pnl: ${float(potential_win_pnl):,.2f}\n"
+        f"confidence: {float(confidence):.3f}\n"
+        f"reason: {_reason_text or '--'}"
     )
     return True
 
@@ -657,11 +676,30 @@ def _resolve_trades(conn) -> int:
             "%s ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
             label, ws, direction, outcome, pnl, roi_pct,
         )
+
+        # Detailed Telegram (same format as BTC 5min)
+        _eth_start = _eth_price_at(conn, float(ws))
+        _eth_end = _eth_price_at(conn, float(we))
+        _eth_exit = _eth_price_at(conn, now_ts)
+        _entry_price = float(row.get("entry_price") or 0)
+        _settle_price = 1.0 if outcome == direction else 0.0
+        _now_utc = datetime.now(timezone.utc).isoformat()
         _tg_send(
-            f"[ETH5 PAPER {'WIN' if won else 'LOSS'}]\n"
-            f"side: {direction} | outcome: {outcome}\n"
-            f"pnl: ${pnl:+.2f} | roi: {roi_pct:+.1f}%\n"
-            f"window: {ws}"
+            f"[ETH5 PAPER CLOSE:SETTLEMENT] {label}\n"
+            f"time(UTC): {_now_utc}\n"
+            f"side: {direction}\n"
+            f"slug: eth-updown-5m\n"
+            f"window_start: {ws}\n"
+            f"stake: ${float(stake):,.2f}\n"
+            f"entry odds: {float(_entry_price):.3f}\n"
+            f"settlement odds: {float(_settle_price):.3f}\n"
+            f"5m start/end(ETH): "
+            f"{f'${float(_eth_start):,.2f}' if _eth_start else '--'} / "
+            f"{f'${float(_eth_end):,.2f}' if _eth_end else '--'}\n"
+            f"ETH at exit: {f'${float(_eth_exit):,.2f}' if _eth_exit else '--'}\n"
+            f"outcome: {str(outcome or '--').upper()}\n"
+            f"realized pnl: ${float(pnl):,.2f} ({float(roi_pct):+.2f}%)\n"
+            f"reason: expiry_settlement"
         )
 
     if resolved:
