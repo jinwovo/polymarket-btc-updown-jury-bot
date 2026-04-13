@@ -160,11 +160,11 @@ class ChainlinkCalibrator:
         age = time.time() - self.chainlink_updated_at if self.chainlink_updated_at > 0 else 999
         if age > self.MAX_CALIBRATION_AGE_SEC:
             now = time.time()
-            if now - getattr(self, '_stale_warn_ts', 0) > 30:
+            if now - getattr(self, '_stale_warn_ts', 0) > 300:
                 self._stale_warn_ts = now
                 logger.warning(
-                    "Chainlink calibration stale (%.0fs old, max=%ds). "
-                    "Using raw Binance price.",
+                    "Chainlink RPC stale (%.0fs, max=%ds). "
+                    "Note: settlement uses signal_cache (RTDS calibrated), not this.",
                     age, int(self.MAX_CALIBRATION_AGE_SEC),
                 )
             return binance_price
