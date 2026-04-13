@@ -623,9 +623,9 @@ class PaperReplayMulti:
                         continue
 
             # Momentum agreement (hardcoded in paper_sim_eth5: btc_move vs direction)
-            if direction == "UP" and btc_move < -0.005:
+            if direction == "UP" and btc_move < -0.01:
                 continue
-            if direction == "DOWN" and btc_move > 0.005:
+            if direction == "DOWN" and btc_move > 0.01:
                 continue
 
             # Score filter (same 7-signal score as paper_sim_eth5)

@@ -417,14 +417,14 @@ def _check_entry(
                      eth_move, MAX_BTC_MOVE_PCT)
         return False
 
-    # Momentum agreement
-    if REQUIRE_MOMENTUM_AGREE:
-        if direction == "UP" and eth_move_raw < -0.005:
-            logger.info("Skip momentum conflict: UP but eth_move=%.4f%%", eth_move_raw)
-            return False
-        if direction == "DOWN" and eth_move_raw > 0.005:
-            logger.info("Skip momentum conflict: DOWN but eth_move=+%.4f%%", eth_move_raw)
-            return False
+    # Momentum agreement: skip when ETH move contradicts BTC direction
+    # 0.01% threshold (was 0.005%): removes only clear disagree losses
+    if direction == "UP" and eth_move_raw < -0.01:
+        logger.info("Skip momentum conflict: UP but eth_move=%.4f%%", eth_move_raw)
+        return False
+    if direction == "DOWN" and eth_move_raw > 0.01:
+        logger.info("Skip momentum conflict: DOWN but eth_move=+%.4f%%", eth_move_raw)
+        return False
 
     # BB extreme filter
     if REQUIRE_BB_EXTREME:

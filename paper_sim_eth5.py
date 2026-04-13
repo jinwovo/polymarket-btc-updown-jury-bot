@@ -619,13 +619,14 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
             logger.debug("Skip wide spread=%.3f > %.3f ws=%s", spread, MAX_ODDS_SPREAD, window_start)
             return False
 
-    # Momentum agreement
+    # Momentum agreement: skip when ETH move contradicts BTC direction
+    # 0.01% threshold: removes only clear BTC-disagree losses (3L/0W in 138h backtest)
     btc_move = float(cached.get("btc_move_pct") or 0)
-    if direction == "UP" and btc_move < -0.005:
-        logger.debug("Skip momentum conflict: UP but move=%.4f%% ws=%s", btc_move, window_start)
+    if direction == "UP" and btc_move < -0.01:
+        logger.debug("Skip momentum conflict: UP but btc=%.4f%% ws=%s", btc_move, window_start)
         return False
-    if direction == "DOWN" and btc_move > 0.005:
-        logger.debug("Skip momentum conflict: DOWN but move=+%.4f%% ws=%s", btc_move, window_start)
+    if direction == "DOWN" and btc_move > 0.01:
+        logger.debug("Skip momentum conflict: DOWN but btc=+%.4f%% ws=%s", btc_move, window_start)
         return False
 
     # Max BTC move filter
