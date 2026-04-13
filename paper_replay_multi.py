@@ -491,20 +491,17 @@ class PaperReplayMulti:
             if self.max_btc_move > 0 and abs(btc_move) > self.max_btc_move:
                 continue
 
-            # If signal came early, use entry_start_sec timing
-            # Always read odds 2s after signal (simulates paper_sim poll delay)
-            _read_delay = 2.0
+            # If signal came early, wait until entry_start_sec and read odds at that time
             if scl_elapsed < self.entry_start_sec:
                 check_ts = ws + self.entry_start_sec
-            else:
-                check_ts = float(entry.get("ts") or (ws + scl_elapsed))
-            odds_at = self._cache.odds_at(ws, check_ts + _read_delay) if self._cache else None
-            if not odds_at:
                 odds_at = self._cache.odds_at(ws, check_ts) if self._cache else None
-            if odds_at:
-                up_ask = float(odds_at.get("up_best_ask") or 0.5)
-                down_ask = float(odds_at.get("down_best_ask") or 0.5)
+                if odds_at:
+                    up_ask = float(odds_at.get("up_best_ask") or 0.5)
+                    down_ask = float(odds_at.get("down_best_ask") or 0.5)
+                else:
+                    continue
             else:
+                # Use SCL recorded ask directly (matches paper_sim gate_lock snapshot)
                 up_ask = float(entry.get("up_ask") or 0.5)
                 down_ask = float(entry.get("down_ask") or 0.5)
             elapsed = max(scl_elapsed, self.entry_start_sec)
@@ -531,22 +528,12 @@ class PaperReplayMulti:
             if spread > self.max_spread:
                 continue
 
-            # Drift simulation
+            # Entry timestamp (for filters below)
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
-            if self._cache:
-                _drift_odds = self._cache.odds_at(ws, entry_ts + 0.5)
-                if _drift_odds:
-                    later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
-                        else float(_drift_odds.get("down_best_ask") or entry_price)
-                    if 0.01 < later_price < 0.99:
-                        if later_price > self.max_entry_price:
-                            continue
-                        if later_price - entry_price > self.drift_max:
-                            continue
-                        entry_price = later_price
-
-            if entry_price > self.max_entry_price:
-                continue
+            # NOTE: no drift simulation in SCL path.
+            # Production paper_sim uses gate_lock ask snapshot (captured at gate_allow=1 moment).
+            # The ask at that moment IS the entry price. Drift happens after but doesn't affect
+            # the snapshot. Adding drift here would block trades that production enters successfully.
 
             # BTC still moving filter
             if self.require_btc_still_moving and self._cache:
