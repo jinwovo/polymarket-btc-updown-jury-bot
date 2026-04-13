@@ -2154,17 +2154,45 @@ class PolymarketClient:
                 except Exception as _re:
                     logger.warning("Rust order exception: %s, falling back to Python", _re)
 
-            # Python fallback — also use max entry price as limit
+            # Python fallback — FAK first, then GTC retry if no match
             _py_limit = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.54"))
             _py_limit = round(min(max(_py_limit, working_ask), 0.99), 2)
             _py_size = max(1, int(amount / _py_limit))
-            return await self.place_limit_order(
+            _fak_result = await self.place_limit_order(
                 token_id=token_id,
                 side=side,
                 price=float(_py_limit),
                 size=float(_py_size),
                 order_type="FAK",
             )
+            # If FAK killed (no match), retry as GTC with 3s timeout
+            # GTC rests on book as maker (0% fee) and waits for a fill
+            if _fak_result and not _fak_result.get("filled") and not _fak_result.get("accepted"):
+                _fak_err = str(_fak_result.get("reason") or _fak_result.get("error") or "")
+                if "no orders found" in _fak_err.lower() or "fak" in _fak_err.lower():
+                    logger.info("FAK killed (no match), retrying as GTC maker @ %.3f for 3s", working_ask)
+                    _gtc_result = await self.place_limit_order(
+                        token_id=token_id,
+                        side=side,
+                        price=float(working_ask),
+                        size=float(size),
+                        order_type="GTC",
+                        timeout_seconds=3.0,
+                        poll_interval_seconds=0.35,
+                    )
+                    if _gtc_result and _gtc_result.get("filled"):
+                        _gtc_result["mode"] = "LIMIT_FAK(gtc_retry)"
+                        logger.warning("GTC retry filled! $%.2f @ %.3f (0%% maker fee)",
+                                       _gtc_result.get("executed_notional", 0),
+                                       _gtc_result.get("executed_price", 0))
+                        return _gtc_result
+                    # GTC didn't fill either — cancel and return FAK result
+                    if _gtc_result and not _gtc_result.get("cancelled", True):
+                        logger.warning("GTC retry cancel failed, returning uncertain")
+                        _gtc_result["uncertain_fill"] = True
+                        return _gtc_result
+                    logger.info("GTC retry not filled in 3s, giving up")
+            return _fak_result
 
         return await self.place_limit_order(
             token_id=token_id,
