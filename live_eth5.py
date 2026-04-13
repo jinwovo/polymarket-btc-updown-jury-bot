@@ -357,19 +357,16 @@ def _check_entry(
                      seconds_elapsed, DOWN_ENTRY_END_SEC)
         return False
 
-    # gate_allow from signal generator (with 5s lock + ask snapshot)
+    # gate_allow from signal generator (with 5s lock)
     gate_allow = int(cached.get("gate_allow") or 0)
     if not hasattr(_check_entry, '_gate_lock'):
         _check_entry._gate_lock = {}
     _glock = _check_entry._gate_lock
     _gate_dir = str(cached.get("direction") or "")
     if gate_allow and _gate_dir in ("UP", "DOWN"):
-        if _glock.get("ws") != window_start or _glock.get("dir") != _gate_dir:
-            _glock["ws"] = window_start
-            _glock["ts"] = now_ts
-            _glock["dir"] = _gate_dir
-            _glock["up_ask"] = _safe_prob(cached.get("up_ask"))
-            _glock["down_ask"] = _safe_prob(cached.get("down_ask"))
+        _glock["ws"] = window_start
+        _glock["ts"] = now_ts
+        _glock["dir"] = _gate_dir
     elif (not gate_allow
           and _glock.get("ws") == window_start
           and (now_ts - _glock.get("ts", 0)) < 5.0
@@ -382,13 +379,9 @@ def _check_entry(
 
     # Guards skipped for ETH -- too strict, matches paper_replay parity
 
-    # Ask prices: use gate_lock snapshot (ask at gate_allow=1 moment)
-    if _glock.get("ws") == window_start and _glock.get("up_ask") is not None:
-        up_ask = _glock["up_ask"]
-        down_ask = _glock["down_ask"]
-    else:
-        up_ask = _safe_prob(cached.get("up_ask"))
-        down_ask = _safe_prob(cached.get("down_ask"))
+    # Ask prices from CURRENT signal_cache (real market price)
+    up_ask = _safe_prob(cached.get("up_ask"))
+    down_ask = _safe_prob(cached.get("down_ask"))
     entry_price = up_ask if direction == "UP" else down_ask
     if entry_price is None:
         logger.warning("No %s ask price available ws=%s; skipping", direction, window_start)

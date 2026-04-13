@@ -528,12 +528,24 @@ class PaperReplayMulti:
             if spread > self.max_spread:
                 continue
 
-            # Entry timestamp (for filters below)
+            # Drift simulation: production polls signal_cache every 0.1s.
+            # signal_cache updates every ~1s from signal_generator.
+            # paper_sim reads ask within ~0.1-0.3s of gate_allow=1 being written.
+            # Use 0.3s delay to match realistic read timing.
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
-            # NOTE: no drift simulation in SCL path.
-            # Production paper_sim uses gate_lock ask snapshot (captured at gate_allow=1 moment).
-            # The ask at that moment IS the entry price. Drift happens after but doesn't affect
-            # the snapshot. Adding drift here would block trades that production enters successfully.
+            if self._cache:
+                _drift_odds = self._cache.odds_at(ws, entry_ts + 0.3)
+                if _drift_odds:
+                    later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
+                        else float(_drift_odds.get("down_best_ask") or entry_price)
+                    if 0.01 < later_price < 0.99:
+                        if later_price > self.max_entry_price:
+                            continue
+                        if later_price - entry_price > self.drift_max:
+                            continue
+                        entry_price = later_price
+            if entry_price > self.max_entry_price:
+                continue
 
             # BTC still moving filter
             if self.require_btc_still_moving and self._cache:
