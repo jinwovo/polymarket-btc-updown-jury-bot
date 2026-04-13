@@ -87,6 +87,7 @@ DOWN_MIN_ENTRY_PRICE = _env_float("DOWN_MIN_ENTRY_PRICE", "0.30")
 MAX_ODDS_SPREAD = _env_float("MAX_ODDS_SPREAD", "0.20")
 MAX_BTC_MOVE_PCT = _env_float("MAX_BTC_MOVE_PCT", "0.10")
 MIN_ENTRY_SCORE = _env_int("MIN_ENTRY_SCORE", "3")
+MIN_CONFIDENCE = _env_float("MIN_CONFIDENCE", "0.55")
 FIXED_STAKE_DEFAULT = _env_float("FIXED_STAKE", "100")
 MIN_BET = _env_float("MIN_BET", "10")
 OPPOSITE_MAX_ASK = _env_float("OPPOSITE_MAX_ASK", "0.78")
@@ -648,6 +649,13 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     # Max BTC move filter
     if MAX_BTC_MOVE_PCT > 0 and abs(btc_move) > MAX_BTC_MOVE_PCT:
         logger.debug("Skip overextended btc_move=%.4f%% > %.2f%% ws=%s", abs(btc_move), MAX_BTC_MOVE_PCT, window_start)
+        return False
+
+    # Confidence filter: skip low-confidence jury decisions
+    # 150h backtest: conf<0.55 = 9L/5W removal -> WR 70%->75%, PnL +$898
+    confidence = float(cached.get("avg_confidence") or 0)
+    if MIN_CONFIDENCE > 0 and confidence < MIN_CONFIDENCE:
+        logger.info("Skip low confidence ws=%s: conf=%.2f < %.2f dir=%s", window_start, confidence, MIN_CONFIDENCE, direction)
         return False
 
     # Score filter

@@ -89,6 +89,7 @@ MAX_ENTRY_PRICE = float(env(MARKET, "MAX_ENTRY_PRICE", "0.58"))
 MIN_ENTRY_PRICE = float(env(MARKET, "DOWN_MIN_ENTRY_PRICE", "0.30"))
 MAX_ODDS_SPREAD = float(env(MARKET, "MAX_ODDS_SPREAD", "0.12"))
 MIN_ENTRY_SCORE = int(env(MARKET, "MIN_ENTRY_SCORE", "3"))
+MIN_CONFIDENCE = float(env(MARKET, "MIN_CONFIDENCE", "0.55"))
 BB_THRESHOLD = float(env(MARKET, "BB_THRESHOLD", "0.5"))
 MAX_ASK_DRIFT = float(env(MARKET, "MAX_ASK_DRIFT", "0.08"))
 FIXED_STAKE = float(env(MARKET, "FIXED_STAKE", "15"))
@@ -492,6 +493,11 @@ def _check_entry(
     if MIN_ENTRY_SCORE > 0:
         btc_move = abs(float(cached.get("btc_move_pct") or 0))
         conf = float(cached.get("avg_confidence") or 0)
+        # Confidence filter: skip low-confidence entries
+        if MIN_CONFIDENCE > 0 and conf < MIN_CONFIDENCE:
+            logger.info("Skip low confidence ws=%s: conf=%.2f < %.2f", window_start, conf, MIN_CONFIDENCE)
+            return False
+
         ev = float(cached.get("gate_ev") or 0)
         prev = str(cached.get("prev_outcome") or "")
         if prev not in ("UP", "DOWN"):
