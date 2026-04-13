@@ -528,24 +528,11 @@ class PaperReplayMulti:
             if spread > self.max_spread:
                 continue
 
-            # Drift simulation: production polls signal_cache every 0.1s.
-            # signal_cache updates every ~1s from signal_generator.
-            # paper_sim reads ask within ~0.1-0.3s of gate_allow=1 being written.
-            # Use 0.3s delay to match realistic read timing.
+            # No drift simulation in SCL path.
+            # Production paper_sim reads signal_cache ask directly (no FAK execution).
+            # signal_cache contains the ask at the moment signal_generator wrote it.
+            # SCL records the same ask. No delay or drift to simulate.
             entry_ts = float(entry["ts"]) if scl_elapsed >= self.entry_start_sec else (ws + self.entry_start_sec)
-            if self._cache:
-                _drift_odds = self._cache.odds_at(ws, entry_ts + 0.3)
-                if _drift_odds:
-                    later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
-                        else float(_drift_odds.get("down_best_ask") or entry_price)
-                    if 0.01 < later_price < 0.99:
-                        if later_price > self.max_entry_price:
-                            continue
-                        if later_price - entry_price > self.drift_max:
-                            continue
-                        entry_price = later_price
-            if entry_price > self.max_entry_price:
-                continue
 
             # BTC still moving filter
             if self.require_btc_still_moving and self._cache:
@@ -634,6 +621,31 @@ class PaperReplayMulti:
                         _cs_drift = down_ask - float(_cs_start_odds.get("down_best_ask") or 0.5)
                     if abs(_cs_drift) > self.max_clob_shift:
                         continue
+
+            # Momentum agreement (hardcoded in paper_sim_eth5: btc_move vs direction)
+            if direction == "UP" and btc_move < -0.005:
+                continue
+            if direction == "DOWN" and btc_move > 0.005:
+                continue
+
+            # Score filter (same 7-signal score as paper_sim_eth5)
+            if self.min_score > 0:
+                _score = 0
+                _btc_move_abs = abs(btc_move)
+                if _btc_move_abs >= 0.02: _score += 1
+                # prev outcome
+                prev_ws = ws - self.interval
+                prev_mw = self._cache._mw_map.get(prev_ws) if self._cache else None
+                if prev_mw and prev_mw.get("actual_outcome") == direction: _score += 1
+                if entry_price <= 0.45: _score += 1
+                if gate_ev >= 0.20: _score += 1
+                if confidence >= 0.70: _score += 1
+                _ov = float(entry.get("odds_velocity") or 0)
+                if _ov >= 0.02: _score += 1
+                _accel = int(entry.get("btc_accel_ok") or 0) if entry.get("btc_accel_ok") is not None else 0
+                if _accel: _score += 1
+                if _score < self.min_score:
+                    continue
 
             # Sizing
             stake = self._get_stake(entry_price, confidence, ws=ws, entry_ts=entry_ts, direction=direction)
