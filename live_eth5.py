@@ -898,7 +898,7 @@ def _fetch_eth_settlement_outcome(start_timestamp: int) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Settlement
 # ---------------------------------------------------------------------------
-def _resolve_open_trades(conn) -> int:
+def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
     """Resolve open trades at window end using ETH price."""
     now_ts = time.time()
 
@@ -987,6 +987,31 @@ def _resolve_open_trades(conn) -> int:
             "%s ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
             tag, ws, direction, outcome, pnl, roi_pct,
         )
+
+        # Post-settlement exit: sell winning shares @ 0.99 (maker 0% fee)
+        if won and not dry_run and poly_client is not None:
+            entry_price = float(row.get("entry_price") or 0.5)
+            if 0 < entry_price < 1:
+                _exit_shares = shares
+                # Resolve token_id
+                _mkt = _find_eth_market(poly_client, ws)
+                if _mkt:
+                    _tok = _mkt.up_token_id if direction == "UP" else _mkt.down_token_id
+                    if _tok:
+                        try:
+                            logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", _exit_shares)
+                            _exit_result = asyncio.get_event_loop().run_until_complete(
+                                poly_client.place_settlement_exit_order(
+                                    token_id=_tok,
+                                    shares=_exit_shares,
+                                )
+                            )
+                            if _exit_result and _exit_result.get("filled"):
+                                logger.warning("Post-settlement exit filled! $%.2f", float(_exit_result.get("executed_notional") or 0))
+                            else:
+                                logger.info("Post-settlement exit: %s", _exit_result.get("status") if _exit_result else "no result")
+                        except Exception as _exit_err:
+                            logger.warning("Post-settlement exit error: %s", _exit_err)
 
         # Telegram close notification
         _send_telegram(
@@ -1141,7 +1166,7 @@ def run_loop(
                     continue
 
                 # Resolve any open trades whose window has ended
-                _resolve_open_trades(conn)
+                _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client)
 
                 # Read signal and check entry
                 cached = _read_signal_cache(conn)

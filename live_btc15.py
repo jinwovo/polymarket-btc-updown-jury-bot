@@ -807,6 +807,29 @@ class LiveBTC15Trader:
 
         self._record_trade_closed(ws, direction, stake, entry_price, actual, "expiry_settlement")
 
+        # Post-settlement exit: sell winning shares @ 0.99 (maker 0% fee)
+        won = (actual == direction)
+        if won and not self.dry_run:
+            shares = stake / entry_price if entry_price > 0 else 0
+            token_id = str(trade.get("_token_id") or "")
+            if not token_id:
+                _mkt = await self._find_market_15m(ws)
+                if _mkt:
+                    token_id = str(_mkt.up_token_id if direction == "UP" else _mkt.down_token_id)
+            if token_id and shares > 0:
+                try:
+                    logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", shares)
+                    _exit_result = await self.poly_client.place_settlement_exit_order(
+                        token_id=token_id,
+                        shares=shares,
+                    )
+                    if _exit_result and _exit_result.get("filled"):
+                        logger.warning("Post-settlement exit filled! $%.2f", float(_exit_result.get("executed_notional") or 0))
+                    else:
+                        logger.info("Post-settlement exit: %s", _exit_result.get("status") if _exit_result else "no result")
+                except Exception as _exit_err:
+                    logger.warning("Post-settlement exit error: %s", _exit_err)
+
         # Send Telegram notification
         self._send_trade_close_telegram(trade, actual)
 
