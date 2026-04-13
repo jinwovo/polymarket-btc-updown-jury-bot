@@ -591,6 +591,8 @@ export function LiveDashboard() {
   interface MarketLiveDailyPnl {
     daily_pnl: number;
     daily_trades: number;
+    daily_loss_limit?: number;
+    daily_loss_remaining?: number;
   }
 
   const [btc15PaperSummary, setBtc15PaperSummary] = useState<MarketPaperSummary | null>(null);
@@ -737,12 +739,14 @@ export function LiveDashboard() {
 
   async function loadMarketLiveDailyPnl(market: "btc15" | "eth5") {
     try {
-      const res = await fetch(`/api/${market}/live-trade-history?limit=1&offset=0`, { cache: "no-store" });
-      const json = (await res.json()) as LiveTradeHistoryResponse;
-      if (json.ok && json.summary) {
+      const res = await fetch(`/api/${market}/live-pnl`, { cache: "no-store" });
+      const json = await res.json();
+      if (json.ok) {
         const pnl: MarketLiveDailyPnl = {
-          daily_pnl: json.summary.total_pnl ?? 0,
-          daily_trades: (json.summary.open ?? 0) + (json.summary.closed ?? 0),
+          daily_pnl: json.today_pnl ?? 0,
+          daily_trades: json.today_trades ?? 0,
+          daily_loss_limit: json.daily_loss_limit ?? 100,
+          daily_loss_remaining: json.daily_loss_remaining ?? 100,
         };
         if (market === "btc15") setBtc15LiveDaily(pnl);
         else setEth5LiveDaily(pnl);
@@ -2661,7 +2665,8 @@ export function LiveDashboard() {
                       type="number"
                       step="1"
                       min="1"
-                      defaultValue={100}
+                      defaultValue={(btc15LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100}
+                      key={`btc15dll-${(btc15LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100}`}
                       id="btc15DailyLossLimitInput"
                       className="w-20 rounded border border-border/70 bg-background/40 px-1 py-0.5 font-mono text-xs"
                     />
@@ -2670,11 +2675,14 @@ export function LiveDashboard() {
                       onClick={async () => {
                         const val = parseFloat((document.getElementById("btc15DailyLossLimitInput") as HTMLInputElement)?.value || "0");
                         if (val > 0) {
-                          await fetch("/api/control/btc15/daily-loss-limit", {
+                          const res = await fetch("/api/control/btc15/daily-loss-limit", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ daily_loss_limit: val }),
                           });
+                          if (res.ok) {
+                            void loadMarketLiveDailyPnl("btc15");
+                          }
                         }
                       }}
                     >Save</button>
@@ -2915,7 +2923,8 @@ export function LiveDashboard() {
                       type="number"
                       step="1"
                       min="1"
-                      defaultValue={100}
+                      defaultValue={(eth5LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100}
+                      key={`eth5dll-${(eth5LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100}`}
                       id="eth5DailyLossLimitInput"
                       className="w-20 rounded border border-border/70 bg-background/40 px-1 py-0.5 font-mono text-xs"
                     />
@@ -2924,11 +2933,14 @@ export function LiveDashboard() {
                       onClick={async () => {
                         const val = parseFloat((document.getElementById("eth5DailyLossLimitInput") as HTMLInputElement)?.value || "0");
                         if (val > 0) {
-                          await fetch("/api/control/eth5/daily-loss-limit", {
+                          const res = await fetch("/api/control/eth5/daily-loss-limit", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ daily_loss_limit: val }),
                           });
+                          if (res.ok) {
+                            void loadMarketLiveDailyPnl("eth5");
+                          }
                         }
                       }}
                     >Save</button>
