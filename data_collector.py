@@ -2269,8 +2269,10 @@ async def _extra_market_poll(self):
                         bids = book.get("bids", [])
                         asks = book.get("asks", [])
                         best_bid = max((float(b["price"]) for b in bids), default=0)
-                        best_ask = min((float(a["price"]) for a in asks), default=1)
-                        mid = (best_bid + best_ask) / 2 if best_bid > 0 and best_ask < 1 else 0.5
+                        best_ask = min((float(a["price"]) for a in asks), default=0)
+                        if best_ask <= 0 or best_ask >= 1.0:
+                            continue  # empty orderbook, skip
+                        mid = (best_bid + best_ask) / 2 if best_bid > 0 else best_ask
 
                         if side == "up":
                             info["up_bid"] = best_bid

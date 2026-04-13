@@ -640,6 +640,7 @@ class ETH5SignalGenerator:
                 logger.debug("Entry gate check failed: %s", ge)
 
         # -- Gate stability: once gate_allow=1, hold for 5s --
+        # Also preserve ask prices from the gate moment (prevents NULL ask in held ticks)
         _gs_until = getattr(self, '_gate_stable_until', 0.0)
         _gs_ws = getattr(self, '_gate_stable_ws', 0)
         if gate_allow:
@@ -648,12 +649,18 @@ class ETH5SignalGenerator:
             self._gate_stable_ev = gate_ev
             self._gate_stable_reason = gate_reason
             self._gate_stable_dir = decision.direction
+            self._gate_stable_up_ask = up_ask
+            self._gate_stable_dn_ask = dn_ask
         elif (_gs_ws == ws
               and now_ts < _gs_until
               and decision.direction == getattr(self, '_gate_stable_dir', '')):
             gate_allow = 1
             gate_ev = getattr(self, '_gate_stable_ev', gate_ev)
             gate_reason = getattr(self, '_gate_stable_reason', gate_reason)
+            # Restore ask prices from gate moment if current tick has NULL
+            if up_ask is None or dn_ask is None:
+                up_ask = getattr(self, '_gate_stable_up_ask', up_ask)
+                dn_ask = getattr(self, '_gate_stable_dn_ask', dn_ask)
 
         # -- Lag Arb detection --
         lag_arb_allow = 0
