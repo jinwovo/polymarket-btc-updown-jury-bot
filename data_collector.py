@@ -213,23 +213,20 @@ class DataCollector:
 
                         self.btc_price = price
 
-                        # RTDS calibration: if RTDS is alive and fresh, use it
-                        # to keep offset updated (replaces stale Chainlink RPC)
+                        # Price priority: RTDS > Playwright > Binance (raw)
+                        # RTDS = Chainlink Data Streams = settlement price
                         _rtds_age = time.time() - self._rtds_updated_at if self._rtds_updated_at > 0 else 999
-                        if (self._chainlink is not None
-                                and self._rtds_price > 0
-                                and _rtds_age < 10
-                                and self.btc_price > 0):
-                            _new_off = self.btc_price - self._rtds_price
-                            # Only update if offset changed meaningfully (> $0.10)
-                            _old_off = self._chainlink.offset if self._chainlink.offset else 0
-                            if abs(_new_off - _old_off) > 0.10:
-                                self._chainlink.offset = _new_off
+                        if self._rtds_price > 0 and _rtds_age < 10:
+                            # RTDS alive: use RTDS price directly
+                            self.btc_price_adjusted = self._rtds_price
+                            # Also keep calibrator in sync for when RTDS goes down
+                            if self._chainlink is not None and self.btc_price > 0:
+                                self._chainlink.offset = self.btc_price - self._rtds_price
                                 self._chainlink.chainlink_price = self._rtds_price
-                                self._chainlink.binance_at_update = self.btc_price
                                 self._chainlink.chainlink_updated_at = time.time()
-
-                        self.btc_price_adjusted = self._chainlink.adjust(price)
+                        else:
+                            # RTDS down: Playwright calibration via _chainlink.adjust()
+                            self.btc_price_adjusted = self._chainlink.adjust(price)
 
                         # Store raw Binance prices for Chainlink offset calibration
                         self._raw_prices.append(price)
