@@ -392,6 +392,12 @@ class PaperReplayMulti:
         self.btc_early_entry = os.getenv("REPLAY_BTC_EARLY_ENTRY", "0") == "1"
         self.btc_early_sec = float(os.getenv("REPLAY_BTC_EARLY_SEC", "35"))
         self.btc_early_min_pct = float(os.getenv("REPLAY_BTC_EARLY_MIN_PCT", "0.03"))
+        self._scl_only = os.getenv("REPLAY_SCL_ONLY", "0") == "1"  # disable inline jury fallback
+
+        # ETH5 discovery filters
+        self.require_eth_accel_pos = os.getenv("REPLAY_REQUIRE_ETH_ACCEL_POS", "0") == "1"
+        self.max_eth_vol = float(os.getenv("REPLAY_MAX_ETH_VOL", "0"))  # 0=off, e.g. 0.006
+        self.max_clob_shift = float(os.getenv("REPLAY_MAX_CLOB_SHIFT", "0"))  # 0=off, e.g. 0.05
         self.loss_streak_reduce = int(os.getenv("REPLAY_LOSS_STREAK_REDUCE", "0"))
         self.btc_active_min_range = float(os.getenv("REPLAY_BTC_ACTIVE_MIN_RANGE", "0"))
         self.btc_active_lookback = float(os.getenv("REPLAY_BTC_ACTIVE_LOOKBACK", "300"))
@@ -486,20 +492,23 @@ class PaperReplayMulti:
                 continue
 
             # If signal came early, use entry_start_sec timing
+            # Always read odds 2s after signal (simulates paper_sim poll delay)
+            _read_delay = 2.0
             if scl_elapsed < self.entry_start_sec:
                 check_ts = ws + self.entry_start_sec
+            else:
+                check_ts = float(entry.get("ts") or (ws + scl_elapsed))
+            odds_at = self._cache.odds_at(ws, check_ts + _read_delay) if self._cache else None
+            if not odds_at:
                 odds_at = self._cache.odds_at(ws, check_ts) if self._cache else None
-                if not odds_at:
-                    continue
+            if odds_at:
                 up_ask = float(odds_at.get("up_best_ask") or 0.5)
                 down_ask = float(odds_at.get("down_best_ask") or 0.5)
-                elapsed = self.entry_start_sec
-                remaining = self.interval - elapsed
             else:
                 up_ask = float(entry.get("up_ask") or 0.5)
                 down_ask = float(entry.get("down_ask") or 0.5)
-                elapsed = scl_elapsed
-                remaining = float(entry.get("seconds_remaining") or (self.interval - elapsed))
+            elapsed = max(scl_elapsed, self.entry_start_sec)
+            remaining = float(entry.get("seconds_remaining") or (self.interval - elapsed))
 
             # Timing
             if elapsed > self.entry_end_sec:
@@ -681,8 +690,14 @@ class PaperReplayMulti:
                 t += scan_step
                 continue
 
-            # Get ask price
-            odds = self._cache.odds_at(ws, t)
+            # Get ask price -- use odds 2s AFTER signal (simulates paper_sim read delay)
+            # Production: signal_generator sets gate_allow=1 → paper_sim reads signal_cache
+            # on next poll (~0.1s) but signal_cache ask is already 1-2s stale from poly_odds.
+            # Using t+2 matches the realistic fill price paper_sim would see.
+            _read_delay = 2.0
+            odds = self._cache.odds_at(ws, t + _read_delay)
+            if not odds:
+                odds = self._cache.odds_at(ws, t)
             if not odds:
                 t += scan_step
                 continue
@@ -707,8 +722,8 @@ class PaperReplayMulti:
                 t += scan_step
                 continue
 
-            # Drift simulation
-            _drift_odds = self._cache.odds_at(ws, t + 0.5)
+            # Additional drift check: also check 1s later (FAK execution window)
+            _drift_odds = self._cache.odds_at(ws, t + _read_delay + 1.0)
             if _drift_odds:
                 later_price = float(_drift_odds.get("up_best_ask") or entry_price) if direction == "UP" \
                     else float(_drift_odds.get("down_best_ask") or entry_price)
@@ -825,6 +840,43 @@ class PaperReplayMulti:
                         if range_pct < self.btc_active_min_range:
                             t += scan_step
                             continue
+
+            # ETH acceleration: skip when price decelerating in our direction
+            if self.require_eth_accel_pos and self._cache:
+                p60 = self._cache.price_at(t - 60)
+                p30 = self._cache.price_at(t - 30)
+                p_now = self._cache.price_at(t)
+                if p60 and p30 and p_now and p60 > 0:
+                    mom_r = (p_now - p30) / p60 * 100
+                    mom_p = (p30 - p60) / p60 * 100
+                    accel = (mom_r - mom_p) if direction == "UP" else -(mom_r - mom_p)
+                    if accel < 0:
+                        t += scan_step
+                        continue
+
+            # ETH volatility cap: skip when vol too high (noise)
+            if self.max_eth_vol > 0 and self._cache:
+                _ev_s = bisect.bisect_left(self._cache.px_ts, t - 60)
+                _ev_e = bisect.bisect_right(self._cache.px_ts, t)
+                _ev_px = self._cache.px_val[_ev_s:_ev_e]
+                if len(_ev_px) >= 10:
+                    _ev_rets = [(_ev_px[i+1]-_ev_px[i])/_ev_px[i] for i in range(len(_ev_px)-1) if _ev_px[i]>0]
+                    _ev_vol = (sum(r**2 for r in _ev_rets)/max(len(_ev_rets),1))**0.5*100 if _ev_rets else 0
+                    if _ev_vol > self.max_eth_vol:
+                        t += scan_step
+                        continue
+
+            # CLOB shift cap: only enter when CLOB hasn't moved much (lazy CLOB = our edge)
+            if self.max_clob_shift > 0 and self._cache:
+                _cs_start_odds = self._cache.odds_at(ws, float(ws) + 5)
+                if _cs_start_odds:
+                    if direction == "UP":
+                        _cs_drift = up_ask - float(_cs_start_odds.get("up_best_ask") or 0.5)
+                    else:
+                        _cs_drift = down_ask - float(_cs_start_odds.get("down_best_ask") or 0.5)
+                    if abs(_cs_drift) > self.max_clob_shift:
+                        t += scan_step
+                        continue
 
             # Score filter (11 signals)
             if self.min_score > 0:
@@ -1112,8 +1164,8 @@ class PaperReplayMulti:
                 if scl_entries:
                     trade = self._simulate_entry_from_scl(ws, scl_entries)
 
-            # Strategy 2: inline jury evaluation
-            if trade is None:
+            # Strategy 2: inline jury evaluation (skip if --scl-only)
+            if trade is None and not self._scl_only:
                 trade = self._simulate_entry_inline(ws)
 
             if trade is None:
@@ -1216,6 +1268,8 @@ def main():
                         help="Multiplier when BTC-leads agrees (default 2.0)")
     parser.add_argument("--conf-sizing-full-mult", type=float, default=None,
                         help="Multiplier when BB+VWAP+BTC all agree (default 3.0)")
+    parser.add_argument("--scl-only", action="store_true",
+                        help="Only use signal_cache_log entries, disable inline jury fallback")
     args = parser.parse_args()
 
     # CLI overrides -> env (set both PAPER_ and market-specific prefix)
@@ -1293,6 +1347,8 @@ def main():
         os.environ["REPLAY_CONF_SIZING_BTC_MULT"] = str(args.conf_sizing_btc_mult)
     if args.conf_sizing_full_mult is not None:
         os.environ["REPLAY_CONF_SIZING_FULL_MULT"] = str(args.conf_sizing_full_mult)
+    if args.scl_only:
+        os.environ["REPLAY_SCL_ONLY"] = "1"
     logger.info("Market: %s (interval=%ds, price_table=%s, slug=%s)",
                 market.label, market.interval_seconds, market.price_table,
                 market.slug_prefix)

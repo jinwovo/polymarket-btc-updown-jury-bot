@@ -567,17 +567,24 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     # Gate from signal generator (guards skipped -- too strict for ETH, matches paper_replay)
     gate_allow = int(cached.get("gate_allow") or 0)
 
-    # Gate lock: hold gate_allow=1 for 5s (consumer-side backup)
+    # Gate lock: hold gate_allow=1 for 5s + remember ask at gate moment
+    # Production issue: ask spikes near expiry. When gate_allow=1 fires,
+    # ask might be 0.42 but by next poll it's 0.62. We must use the ask
+    # from when gate_allow first appeared, not the current signal_cache ask.
     if not hasattr(_open_trade, '_gate_lock'):
         _open_trade._gate_lock = {}
     _glock = _open_trade._gate_lock
     _gate_dir = str(cached.get("direction") or "")
     if gate_allow and _gate_dir in ("UP", "DOWN"):
-        _glock["ws"] = window_start
-        _glock["ts"] = now_ts
-        _glock["dir"] = _gate_dir
-        _glock["ev"] = float(cached.get("gate_ev") or 0)
-        _glock["reason"] = str(cached.get("gate_reason") or "")
+        # Only capture ask on FIRST gate_allow=1 for this window
+        if _glock.get("ws") != window_start or _glock.get("dir") != _gate_dir:
+            _glock["ws"] = window_start
+            _glock["ts"] = now_ts
+            _glock["dir"] = _gate_dir
+            _glock["ev"] = float(cached.get("gate_ev") or 0)
+            _glock["reason"] = str(cached.get("gate_reason") or "")
+            _glock["up_ask"] = _safe_prob(cached.get("up_ask"))
+            _glock["down_ask"] = _safe_prob(cached.get("down_ask"))
     elif (not gate_allow
           and _glock.get("ws") == window_start
           and (now_ts - _glock.get("ts", 0)) < 5.0
@@ -589,9 +596,14 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
         logger.debug("Skip gate_allow=0 ws=%s: %s", window_start, gate_reason)
         return False
 
-    # Ask prices from signal cache
-    up_ask = _safe_prob(cached.get("up_ask"))
-    down_ask = _safe_prob(cached.get("down_ask"))
+    # Ask prices: use gate_lock snapshot (ask at gate_allow=1 moment)
+    # This prevents missing trades when ask spikes after gate signal
+    if _glock.get("ws") == window_start and _glock.get("up_ask") is not None:
+        up_ask = _glock["up_ask"]
+        down_ask = _glock["down_ask"]
+    else:
+        up_ask = _safe_prob(cached.get("up_ask"))
+        down_ask = _safe_prob(cached.get("down_ask"))
     entry_price = up_ask if direction == "UP" else down_ask
     if entry_price is None or entry_price <= 0.0 or entry_price >= 1.0:
         logger.warning("No valid %s ask price; skip", direction)
