@@ -952,7 +952,27 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
         # PRIMARY: Gamma API settlement outcome
         outcome = _fetch_eth_settlement_outcome(ws)
 
-        # FALLBACK 1: market_windows table (if signal_generator wrote it)
+        # FALLBACK 1: CLOB odds near expiry (92%+ accurate at last 10s)
+        if outcome is None:
+            _clob_row = fetch_one_dict(
+                conn,
+                """SELECT up_best_ask, down_best_ask FROM poly_odds
+                   WHERE window_start = %s AND slug LIKE %s
+                   AND ts >= %s AND ts <= %s
+                   ORDER BY ts DESC LIMIT 1""",
+                (ws, f"{SLUG_PREFIX}%", float(we) - 10, float(we) + 5),
+            )
+            if _clob_row:
+                _c_up = float(_clob_row.get("up_best_ask") or 0.5)
+                _c_dn = float(_clob_row.get("down_best_ask") or 0.5)
+                if _c_up >= 0.90 and _c_dn <= 0.10:
+                    outcome = "UP"
+                    logger.info("Settlement from CLOB odds: ws=%s up=%.3f dn=%.3f -> UP", ws, _c_up, _c_dn)
+                elif _c_dn >= 0.90 and _c_up <= 0.10:
+                    outcome = "DOWN"
+                    logger.info("Settlement from CLOB odds: ws=%s up=%.3f dn=%.3f -> DOWN", ws, _c_up, _c_dn)
+
+        # FALLBACK 2: market_windows table (if data_collector wrote it)
         if outcome is None:
             mw_row = fetch_one(
                 conn,
@@ -962,7 +982,7 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
             if mw_row and mw_row[0] in ("UP", "DOWN"):
                 outcome = mw_row[0]
 
-        # FALLBACK 2: eth_ticks price at window_end vs window_start
+        # FALLBACK 3: eth_ticks price at window_end vs window_start
         if outcome is None:
             eth_start = _eth_price_at(conn, float(ws))
             eth_end = _eth_price_at(conn, float(we))
