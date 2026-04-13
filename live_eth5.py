@@ -1058,7 +1058,7 @@ def _check_data_freshness(conn) -> bool:
 # ---------------------------------------------------------------------------
 def _reconcile_stale_trades(conn):
     """Backfill any OPEN trades from previous runs whose windows have ended."""
-    resolved = _resolve_open_trades(conn)
+    resolved = _resolve_open_trades(conn)  # dry_run=True, no exit orders on startup
     if resolved > 0:
         logger.warning("Startup: resolved %d stale open trades", resolved)
 
@@ -1194,9 +1194,9 @@ def run_loop(
     except KeyboardInterrupt:
         logger.warning("ETH5 live trading stopped by user")
     finally:
-        # Final settlement pass
+        # Final settlement pass (with exit orders if live)
         try:
-            _resolve_open_trades(conn)
+            _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client)
         except Exception:
             pass
 

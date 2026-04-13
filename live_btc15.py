@@ -811,11 +811,10 @@ class LiveBTC15Trader:
         won = (actual == direction)
         if won and not self.dry_run:
             shares = stake / entry_price if entry_price > 0 else 0
-            token_id = str(trade.get("_token_id") or "")
-            if not token_id:
-                _mkt = await self._find_market_15m(ws)
-                if _mkt:
-                    token_id = str(_mkt.up_token_id if direction == "UP" else _mkt.down_token_id)
+            token_id = ""
+            _mkt = await self._find_market_15m(ws)
+            if _mkt:
+                token_id = str(_mkt.up_token_id if direction == "UP" else _mkt.down_token_id)
             if token_id and shares > 0:
                 try:
                     logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", shares)
