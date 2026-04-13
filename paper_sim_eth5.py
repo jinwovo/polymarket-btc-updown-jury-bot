@@ -145,7 +145,7 @@ def _safe_prob(value) -> float | None:
 
 
 def _eth_price_at(conn, ts: float) -> float | None:
-    """Get ETH price closest to ts from eth_ticks."""
+    """Get ETH price closest to ts from eth_ticks (Binance)."""
     row = fetch_one(
         conn,
         "SELECT price FROM %s WHERE ts <= %%s ORDER BY ts DESC LIMIT 1" % PRICE_TABLE,
@@ -161,6 +161,22 @@ def _eth_price_at(conn, ts: float) -> float | None:
     if row and row[0] is not None:
         return float(row[0])
     return None
+
+
+def _eth_window_price(conn, window_start: int) -> tuple[float | None, float | None]:
+    """Get ETH start/end prices from market_windows (PTB/Chainlink, authoritative).
+    Returns (start_price, end_price)."""
+    row = fetch_one_dict(
+        conn,
+        "SELECT btc_start_price, btc_end_price FROM market_windows "
+        "WHERE window_start = %s AND slug LIKE 'eth-updown-5m%%' LIMIT 1",
+        (window_start,),
+    )
+    if not row:
+        return None, None
+    sp = float(row["btc_start_price"]) if row.get("btc_start_price") else None
+    ep = float(row["btc_end_price"]) if row.get("btc_end_price") else None
+    return sp, ep
 
 
 def _btc_price_at(conn, ts: float) -> float | None:
@@ -728,8 +744,11 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     )
 
     # Detailed Telegram (same format as BTC 5min)
-    _eth_start = _eth_price_at(conn, float(window_start))
-    _eth_now = _eth_price_at(conn, opened_at)
+    # Use market_windows PTB price (authoritative), fallback to eth_ticks
+    _mw_start, _mw_end = _eth_window_price(conn, int(window_start))
+    _eth_start = _mw_start if _mw_start else _eth_price_at(conn, float(window_start))
+    # Current price: use signal_cache btc_price (= calibrated ETH price from signal_generator)
+    _eth_now = float(cached.get("btc_price") or 0) or _eth_price_at(conn, opened_at)
     _reason_text = str(gate_reason or "").strip().replace("\n", " ")
     if len(_reason_text) > 260:
         _reason_text = f"{_reason_text[:257]}..."
@@ -821,10 +840,12 @@ def _resolve_trades(conn) -> int:
             label, ws, direction, outcome, pnl, roi_pct,
         )
 
-        # Detailed Telegram (same format as BTC 5min)
-        _eth_start = _eth_price_at(conn, float(ws))
-        _eth_end = _eth_price_at(conn, float(we))
-        _eth_exit = _eth_price_at(conn, now_ts)
+        # Detailed Telegram — use market_windows PTB prices (authoritative)
+        _mw_start, _mw_end = _eth_window_price(conn, ws)
+        _eth_start = _mw_start if _mw_start else _eth_price_at(conn, float(ws))
+        _eth_end = _mw_end if _mw_end else _eth_price_at(conn, float(we))
+        # Exit price: use market_windows end price (settlement price)
+        _eth_exit = _mw_end if _mw_end else _eth_price_at(conn, now_ts)
         _entry_price = float(row.get("entry_price") or 0)
         _settle_price = 1.0 if outcome == direction else 0.0
         _now_utc = datetime.now(timezone.utc).isoformat()
