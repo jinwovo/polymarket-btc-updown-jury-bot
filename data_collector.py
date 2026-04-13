@@ -2304,6 +2304,15 @@ async def _extra_market_poll(self):
                         end_price = self.btc_price_adjusted
                     elif mkt["price_source"] == "eth" and _eth_price.get("adjusted", _eth_price["price"]) > 0:
                         end_price = _eth_price.get("adjusted", _eth_price["price"])
+                    # DB fallback: if live price unavailable, try recent DB tick
+                    if end_price <= 0 and elapsed >= interval + 10:
+                        _tick_table = "eth_ticks" if mkt["price_source"] == "eth" else "btc_ticks"
+                        _fb_row = fetch_one(self.db,
+                            f"SELECT price FROM {_tick_table} WHERE ts >= %s AND ts <= %s ORDER BY ABS(ts - %s) LIMIT 1",
+                            (ws + interval - 10, ws + interval + 10, ws + interval))
+                        if _fb_row and float(_fb_row[0]) > 0:
+                            end_price = float(_fb_row[0])
+                            logger.info("Extra market %s finalize: using DB fallback price $%.2f", prefix, end_price)
                     if end_price > 0:
                         start_px = float(fetch_one(self.db, "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug = %s", (ws, slug))[0] or 0)
                         outcome = "UP" if end_price >= start_px else "DOWN" if start_px > 0 else "UNKNOWN"

@@ -387,6 +387,8 @@ class PaperReplay:
                                 float(os.getenv("REPLAY_SLOW_CLOB_HI", "0.05")))
         self.clob_exit_enabled = os.getenv("REPLAY_CLOB_EXIT", "0") == "1"
         self.clob_exit_remaining_sec = float(os.getenv("REPLAY_CLOB_EXIT_REMAINING", "10"))  # check at Ns remaining
+        # Half-stake for high-ask entries: reduce risk on expensive trades
+        self.half_stake_above = float(os.getenv("REPLAY_HALF_STAKE_ABOVE", "0"))  # 0=off, e.g. 0.46
 
         # Score-based entry mode: replace AND-gate filters with point system
         self.score_mode = os.getenv("REPLAY_SCORE_MODE", "0") == "1"
@@ -961,6 +963,10 @@ class PaperReplay:
             else:
                 stake = round(self.initial_equity * 0.15, 2)
 
+            # Half-stake for high-ask entries
+            if self.half_stake_above > 0 and entry_price >= self.half_stake_above:
+                stake = round(stake * 0.5, 2)
+
             # Kelly sizing: adjust stake based on conviction score
             if os.getenv("PAPER_KELLY_SIZING", "true").lower() == "true":
                 _k_conf = confidence
@@ -1353,6 +1359,7 @@ def main():
     parser.add_argument("--clob-exit-remaining", type=float, default=None, help="Seconds remaining to check CLOB exit (default 10)")
     parser.add_argument("--clob-exit-opp-threshold", type=float, default=None, help="Opposing ask threshold for CLOB exit (default 0.65)")
     parser.add_argument("--btc-still-lookback", type=float, default=None, help="BTC still moving lookback seconds (default 30)")
+    parser.add_argument("--half-stake-above", type=float, default=None, help="Half stake when entry_price >= this (e.g. 0.46)")
     parser.add_argument("--score-mode", action="store_true", help="Use score-based entry instead of AND-gate filters")
     parser.add_argument("--score-threshold", type=int, default=None, help="Min score to enter (default 5, max 10)")
     parser.add_argument("--score-entry-start", type=float, default=None, help="Entry start sec in score mode (default 80)")
@@ -1440,6 +1447,8 @@ def main():
         os.environ["REPLAY_CLOB_EXIT_OPP_THRESHOLD"] = str(args.clob_exit_opp_threshold)
     if args.btc_still_lookback is not None:
         os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
+    if args.half_stake_above is not None:
+        os.environ["REPLAY_HALF_STAKE_ABOVE"] = str(args.half_stake_above)
     if args.score_mode:
         os.environ["REPLAY_SCORE_MODE"] = "1"
     if args.score_threshold is not None:

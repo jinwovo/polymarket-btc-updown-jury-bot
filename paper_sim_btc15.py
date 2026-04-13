@@ -346,12 +346,29 @@ def _check_entry(conn, cached: dict, base_stake: float, sizing_mode: str) -> boo
         float(bb_pos_val) if bb_pos_val is not None else 0.0,
         float(drift_val) if drift_val is not None else 0.0,
     )
+    _btc_start_open = _btc_price_at(conn, float(window_start))
+    _btc_now_open = _btc_price_at(conn, opened_at)
+    _now_utc_open = datetime.now(timezone.utc).isoformat()
+    _reason_open = str(reason or "").strip().replace("\n", " ")
+    if len(_reason_open) > 260:
+        _reason_open = f"{_reason_open[:257]}..."
     _tg_send(
         f"[BTC15 PAPER OPEN]\n"
+        f"time(UTC): {_now_utc_open}\n"
         f"side: {direction}\n"
-        f"stake: ${stake:,.2f} @ {entry_price:.3f}\n"
-        f"payout: {payout_multiple:.2f}x\n"
-        f"window: {window_start}"
+        f"slug: {SLUG_PREFIX}\n"
+        f"window_start: {window_start}\n"
+        f"stake: ${float(stake):,.2f}\n"
+        f"entry odds: {float(entry_price):.3f}\n"
+        f"Polymarket ask (UP/DOWN): "
+        f"{f'{float(up_ask):.3f}' if up_ask else '--'} / "
+        f"{f'{float(down_ask):.3f}' if down_ask else '--'}\n"
+        f"15m start price: {f'${float(_btc_start_open):,.2f}' if _btc_start_open else '--'}\n"
+        f"current BTC: {f'${float(_btc_now_open):,.2f}' if _btc_now_open else '--'}\n"
+        f"to-win total: ${float(shares):,.2f}\n"
+        f"expected pnl: ${float(potential_win_pnl):,.2f}\n"
+        f"confidence: {float(confidence):.3f}\n"
+        f"reason: {_reason_open or '--'}"
     )
     return True
 
@@ -447,14 +464,117 @@ def _resolve_open_trades(conn) -> int:
             "%s ws=%s dir=%s outcome=%s pnl=$%+.2f roi=%+.2f%%",
             tag, ws, direction, outcome, pnl, roi_pct,
         )
+
+        _btc_start = _btc_price_at(conn, float(ws))
+        _btc_end = _btc_price_at(conn, float(we))
+        _btc_exit = _btc_price_at(conn, now_ts)
+        _settle_price = 1.0 if outcome == direction else 0.0
+        _now_utc = datetime.now(timezone.utc).isoformat()
         _tg_send(
-            f"[BTC15 PAPER {'WIN' if won else 'LOSS'}]\n"
-            f"side: {direction} | outcome: {outcome}\n"
-            f"pnl: ${pnl:+.2f} | roi: {roi_pct:+.1f}%\n"
-            f"window: {ws}"
+            f"[BTC15 PAPER CLOSE:SETTLEMENT] {tag.strip()}\n"
+            f"time(UTC): {_now_utc}\n"
+            f"side: {direction}\n"
+            f"slug: {SLUG_PREFIX}\n"
+            f"window_start: {ws}\n"
+            f"stake: ${float(stake):,.2f}\n"
+            f"entry odds: {float(entry_price):.3f}\n"
+            f"settlement odds: {float(_settle_price):.3f}\n"
+            f"15m start/end(BTC): "
+            f"{f'${float(_btc_start):,.2f}' if _btc_start else '--'} / "
+            f"{f'${float(_btc_end):,.2f}' if _btc_end else '--'}\n"
+            f"BTC at exit: {f'${float(_btc_exit):,.2f}' if _btc_exit else '--'}\n"
+            f"outcome: {str(outcome).upper()}\n"
+            f"realized pnl: ${float(pnl):,.2f} ({float(roi_pct):+.2f}%)\n"
+            f"reason: expiry_settlement"
         )
 
     return resolved
+
+
+def _backfill_unresolved_trades(conn) -> int:
+    """Re-settle BTC15 trades via Gamma API (corrects wrong outcomes)."""
+    now_ts = time.time()
+    rows = fetch_all_dicts(
+        conn,
+        f"""SELECT id, window_start, window_end, direction, stake, shares,
+                   actual_outcome, pnl
+            FROM {TRADES_TABLE}
+            WHERE status = 'CLOSED' AND archived_at IS NULL
+              AND closed_at > ?
+            ORDER BY window_start ASC
+            LIMIT 20""",
+        (now_ts - 1800,),
+    )
+    if not rows:
+        return 0
+
+    updated = 0
+    for row in rows:
+        ws = int(row["window_start"])
+        old_outcome = str(row.get("actual_outcome") or "")
+
+        try:
+            import httpx
+            slug = f"{SLUG_PREFIX}-{ws}"
+            resp = httpx.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                timeout=5,
+            )
+            events = resp.json()
+            if not events:
+                continue
+            meta = events[0].get("eventMetadata") or {}
+            if meta.get("priceToBeat") is None or meta.get("finalPrice") is None:
+                continue
+            gamma_ptb = float(meta["priceToBeat"])
+            gamma_final = float(meta["finalPrice"])
+            new_outcome = "UP" if gamma_final >= gamma_ptb else "DOWN"
+        except Exception:
+            continue
+
+        if new_outcome == old_outcome:
+            continue
+
+        direction = str(row["direction"])
+        stake = float(row["stake"])
+        shares = float(row["shares"])
+        won = 1 if new_outcome == direction else 0
+        if won:
+            raw_pnl = shares - stake
+            pnl = apply_fee_to_pnl(raw_pnl, stake)
+        else:
+            pnl = -stake
+        roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
+
+        execute_write(
+            conn,
+            f"""UPDATE {TRADES_TABLE}
+                SET actual_outcome=?, won=?, pnl=?, roi_pct=?,
+                    close_reason='expiry_settlement_corrected'
+                WHERE id=?""",
+            (new_outcome, won, pnl, roi_pct, int(row["id"])),
+        )
+        updated += 1
+        old_label = "WIN" if float(row.get("pnl") or 0) > 0 else "LOSS"
+        new_label = "WIN" if pnl > 0 else "LOSS"
+        logger.warning(
+            "BACKFILL CORRECTED ws=%s: %s->%s (%s->%s) pnl=$%+.2f->$%+.2f",
+            ws, old_outcome, new_outcome, old_label, new_label,
+            float(row.get("pnl") or 0), pnl,
+        )
+        _tg_send(
+            f"[BTC15 PAPER CORRECTED]\n"
+            f"window: {ws}\n"
+            f"outcome: {old_outcome} -> {new_outcome}\n"
+            f"result: {old_label} -> {new_label}\n"
+            f"pnl: ${float(row.get('pnl') or 0):+.2f} -> ${pnl:+.2f}\n"
+            f"source: Gamma API (ptb=${gamma_ptb:,.2f} final=${gamma_final:,.2f})"
+        )
+
+    if updated:
+        conn.commit()
+        logger.warning("Backfilled %d BTC15 trades from Gamma API", updated)
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +698,13 @@ def run_loop(stake: float, interval_sec: float, sizing_mode: str):
                     continue
 
                 _resolve_open_trades(conn)
+                # Backfill every 60s (Gamma API rate limit)
+                if not hasattr(run_loop, '_last_backfill'):
+                    run_loop._last_backfill = 0.0
+                _now_bf = time.time()
+                if _now_bf - run_loop._last_backfill >= 60.0:
+                    run_loop._last_backfill = _now_bf
+                    _backfill_unresolved_trades(conn)
 
                 cached = _read_signal_cache(conn)
                 if cached is not None:
