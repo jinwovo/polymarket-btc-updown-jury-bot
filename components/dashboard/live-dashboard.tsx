@@ -553,10 +553,17 @@ export function LiveDashboard() {
   const [marketMotionCardHeight, setMarketMotionCardHeight] = useState<number | null>(null);
 
   // ---- BTC 15min & ETH 5min market control state ----
+  interface MarketProcessStatus {
+    ok: boolean;
+    running?: boolean;
+    pid?: number | null;
+    output_tail?: string[];
+    meta?: { stake?: number; sizing_mode?: string; [key: string]: unknown };
+  }
   interface MarketControlStatus {
-    signal: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
-    paper: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
-    live: { ok: boolean; running?: boolean; pid?: number | null; output_tail?: string[] };
+    signal: MarketProcessStatus;
+    paper: MarketProcessStatus;
+    live: MarketProcessStatus;
   }
   const [btc15Status, setBtc15Status] = useState<MarketControlStatus | null>(null);
   const [btc15PaperStake, setBtc15PaperStake] = useState("1000");
@@ -1479,6 +1486,20 @@ export function LiveDashboard() {
       setSeedCapitalInput(String(serverSeed));
     }
   }, [liveStatus]);
+
+  // Restore ETH5/BTC15 stake from server meta when status loads
+  useEffect(() => {
+    const meta = eth5Status?.live?.meta;
+    if (meta?.stake && Number(meta.stake) > 0) {
+      setEth5LiveStake(String(meta.stake));
+    }
+  }, [eth5Status]);
+  useEffect(() => {
+    const meta = btc15Status?.live?.meta;
+    if (meta?.stake && Number(meta.stake) > 0) {
+      setBtc15LiveStake(String(meta.stake));
+    }
+  }, [btc15Status]);
 
   useEffect(() => {
     const enabled = paperStatus?.telegram?.enabled;
