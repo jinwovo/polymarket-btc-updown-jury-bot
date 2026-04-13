@@ -339,6 +339,22 @@ def _check_entry(
     if window_start <= 0:
         return False
 
+    # Daily loss limit check
+    _dll = float(os.getenv("ETH5_DAILY_LOSS_LIMIT", "100"))
+    if _dll > 0:
+        try:
+            from datetime import datetime as _dt
+            _today = _dt.now().replace(hour=0, minute=0, second=0).timestamp()
+            _dll_row = fetch_one(conn, f"SELECT COALESCE(SUM(pnl), 0) FROM {TRADES_TABLE} WHERE status='CLOSED' AND closed_at >= %s", (_today,))
+            _today_pnl = float(_dll_row[0]) if _dll_row else 0.0
+            if _today_pnl <= -_dll:
+                if not hasattr(_check_entry, '_dll_warned') or now_ts - _check_entry._dll_warned > 300:
+                    _check_entry._dll_warned = now_ts
+                    logger.warning("Daily loss limit reached: $%.2f <= -$%.2f", _today_pnl, _dll)
+                return False
+        except Exception:
+            pass
+
     # Verify signal is for the CURRENT window
     current_ws = int(now_ts // INTERVAL) * INTERVAL
     if window_start != current_ws:

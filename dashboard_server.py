@@ -3228,12 +3228,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         _mm_live_pnl = {
-            "/api/btc15/live-pnl": "live_trades_btc15",
-            "/api/eth5/live-pnl": "live_trades_eth5",
+            "/api/btc15/live-pnl": ("live_trades_btc15", "BTC15_DAILY_LOSS_LIMIT"),
+            "/api/eth5/live-pnl": ("live_trades_eth5", "ETH5_DAILY_LOSS_LIMIT"),
         }
         if path in _mm_live_pnl:
             try:
-                table = _mm_live_pnl[path]
+                table, env_key = _mm_live_pnl[path]
                 conn = connect_db()
                 import datetime as _dt
                 today_start = _dt.datetime.now().replace(hour=0, minute=0, second=0).timestamp()
@@ -3244,9 +3244,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 total_pnl = sum(float(r.get("pnl") or 0) for r in rows)
                 trades = len(rows)
                 conn.close()
+                loss_limit = float(os.getenv(env_key, "100.0"))
                 self._send_json({
                     "ok": True, "today_pnl": round(total_pnl, 2),
                     "today_trades": trades,
+                    "daily_loss_limit": round(loss_limit, 2),
+                    "daily_loss_remaining": round(max(0, loss_limit + total_pnl), 2),
                 })
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, code=500)
@@ -3427,6 +3430,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "daily_loss_limit": val})
             except Exception as e:
                 logger.exception("daily-loss-limit save error")
+                self._send_json({"ok": False, "error": str(e)}, code=500)
+            return
+
+        # ETH5 / BTC15 daily loss limit
+        _mm_loss_limit = {
+            "/api/control/eth5/daily-loss-limit": ("ETH5_DAILY_LOSS_LIMIT", "live_trades_eth5"),
+            "/api/control/btc15/daily-loss-limit": ("BTC15_DAILY_LOSS_LIMIT", "live_trades_btc15"),
+        }
+        if path in _mm_loss_limit:
+            env_key, _ = _mm_loss_limit[path]
+            try:
+                val = float(payload.get("daily_loss_limit", 0))
+                if val <= 0:
+                    self._send_json({"ok": False, "error": "daily_loss_limit must be > 0"}, code=400)
+                    return
+                val_str = f"{val:.2f}"
+                _set_runtime_var(env_key, val_str)
+                _update_env_file(_PUBLIC_ENV_PATH, {env_key: val_str})
+                self._send_json({"ok": True, "daily_loss_limit": val})
+            except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, code=500)
             return
 

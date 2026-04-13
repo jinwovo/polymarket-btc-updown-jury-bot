@@ -325,6 +325,23 @@ class LiveBTC15Trader:
         """Apply entry filters to a signal_cache_btc15 row.
         Returns (passed, reason_if_blocked)."""
 
+        # Daily loss limit check
+        _dll = float(os.getenv("BTC15_DAILY_LOSS_LIMIT", "100"))
+        if _dll > 0:
+            try:
+                from datetime import datetime as _dt
+                _today = _dt.now().replace(hour=0, minute=0, second=0).timestamp()
+                _dll_row = fetch_one(self.db, f"SELECT COALESCE(SUM(pnl), 0) FROM {TRADES_TABLE} WHERE status='CLOSED' AND closed_at >= %s", (_today,))
+                _today_pnl = float(_dll_row[0]) if _dll_row else 0.0
+                if _today_pnl <= -_dll:
+                    now = time.time()
+                    if not hasattr(self, '_dll_warned') or now - self._dll_warned > 300:
+                        self._dll_warned = now
+                        logger.warning("BTC15 daily loss limit reached: $%.2f <= -$%.2f", _today_pnl, _dll)
+                    return False, f"daily_loss_limit({_today_pnl:.0f}<=-{_dll:.0f})"
+            except Exception:
+                pass
+
         # gate_allow must be 1
         gate_allow = int(sig.get("gate_allow") or 0)
         gate_reason = str(sig.get("gate_reason") or "")

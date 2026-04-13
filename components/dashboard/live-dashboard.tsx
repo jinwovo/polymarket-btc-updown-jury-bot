@@ -2654,6 +2654,35 @@ export function LiveDashboard() {
                     ${(btc15LiveDaily?.daily_pnl ?? 0).toFixed(2)} ({btc15LiveDaily?.daily_trades ?? 0} trades)
                   </p>
                 </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Daily Loss Limit</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      defaultValue={100}
+                      id="btc15DailyLossLimitInput"
+                      className="w-20 rounded border border-border/70 bg-background/40 px-1 py-0.5 font-mono text-xs"
+                    />
+                    <button
+                      className="rounded bg-yellow-600 px-2 py-0.5 text-xs text-white hover:bg-yellow-500"
+                      onClick={async () => {
+                        const val = parseFloat((document.getElementById("btc15DailyLossLimitInput") as HTMLInputElement)?.value || "0");
+                        if (val > 0) {
+                          await fetch("/api/control/btc15/daily-loss-limit", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ daily_loss_limit: val }),
+                          });
+                        }
+                      }}
+                    >Save</button>
+                  </div>
+                  <p className="font-mono mt-1">
+                    -${((btc15LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100).toFixed(2)} | left ${((btc15LiveDaily as Record<string, number> | null)?.daily_loss_remaining ?? 100).toFixed(2)}
+                  </p>
+                </div>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <label className="text-xs text-muted-foreground">
@@ -2877,6 +2906,35 @@ export function LiveDashboard() {
                   <p className="text-muted-foreground">Today&apos;s PnL</p>
                   <p className={`font-mono font-semibold ${(eth5LiveDaily?.daily_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                     ${(eth5LiveDaily?.daily_pnl ?? 0).toFixed(2)} ({eth5LiveDaily?.daily_trades ?? 0} trades)
+                  </p>
+                </div>
+                <div className="rounded-md border border-border/60 bg-background/30 p-2 text-xs">
+                  <p className="text-muted-foreground">Daily Loss Limit</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      defaultValue={100}
+                      id="eth5DailyLossLimitInput"
+                      className="w-20 rounded border border-border/70 bg-background/40 px-1 py-0.5 font-mono text-xs"
+                    />
+                    <button
+                      className="rounded bg-yellow-600 px-2 py-0.5 text-xs text-white hover:bg-yellow-500"
+                      onClick={async () => {
+                        const val = parseFloat((document.getElementById("eth5DailyLossLimitInput") as HTMLInputElement)?.value || "0");
+                        if (val > 0) {
+                          await fetch("/api/control/eth5/daily-loss-limit", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ daily_loss_limit: val }),
+                          });
+                        }
+                      }}
+                    >Save</button>
+                  </div>
+                  <p className="font-mono mt-1">
+                    -${((eth5LiveDaily as Record<string, number> | null)?.daily_loss_limit ?? 100).toFixed(2)} | left ${((eth5LiveDaily as Record<string, number> | null)?.daily_loss_remaining ?? 100).toFixed(2)}
                   </p>
                 </div>
               </div>
