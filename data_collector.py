@@ -488,6 +488,7 @@ class DataCollector:
                         )
                 break  # only check first existing table
             self._check_parity_mismatch()
+            self._check_parity_mismatch_multi()
         except Exception as e:
             logger.debug("Trade check error: %s", e)
 
@@ -560,6 +561,63 @@ class DataCollector:
                     self._send_parity_telegram(msg)
         except Exception as e:
             logger.debug("Parity check error: %s", e)
+
+    def _check_parity_mismatch_multi(self):
+        """Parity check for ETH5 and BTC15: Paper vs Live."""
+        try:
+            now = time.time()
+            markets = [
+                ("ETH5", "paper_trades_eth5", "live_trades_eth5", "bot_paper_eth5.log", "bot_live_eth5.log"),
+                ("BTC15", "paper_trades_btc15", "live_trades_btc15", "bot_paper_btc15.log", "bot_live_btc15.log"),
+            ]
+            for label, paper_table, live_table, paper_log, live_log in markets:
+                try:
+                    paper_trades = fetch_all_dicts(
+                        self.db,
+                        f"SELECT window_start, opened_at FROM {paper_table} WHERE window_start >= %s AND archived_at IS NULL ORDER BY opened_at DESC LIMIT 10",
+                        (int(now) - 600,),
+                    )
+                    live_trades = fetch_all_dicts(
+                        self.db,
+                        f"SELECT window_start, opened_at FROM {live_table} WHERE window_start >= %s ORDER BY opened_at DESC LIMIT 10",
+                        (int(now) - 600,),
+                    )
+                except Exception:
+                    continue
+
+                if not paper_trades and not live_trades:
+                    continue
+
+                paper_ws = {int(r["window_start"]) for r in paper_trades}
+                live_ws = {int(r["window_start"]) for r in live_trades}
+
+                for r in paper_trades:
+                    ws = int(r["window_start"])
+                    age = now - float(r["opened_at"])
+                    if ws not in live_ws and 45 <= age <= 300 and ws not in self._parity_alerted_ws:
+                        _log_path = os.path.join(os.path.dirname(__file__), live_log)
+                        _active = (time.time() - os.path.getmtime(_log_path)) < 60 if os.path.exists(_log_path) else False
+                        if not _active:
+                            continue
+                        self._parity_alerted_ws.add(ws)
+                        msg = f"[!] PARITY MISMATCH | {label}\nPaper OPEN but Live missing\nws={ws} (age={age:.0f}s after Paper entry)"
+                        logger.warning(msg.replace("\n", " | "))
+                        self._send_parity_telegram(msg)
+
+                for r in live_trades:
+                    ws = int(r["window_start"])
+                    age = now - float(r["opened_at"])
+                    if ws not in paper_ws and 45 <= age <= 300 and ws not in self._parity_alerted_ws:
+                        _log_path = os.path.join(os.path.dirname(__file__), paper_log)
+                        _active = (time.time() - os.path.getmtime(_log_path)) < 60 if os.path.exists(_log_path) else False
+                        if not _active:
+                            continue
+                        self._parity_alerted_ws.add(ws)
+                        msg = f"[!] PARITY MISMATCH | {label}\nLive OPEN but Paper missing\nws={ws} (age={age:.0f}s after Live entry)"
+                        logger.warning(msg.replace("\n", " | "))
+                        self._send_parity_telegram(msg)
+        except Exception as e:
+            logger.debug("Multi-market parity check error: %s", e)
 
     def _send_parity_telegram(self, msg: str):
         try:
