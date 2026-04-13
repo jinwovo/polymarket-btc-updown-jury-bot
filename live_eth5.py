@@ -688,12 +688,36 @@ def _check_entry(
         gate_ev * 100.0, confidence, entry_source,
     )
 
-    # Telegram notification
+    # Telegram notification (detailed, same format as BTC 5min)
+    from datetime import datetime as _dt_tg, timezone as _tz_tg
+    _mw_s, _mw_e = None, None
+    try:
+        _mw_row = fetch_one_dict(conn, "SELECT btc_start_price FROM market_windows WHERE window_start=%s AND slug LIKE 'eth-updown-5m%%' LIMIT 1", (int(window_start),))
+        if _mw_row:
+            _mw_s = float(_mw_row["btc_start_price"]) if _mw_row.get("btc_start_price") else None
+    except Exception:
+        pass
+    _eth_cur = float(cached.get("btc_price") or 0) or None
+    _reason_tg = str(gate_reason or "").strip().replace("\n", " ")
+    if len(_reason_tg) > 260:
+        _reason_tg = f"{_reason_tg[:257]}..."
     _send_telegram(
-        f"[ETH5 LIVE] OPEN {direction}\n"
-        f"stake: ${stake:.2f} @ {entry_price:.4f}\n"
-        f"ev: {gate_ev*100:.1f}% conf: {confidence:.2f}\n"
-        f"window: {window_start}"
+        f"[ETH5 LIVE OPEN]\n"
+        f"time(UTC): {_dt_tg.now(_tz_tg.utc).isoformat()}\n"
+        f"side: {direction}\n"
+        f"slug: eth-updown-5m\n"
+        f"window_start: {window_start}\n"
+        f"stake: ${float(stake):,.2f}\n"
+        f"entry odds: {float(entry_price):.3f}\n"
+        f"Polymarket ask (UP/DOWN): "
+        f"{f'{float(up_ask):.3f}' if up_ask else '--'} / "
+        f"{f'{float(down_ask):.3f}' if down_ask else '--'}\n"
+        f"5m start price: {f'${float(_mw_s):,.2f}' if _mw_s else '--'}\n"
+        f"current ETH: {f'${float(_eth_cur):,.2f}' if _eth_cur else '--'}\n"
+        f"to-win total: ${float(shares):,.2f}\n"
+        f"expected pnl: ${float(potential_win_pnl):,.2f}\n"
+        f"confidence: {float(confidence):.3f}\n"
+        f"reason: {_reason_tg or '--'}"
     )
 
     return True
@@ -1013,12 +1037,33 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                         except Exception as _exit_err:
                             logger.warning("Post-settlement exit error: %s", _exit_err)
 
-        # Telegram close notification
+        # Telegram close notification (detailed)
+        from datetime import datetime as _dt_tg2, timezone as _tz_tg2
+        _mw_s2, _mw_e2 = None, None
+        try:
+            _mw_row2 = fetch_one_dict(conn, "SELECT btc_start_price, btc_end_price FROM market_windows WHERE window_start=%s AND slug LIKE 'eth-updown-5m%%' LIMIT 1", (ws,))
+            if _mw_row2:
+                _mw_s2 = float(_mw_row2["btc_start_price"]) if _mw_row2.get("btc_start_price") else None
+                _mw_e2 = float(_mw_row2["btc_end_price"]) if _mw_row2.get("btc_end_price") else None
+        except Exception:
+            pass
+        _settle_px = 1.0 if outcome == direction else 0.0
+        _entry_px = float(row.get("entry_price") or 0)
         _send_telegram(
-            f"[ETH5 LIVE] {'WIN' if won else 'LOSS'} {direction}\n"
-            f"outcome: {outcome}\n"
-            f"pnl: ${pnl:+.2f} ({roi_pct:+.1f}%)\n"
-            f"window: {ws}"
+            f"[ETH5 LIVE CLOSE:SETTLEMENT] {'WIN' if won else 'LOSS'}\n"
+            f"time(UTC): {_dt_tg2.now(_tz_tg2.utc).isoformat()}\n"
+            f"side: {direction}\n"
+            f"slug: eth-updown-5m\n"
+            f"window_start: {ws}\n"
+            f"stake: ${float(stake):,.2f}\n"
+            f"entry odds: {float(_entry_px):.3f}\n"
+            f"settlement odds: {float(_settle_px):.3f}\n"
+            f"5m start/end(ETH): "
+            f"{f'${float(_mw_s2):,.2f}' if _mw_s2 else '--'} / "
+            f"{f'${float(_mw_e2):,.2f}' if _mw_e2 else '--'}\n"
+            f"outcome: {str(outcome).upper()}\n"
+            f"realized pnl: ${float(pnl):,.2f} ({float(roi_pct):+.2f}%)\n"
+            f"reason: expiry_settlement"
         )
 
     return resolved
