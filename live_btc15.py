@@ -1119,6 +1119,10 @@ def main():
         action="store_false",
         help="Real money mode -- place actual orders",
     )
+    parser.add_argument("--stake", type=float, default=None,
+                        help="Stake per trade (dashboard sends this)")
+    parser.add_argument("--sizing-mode", type=str, default="fixed",
+                        help="Sizing mode (ignored, uses env)")
     args = parser.parse_args()
 
     trader = LiveBTC15Trader(dry_run=args.dry_run)

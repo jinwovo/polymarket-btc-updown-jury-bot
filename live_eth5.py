@@ -1185,9 +1185,16 @@ def main():
                         help="Polling interval seconds (default: 0.5)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Simulate trades without placing real orders")
+    parser.add_argument("--no-dry-run", action="store_true",
+                        help="Force live mode (dashboard sends this)")
+    parser.add_argument("--sizing-mode", type=str, default="fixed",
+                        help="Sizing mode (ignored, always fixed)")
     parser.add_argument("--status", action="store_true",
                         help="Show live trade status and exit")
     args = parser.parse_args()
+
+    # --no-dry-run overrides --dry-run (dashboard sends --no-dry-run for live)
+    dry_run = args.dry_run and not args.no_dry_run
 
     conn = connect_db()
     _init_tables(conn)
@@ -1202,7 +1209,7 @@ def main():
     run_loop(
         stake=float(args.stake),
         interval_sec=float(args.interval),
-        dry_run=bool(args.dry_run),
+        dry_run=dry_run,
     )
 
 
