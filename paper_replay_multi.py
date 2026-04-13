@@ -602,6 +602,40 @@ class PaperReplayMulti:
                         if range_pct < self.btc_active_min_range:
                             continue
 
+            # ETH acceleration filter (SCL path)
+            if self.require_eth_accel_pos and self._cache:
+                p60 = self._cache.price_at(entry_ts - 60)
+                p30 = self._cache.price_at(entry_ts - 30)
+                p_now = self._cache.price_at(entry_ts)
+                if p60 and p30 and p_now and p60 > 0:
+                    mom_r = (p_now - p30) / p60 * 100
+                    mom_p = (p30 - p60) / p60 * 100
+                    accel = (mom_r - mom_p) if direction == "UP" else -(mom_r - mom_p)
+                    if accel < 0:
+                        continue
+
+            # ETH volatility cap (SCL path)
+            if self.max_eth_vol > 0 and self._cache:
+                _ev_s = bisect.bisect_left(self._cache.px_ts, entry_ts - 60)
+                _ev_e = bisect.bisect_right(self._cache.px_ts, entry_ts)
+                _ev_px = self._cache.px_val[_ev_s:_ev_e]
+                if len(_ev_px) >= 10:
+                    _ev_rets = [(_ev_px[i+1]-_ev_px[i])/_ev_px[i] for i in range(len(_ev_px)-1) if _ev_px[i]>0]
+                    _ev_vol = (sum(r**2 for r in _ev_rets)/max(len(_ev_rets),1))**0.5*100 if _ev_rets else 0
+                    if _ev_vol > self.max_eth_vol:
+                        continue
+
+            # CLOB shift cap (SCL path)
+            if self.max_clob_shift > 0 and self._cache:
+                _cs_start_odds = self._cache.odds_at(ws, float(ws) + 5)
+                if _cs_start_odds:
+                    if direction == "UP":
+                        _cs_drift = up_ask - float(_cs_start_odds.get("up_best_ask") or 0.5)
+                    else:
+                        _cs_drift = down_ask - float(_cs_start_odds.get("down_best_ask") or 0.5)
+                    if abs(_cs_drift) > self.max_clob_shift:
+                        continue
+
             # Sizing
             stake = self._get_stake(entry_price, confidence, ws=ws, entry_ts=entry_ts, direction=direction)
             shares = stake / entry_price
