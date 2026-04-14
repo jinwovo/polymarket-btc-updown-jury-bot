@@ -810,6 +810,8 @@ class LiveBTC15Trader:
         # Post-settlement exit: sell winning shares @ 0.99 (maker 0% fee)
         won = (actual == direction)
         if won and not self.dry_run:
+            # Wait 10s for Polymarket to finalize settlement
+            await asyncio.sleep(10)
             shares = stake / entry_price if entry_price > 0 else 0
             token_id = ""
             _mkt = await self._find_market_15m(ws)

@@ -1041,6 +1041,8 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
 
         # Post-settlement exit: sell winning shares @ 0.99 (maker 0% fee)
         if won and not dry_run and poly_client is not None:
+            # Wait 10s for Polymarket to finalize settlement (token becomes sellable)
+            time.sleep(10)
             entry_price = float(row.get("entry_price") or 0.5)
             if 0 < entry_price < 1:
                 _exit_shares = shares
