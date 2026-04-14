@@ -1047,12 +1047,31 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
             entry_price = float(row.get("entry_price") or 0.5)
             if 0 < entry_price < 1:
                 _exit_shares = shares
-                # Resolve token_id
+                # Resolve token_id + check balance
                 _mkt = _find_eth_market(poly_client, ws)
                 if _mkt:
                     _tok = _mkt.up_token_id if direction == "UP" else _mkt.down_token_id
                     if _tok:
                         try:
+                            # Cap shares by actual exchange balance (like BTC 5min)
+                            _bal_loop = asyncio.new_event_loop()
+                            _exposure = _bal_loop.run_until_complete(
+                                poly_client.inspect_market_exposure(_mkt)
+                            )
+                            if _exposure and _exposure.get("ok"):
+                                _avail = float(_exposure.get("down_balance" if direction == "DOWN" else "up_balance") or 0)
+                                if _avail > 0:
+                                    _capped = min(_exit_shares, _avail * 0.995)
+                                    if _capped < _exit_shares:
+                                        logger.info("Capping exit shares: requested=%.2f available=%.2f used=%.2f", _exit_shares, _avail, _capped)
+                                    _exit_shares = _capped
+                                else:
+                                    logger.warning("No %s balance on exchange, skipping exit", direction)
+                                    _exit_shares = 0
+
+                            if _exit_shares <= 0:
+                                raise ValueError("no shares to sell")
+
                             logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", _exit_shares)
                             _exit_loop = asyncio.new_event_loop()
                             _exit_result = _exit_loop.run_until_complete(
