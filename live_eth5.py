@@ -595,7 +595,8 @@ def _check_entry(
         )
 
         try:
-            order_result = asyncio.get_event_loop().run_until_complete(
+            _loop = asyncio.new_event_loop()
+            order_result = _loop.run_until_complete(
                 poly_client.place_entry_order(
                     token_id=token_id,
                     side=direction,
@@ -1050,7 +1051,8 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                     if _tok:
                         try:
                             logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", _exit_shares)
-                            _exit_result = asyncio.get_event_loop().run_until_complete(
+                            _exit_loop = asyncio.new_event_loop()
+                            _exit_result = _exit_loop.run_until_complete(
                                 poly_client.place_settlement_exit_order(
                                     token_id=_tok,
                                     shares=_exit_shares,
