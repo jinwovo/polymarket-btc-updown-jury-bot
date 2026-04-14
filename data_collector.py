@@ -1239,18 +1239,15 @@ class DataCollector:
         while self._running:
             try:
                 async with _ws.connect("wss://ws-live-data.polymarket.com", ping_interval=None, close_timeout=10, open_timeout=10) as ws:
+                    # Subscribe WITHOUT symbol filter — filtered subscription
+                    # misses most ETH messages (server-side filter bug).
+                    # Client-side classification by price range instead.
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [
                             {
                                 "topic": "crypto_prices_chainlink",
                                 "type": "*",
-                                "filters": '{"symbol":"btc/usd"}'
-                            },
-                            {
-                                "topic": "crypto_prices_chainlink",
-                                "type": "*",
-                                "filters": '{"symbol":"eth/usd"}'
                             },
                         ]
                     }))
