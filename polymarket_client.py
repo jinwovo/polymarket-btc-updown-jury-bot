@@ -477,7 +477,13 @@ class PolymarketClient:
     def _daemon_order(self, token_id: str, price: float, size: float,
                       side: str, fee_bps: int = 1000, neg_risk: bool = False,
                       funder: str = "") -> Optional[dict]:
-        """Send order to daemon, return result dict or None on failure."""
+        """Send order to daemon (sync, for use with to_thread fallback)."""
+        return self._daemon_order_sync(token_id, price, size, side, fee_bps, neg_risk, funder)
+
+    def _daemon_order_sync(self, token_id: str, price: float, size: float,
+                           side: str, fee_bps: int = 1000, neg_risk: bool = False,
+                           funder: str = "") -> Optional[dict]:
+        """Send order to daemon via stdin/stdout (blocking)."""
         if not self._daemon_proc or self._daemon_proc.poll() is not None:
             return None
         req = json.dumps({
@@ -494,7 +500,6 @@ class PolymarketClient:
             return None
         except Exception as e:
             logger.warning("Daemon communication error: %s", e)
-            # Kill broken daemon so next call restarts it
             try:
                 self._daemon_proc.kill()
             except Exception:
@@ -2081,12 +2086,13 @@ class PolymarketClient:
                     _fak_size = max(1, int(amount / _fak_limit))
                     _funder = os.getenv("POLYMARKET_FUNDER", "")
                     logger.info("Rust daemon FAK: limit=%.3f (ask=%.3f) size=%d", _fak_limit, working_ask, _fak_size)
-                    _t0 = asyncio.get_event_loop().time()
-                    _dr = await asyncio.to_thread(
-                        self._daemon_order, str(token_id), _fak_limit, float(_fak_size),
+                    import time as _time_mod
+                    _t0 = _time_mod.monotonic()
+                    _dr = self._daemon_order_sync(
+                        str(token_id), _fak_limit, float(_fak_size),
                         side, 1000, False, _funder,
                     )
-                    _elapsed = (asyncio.get_event_loop().time() - _t0) * 1000
+                    _elapsed = (_time_mod.monotonic() - _t0) * 1000
                     if _dr:
                         logger.info("Rust daemon: %dms filled=%s status=%s err=%s",
                                    int(_elapsed), _dr.get("filled"), _dr.get("status"), str(_dr.get("error",""))[:60])
