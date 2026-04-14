@@ -1331,8 +1331,8 @@ def main():
     parser = argparse.ArgumentParser(description="ETH 5min live trading bot")
     parser.add_argument("--stake", type=float, default=float(FIXED_STAKE),
                         help=f"Stake per trade in USD (default: {FIXED_STAKE})")
-    parser.add_argument("--interval", type=float, default=0.5,
-                        help="Polling interval seconds (default: 0.5)")
+    parser.add_argument("--interval", type=float, default=0.1,
+                        help="Polling interval seconds (default: 0.1)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Simulate trades without placing real orders")
     parser.add_argument("--no-dry-run", action="store_true",

@@ -47,7 +47,7 @@ SIGNAL_CACHE = MARKET.signal_cache_table     # signal_cache_eth5
 SIGNAL_LOG = MARKET.signal_cache_log_table   # signal_cache_log_eth5
 ENV_PREFIX = MARKET.env_prefix               # ETH5_
 
-POLL_INTERVAL = 1.0       # seconds between ticks
+POLL_INTERVAL = 0.1       # seconds between ticks (match data_collector's 0.1s)
 PRICE_LOOKBACK = 600      # seconds of price history to keep
 MIN_PRICES = 20           # minimum ticks before running jury
 
