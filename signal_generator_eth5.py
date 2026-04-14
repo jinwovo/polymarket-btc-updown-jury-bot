@@ -231,16 +231,17 @@ class ETH5SignalGenerator:
             return float(row[0]), float(row[1])
         return None, 0.0
 
-    def _get_window_start_price(self, ws: int) -> float | None:
-        """Get the ETH price at window start from market_windows or first tick."""
-        # Try market_windows first
+    def _get_window_start_price(self, ws: int) -> tuple[float | None, bool]:
+        """Get the ETH price at window start from market_windows or first tick.
+        Returns (price, is_from_market_windows)."""
+        # Try market_windows first (PTB = authoritative)
         row = fetch_one_dict(
             self.db,
             "SELECT btc_start_price FROM market_windows WHERE window_start = %s AND slug LIKE 'eth-updown-5m%%'",
             (ws,),
         )
         if row and row.get("btc_start_price") and float(row["btc_start_price"]) > 0:
-            return float(row["btc_start_price"])
+            return float(row["btc_start_price"]), True
         # Fallback: earliest eth_ticks in this window
         row2 = fetch_one(
             self.db,
@@ -248,8 +249,8 @@ class ETH5SignalGenerator:
             (ws, ws + 5),
         )
         if row2:
-            return float(row2[0])
-        return None
+            return float(row2[0]), False
+        return None, False
 
     def _get_clob_odds(self, ws: int, now: float):
         """Get latest CLOB odds for current ETH 5min window from poly_odds."""
@@ -478,16 +479,26 @@ class ETH5SignalGenerator:
         # -- New window? Reset per-window state --
         if ws != self._current_ws:
             self._current_ws = ws
-            self._window_start_price = self._get_window_start_price(ws)
+            self._window_start_price, self._start_price_from_mw = self._get_window_start_price(ws)
             self._window_initial_up_ask = None
             self._window_initial_down_ask = None
             self._ask_history = []
             self._lag_arb_lock = None
             logger.info(
-                "New window: ws=%d elapsed=%.1f start_price=%s",
+                "New window: ws=%d elapsed=%.1f start_price=%s (src=%s)",
                 ws, elapsed,
                 f"${self._window_start_price:.2f}" if self._window_start_price else "N/A",
+                "PTB" if self._start_price_from_mw else "eth_ticks",
             )
+
+        # -- Re-check start price from market_windows if we used eth_ticks fallback --
+        # data_collector writes PTB after window start; retry until we get it
+        if self._window_start_price and not self._start_price_from_mw and elapsed < 30:
+            _mw_price, _from_mw = self._get_window_start_price(ws)
+            if _from_mw and _mw_price:
+                logger.info("Start price updated from PTB: $%.2f -> $%.2f", self._window_start_price, _mw_price)
+                self._window_start_price = _mw_price
+                self._start_price_from_mw = True
 
         # -- Load fresh prices --
         self._load_recent_prices(now)
