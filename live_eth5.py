@@ -547,9 +547,10 @@ def _check_entry(
         stake = round(stake * qs, 2)
         logger.debug("Dynamic sizing: quality=%.2f stake=$%.2f", qs, stake)
 
-    if stake < max(5.0, MIN_BET_SIZE):
-        logger.warning("Stake too small ws=%s: $%.2f", window_start, stake)
-        return False
+    # Floor at $5 minimum (Polymarket requires ~$5 notional)
+    _min_stake = max(5.0, MIN_BET_SIZE)
+    if stake < _min_stake:
+        stake = round(_min_stake, 2)
 
     # Compute trade fields
     shares = stake / entry_price
