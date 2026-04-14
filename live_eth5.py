@@ -938,13 +938,13 @@ def _fetch_eth_settlement_outcome(start_timestamp: int) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Settlement
 # ---------------------------------------------------------------------------
-def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
+def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None, acct_mgr=None) -> int:
     """Resolve open trades at window end using ETH price."""
     now_ts = time.time()
 
     open_rows = fetch_all_dicts(
         conn,
-        f"""SELECT id, window_start, window_end, direction, stake, shares, entry_price
+        f"""SELECT id, window_start, window_end, direction, stake, shares, entry_price, account_id
            FROM {TRADES_TABLE}
            WHERE status = 'OPEN'
            ORDER BY window_start ASC""",
@@ -1049,7 +1049,14 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
         )
 
         # Post-settlement exit: sell winning shares @ 0.99 (maker 0% fee)
-        if won and not dry_run and poly_client is not None:
+        # Use correct client for this account
+        _trade_acct_id = int(row.get("account_id") or 0)
+        _exit_client = poly_client  # default: main account
+        if _trade_acct_id > 0 and acct_mgr is not None:
+            _acct_client = acct_mgr.get_client(_trade_acct_id)
+            if _acct_client:
+                _exit_client = _acct_client
+        if won and not dry_run and _exit_client is not None:
             # Wait 10s for Polymarket to finalize settlement (token becomes sellable)
             time.sleep(10)
             entry_price = float(row.get("entry_price") or 0.5)
@@ -1064,7 +1071,7 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                             # Cap shares by actual exchange balance (like BTC 5min)
                             _bal_loop = asyncio.new_event_loop()
                             _exposure = _bal_loop.run_until_complete(
-                                poly_client.inspect_market_exposure(_mkt)
+                                _exit_client.inspect_market_exposure(_mkt)
                             )
                             if _exposure and _exposure.get("ok"):
                                 _avail = float(_exposure.get("down_balance" if direction == "DOWN" else "up_balance") or 0)
@@ -1083,7 +1090,7 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                             logger.info("Post-settlement exit: SELL %.2f shares @ 0.99 (maker 0%%)", _exit_shares)
                             _exit_loop = asyncio.new_event_loop()
                             _exit_result = _exit_loop.run_until_complete(
-                                poly_client.place_settlement_exit_order(
+                                _exit_client.place_settlement_exit_order(
                                     token_id=_tok,
                                     shares=_exit_shares,
                                 )
@@ -1096,7 +1103,7 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                                 try:
                                     _claim_loop = asyncio.new_event_loop()
                                     _claim_result = _claim_loop.run_until_complete(
-                                        poly_client.auto_claim_winnings()
+                                        _exit_client.auto_claim_winnings()
                                     )
                                     if _claim_result and _claim_result.get("ok"):
                                         claimed = float(_claim_result.get("claimed") or 0)
@@ -1390,7 +1397,7 @@ def run_loop(
                     continue
 
                 # Resolve any open trades whose window has ended
-                _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client)
+                _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client, acct_mgr=acct_mgr)
 
                 # Read signal and check entry
                 cached = _read_signal_cache(conn)
@@ -1435,7 +1442,7 @@ def run_loop(
     finally:
         # Final settlement pass (with exit orders if live)
         try:
-            _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client)
+            _resolve_open_trades(conn, dry_run=dry_run, poly_client=poly_client, acct_mgr=acct_mgr)
         except Exception:
             pass
 
