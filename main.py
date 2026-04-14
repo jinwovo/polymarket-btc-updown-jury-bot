@@ -722,6 +722,11 @@ class TradingBot:
         self._pending_settlement_exit: Optional[dict[str, Any]] = None
         self._bg_tasks: set[asyncio.Task] = set()
         self._telegram_warned_not_ready: bool = False
+
+        # Multi-account: poll DB for RUNNING accounts, mirror main trades
+        self._acct_clients: dict[int, PolymarketClient] = {}
+        self._acct_info: dict[int, dict] = {}
+        self._acct_last_refresh: float = 0.0
         # Retry state: when an entry order is rejected by the API (not by gates),
         # remember the signal so we can retry on subsequent ticks without waiting
         # for a new signal.  Cleared on new window, successful fill, or kill-switch.
@@ -1025,6 +1030,75 @@ class TradingBot:
             f"BTC at exit: {btc_exit_str}\n"
             f"realized pnl: ${pnl:,.2f} ({roi_pct:+.2f}%)"
         )
+
+    async def _refresh_account_clients(self):
+        """Poll DB for RUNNING accounts (btc5), create/remove clients."""
+        now = time.time()
+        if now - self._acct_last_refresh < 10.0:
+            return
+        self._acct_last_refresh = now
+        if config.trading.dry_run:
+            return
+        try:
+            conn = self._ensure_state_conn()
+            rows = fetch_all_dicts(
+                conn,
+                "SELECT id, name, api_key, api_secret, api_passphrase, private_key, "
+                "funder, fixed_stake, daily_loss_limit, status "
+                "FROM accounts WHERE enabled = 1 AND status = 'RUNNING'",
+            )
+            active_ids = set()
+            for row in rows:
+                aid = int(row["id"])
+                active_ids.add(aid)
+                self._acct_info[aid] = row
+                if aid not in self._acct_clients:
+                    pk = str(row.get("private_key") or "").strip()
+                    ak = str(row.get("api_key") or "").strip()
+                    if pk and ak:
+                        _orig = {k: os.environ.get(k, "") for k in
+                                 ["POLYMARKET_PRIVATE_KEY","POLYMARKET_API_KEY",
+                                  "POLYMARKET_API_SECRET","POLYMARKET_API_PASSPHRASE","POLYMARKET_FUNDER"]}
+                        try:
+                            os.environ["POLYMARKET_PRIVATE_KEY"] = pk
+                            os.environ["POLYMARKET_API_KEY"] = ak
+                            os.environ["POLYMARKET_API_SECRET"] = str(row.get("api_secret") or "")
+                            os.environ["POLYMARKET_API_PASSPHRASE"] = str(row.get("api_passphrase") or "")
+                            os.environ["POLYMARKET_FUNDER"] = str(row.get("funder") or "")
+                            self._acct_clients[aid] = PolymarketClient()
+                            logger.info("BTC5 multi-account: client created for account %d (%s)", aid, row.get("name",""))
+                        finally:
+                            for k, v in _orig.items():
+                                os.environ[k] = v
+            # Remove stopped
+            for aid in list(self._acct_clients.keys()):
+                if aid not in active_ids:
+                    logger.info("BTC5 multi-account: account %d stopped", aid)
+                    client = self._acct_clients.pop(aid, None)
+                    self._acct_info.pop(aid, None)
+                    if client:
+                        try: await client.close()
+                        except Exception: pass
+        except Exception as e:
+            logger.debug("Account refresh error: %s", e)
+
+    async def _mirror_trade_to_accounts(self, token_id: str, direction: str, price: float):
+        """Place same trade on all active additional accounts."""
+        for aid, client in list(self._acct_clients.items()):
+            info = self._acct_info.get(aid, {})
+            acct_stake = float(info.get("fixed_stake") or 15)
+            try:
+                _result = await client.place_entry_order(
+                    token_id=token_id,
+                    side=direction,
+                    amount=acct_stake,
+                    reference_ask=price,
+                )
+                filled = bool(_result and _result.get("filled"))
+                logger.info("Account %d (%s) mirror: %s $%.2f @ %.3f filled=%s",
+                           aid, info.get("name",""), direction, acct_stake, price, filled)
+            except Exception as e:
+                logger.warning("Account %d mirror error: %s", aid, e)
 
     def _get_chainlink_price(self) -> float:
         """Get current BTC price from signal_cache (Chainlink/RTDS), fallback to Binance."""
@@ -3252,6 +3326,9 @@ class TradingBot:
             await asyncio.sleep(self._check_interval)
 
     async def _tick(self):
+        # Refresh multi-account clients (10s throttle inside)
+        await self._refresh_account_clients()
+
         if self._kill_switch_reason:
             self._running = False
             return
@@ -3502,6 +3579,7 @@ class TradingBot:
                     if handled:
                         self._pending_entry_retry = None
                         await self._refresh_adaptive_balance_cap(force=True, reason="post_fill")
+                        await self._mirror_trade_to_accounts(token_id, fast_direction, float(price))
                     elif not self._kill_switch_reason and not bool(
                         (result or {}).get("uncertain_fill", False)
                     ):
@@ -4388,6 +4466,8 @@ class TradingBot:
         if handled:
             self._pending_entry_retry = None
             await self._refresh_adaptive_balance_cap(force=True, reason="post_fill")
+            # Mirror trade to additional accounts
+            await self._mirror_trade_to_accounts(token_id, decision.direction, float(price))
         elif not self._kill_switch_reason and not bool(
             (result or {}).get("uncertain_fill", False)
         ):

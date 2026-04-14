@@ -3778,9 +3778,9 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
     if not acct.get("api_key") or not acct.get("private_key"):
         return {"ok": False, "error": "API key or private key not configured"}
 
-    # ETH5: single-process multi-account. Just update DB status.
-    # live_eth5.py polls accounts table and picks up RUNNING accounts.
-    if market == "eth5":
+    # ETH5 / BTC5: single-process multi-account. Just update DB status.
+    # live_eth5.py / main.py polls accounts table and picks up RUNNING accounts.
+    if market in ("eth5", "btc5"):
         try:
             conn = _connect_db()
             execute_write(conn, "UPDATE accounts SET status='RUNNING' WHERE id=%s", (account_id,))
@@ -3835,8 +3835,8 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
 def control_account_stop(account_id: int, market: str = "btc5") -> dict:
     """Stop live trading for a specific account + market."""
 
-    # ETH5: single-process mode. Just update DB status.
-    if market == "eth5":
+    # ETH5 / BTC5: single-process mode. Just update DB status.
+    if market in ("eth5", "btc5"):
         try:
             conn = _connect_db()
             execute_write(conn, "UPDATE accounts SET status='STOPPED', pid=NULL WHERE id=%s", (account_id,))
