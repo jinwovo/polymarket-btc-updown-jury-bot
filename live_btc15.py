@@ -1164,6 +1164,13 @@ def main():
                         help="Sizing mode (ignored, uses env)")
     args = parser.parse_args()
 
+    # CRITICAL: override config.trading.dry_run so PolymarketClient places real orders
+    if not args.dry_run:
+        import os as _os
+        _os.environ["DRY_RUN"] = "false"
+        from config import config as _cfg
+        _cfg.trading.dry_run = False
+
     trader = LiveBTC15Trader(dry_run=args.dry_run)
     asyncio.run(trader.run())
 

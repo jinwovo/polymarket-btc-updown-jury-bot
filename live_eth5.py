@@ -1310,6 +1310,13 @@ def main():
     # --no-dry-run overrides --dry-run (dashboard sends --no-dry-run for live)
     dry_run = args.dry_run and not args.no_dry_run
 
+    # CRITICAL: also override config.trading.dry_run so PolymarketClient
+    # places real orders (it reads config.trading.dry_run internally)
+    if not dry_run:
+        import os as _os
+        _os.environ["DRY_RUN"] = "false"
+        config.trading.dry_run = False
+
     conn = connect_db()
     _init_tables(conn)
     conn.close()
