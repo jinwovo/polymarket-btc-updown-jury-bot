@@ -1061,7 +1061,21 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None) -> int:
                             if _exit_result and _exit_result.get("filled"):
                                 logger.warning("Post-settlement exit filled! $%.2f", float(_exit_result.get("executed_notional") or 0))
                             else:
-                                logger.info("Post-settlement exit: %s", _exit_result.get("status") if _exit_result else "no result")
+                                # 0.99 sell failed -> try auto_claim (redeem on-chain)
+                                logger.info("Post-settlement exit not filled, trying auto_claim...")
+                                try:
+                                    _claim_loop = asyncio.new_event_loop()
+                                    _claim_result = _claim_loop.run_until_complete(
+                                        poly_client.auto_claim_winnings()
+                                    )
+                                    if _claim_result and _claim_result.get("ok"):
+                                        claimed = float(_claim_result.get("claimed") or 0)
+                                        if claimed > 0:
+                                            logger.warning("Auto-claim success: +$%.2f", claimed)
+                                    else:
+                                        logger.info("Auto-claim: %s", _claim_result)
+                                except Exception as _claim_err:
+                                    logger.warning("Auto-claim error: %s", _claim_err)
                         except Exception as _exit_err:
                             logger.warning("Post-settlement exit error: %s", _exit_err)
 

@@ -825,7 +825,17 @@ class LiveBTC15Trader:
                     if _exit_result and _exit_result.get("filled"):
                         logger.warning("Post-settlement exit filled! $%.2f", float(_exit_result.get("executed_notional") or 0))
                     else:
-                        logger.info("Post-settlement exit: %s", _exit_result.get("status") if _exit_result else "no result")
+                        logger.info("Post-settlement exit not filled, trying auto_claim...")
+                        try:
+                            _claim = await self.poly_client.auto_claim_winnings()
+                            if _claim and _claim.get("ok"):
+                                claimed = float(_claim.get("claimed") or 0)
+                                if claimed > 0:
+                                    logger.warning("Auto-claim success: +$%.2f", claimed)
+                            else:
+                                logger.info("Auto-claim: %s", _claim)
+                        except Exception as _ce:
+                            logger.warning("Auto-claim error: %s", _ce)
                 except Exception as _exit_err:
                     logger.warning("Post-settlement exit error: %s", _exit_err)
 
