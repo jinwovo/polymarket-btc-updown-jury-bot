@@ -327,9 +327,10 @@ def _check_entry(
     poly_client: PolymarketClient,
     dry_run: bool,
     base_stake: float,
+    account_id: int = 0,
 ) -> bool:
     """Check entry conditions and place a live order if conditions are met.
-    Returns True if a trade was opened."""
+    Returns True if a trade was opened. account_id=0 is main account."""
 
     direction = str(cached.get("direction", "NO_TRADE"))
     if direction not in ("UP", "DOWN"):
@@ -346,7 +347,7 @@ def _check_entry(
         try:
             from datetime import datetime as _dt
             _today = _dt.now().replace(hour=0, minute=0, second=0).timestamp()
-            _dll_row = fetch_one(conn, f"SELECT COALESCE(SUM(pnl), 0) FROM {TRADES_TABLE} WHERE status='CLOSED' AND closed_at >= %s", (_today,))
+            _dll_row = fetch_one(conn, f"SELECT COALESCE(SUM(pnl), 0) FROM {TRADES_TABLE} WHERE status='CLOSED' AND closed_at >= %s AND (account_id = %s OR account_id IS NULL)", (_today, account_id))
             _today_pnl = float(_dll_row[0]) if _dll_row else 0.0
             if _today_pnl <= -_dll:
                 if not hasattr(_check_entry, '_dll_warned') or now_ts - _check_entry._dll_warned > 300:
@@ -651,14 +652,20 @@ def _check_entry(
         potential_win_pnl = apply_fee_to_pnl(shares - stake, stake)
         entry_source = str(order_result.get("mode") or "live_fak")
 
+    # Check: already traded this window for this account?
+    _exists = fetch_one(conn, f"SELECT id FROM {TRADES_TABLE} WHERE window_start = ? AND account_id = ? LIMIT 1",
+                        (int(window_start), account_id))
+    if _exists:
+        return False
+
     # INSERT trade into live_trades_eth5
     execute_write(
         conn,
         f"""INSERT INTO {TRADES_TABLE}
            (window_start, window_end, direction, stake, entry_price, payout_multiple,
             shares, potential_win_pnl, signal_confidence, signal_reason,
-            entry_source, status, opened_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            entry_source, status, opened_at, account_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
            ON DUPLICATE KEY UPDATE
            direction=VALUES(direction),
            stake=VALUES(stake),
@@ -686,6 +693,7 @@ def _check_entry(
             gate_reason,
             entry_source,
             float(opened_at),
+            account_id,
         ),
     )
     conn.commit()
@@ -1238,6 +1246,110 @@ def show_status(conn, initial_capital: float):
 
 
 # ---------------------------------------------------------------------------
+# Multi-account manager
+# ---------------------------------------------------------------------------
+class AccountManager:
+    """Manages multiple trading accounts. Polls DB for active accounts."""
+
+    def __init__(self, dry_run: bool):
+        self.dry_run = dry_run
+        self._clients: dict[int, PolymarketClient] = {}  # account_id -> client
+        self._accounts: dict[int, dict] = {}  # account_id -> account row
+        self._last_refresh: float = 0.0
+        self._refresh_interval: float = 10.0  # poll DB every 10s
+
+    def refresh(self, conn) -> list[dict]:
+        """Refresh active accounts from DB. Returns list of active accounts."""
+        now = time.time()
+        if now - self._last_refresh < self._refresh_interval:
+            return list(self._accounts.values())
+        self._last_refresh = now
+
+        try:
+            rows = fetch_all_dicts(
+                conn,
+                "SELECT id, name, api_key, api_secret, api_passphrase, private_key, "
+                "funder, fixed_stake, daily_loss_limit, seed_capital, "
+                "telegram_token, telegram_chat_id, status "
+                "FROM accounts WHERE enabled = 1 AND status = 'RUNNING'",
+            )
+        except Exception as e:
+            logger.debug("Account refresh error: %s", e)
+            return list(self._accounts.values())
+
+        active_ids = set()
+        for row in rows:
+            aid = int(row["id"])
+            active_ids.add(aid)
+            self._accounts[aid] = row
+
+            # Create client if not exists
+            if aid not in self._clients and not self.dry_run:
+                try:
+                    pk = str(row.get("private_key") or "").strip()
+                    ak = str(row.get("api_key") or "").strip()
+                    a_sec = str(row.get("api_secret") or "").strip()
+                    a_pass = str(row.get("api_passphrase") or "").strip()
+                    funder = str(row.get("funder") or "").strip()
+                    if pk and ak:
+                        # Save original env, set account env, create client, restore
+                        _orig_env = {
+                            "POLYMARKET_PRIVATE_KEY": os.environ.get("POLYMARKET_PRIVATE_KEY", ""),
+                            "POLYMARKET_API_KEY": os.environ.get("POLYMARKET_API_KEY", ""),
+                            "POLYMARKET_API_SECRET": os.environ.get("POLYMARKET_API_SECRET", ""),
+                            "POLYMARKET_API_PASSPHRASE": os.environ.get("POLYMARKET_API_PASSPHRASE", ""),
+                            "POLYMARKET_FUNDER": os.environ.get("POLYMARKET_FUNDER", ""),
+                        }
+                        os.environ["POLYMARKET_PRIVATE_KEY"] = pk
+                        os.environ["POLYMARKET_API_KEY"] = ak
+                        os.environ["POLYMARKET_API_SECRET"] = a_sec
+                        os.environ["POLYMARKET_API_PASSPHRASE"] = a_pass
+                        os.environ["POLYMARKET_FUNDER"] = funder or ""
+                        client = PolymarketClient()
+                        self._clients[aid] = client
+                        # Restore original env
+                        for k, v in _orig_env.items():
+                            os.environ[k] = v
+                        logger.info("Account %d (%s) client created", aid, row.get("name", ""))
+                except Exception as e:
+                    logger.warning("Account %d client creation failed: %s", aid, e)
+                    # Restore env on error too
+                    try:
+                        for k, v in _orig_env.items():
+                            os.environ[k] = v
+                    except Exception:
+                        pass
+
+        # Remove stopped accounts
+        stopped = set(self._accounts.keys()) - active_ids
+        for aid in stopped:
+            logger.info("Account %d stopped, removing", aid)
+            self._accounts.pop(aid, None)
+            client = self._clients.pop(aid, None)
+            if client:
+                try:
+                    _loop = asyncio.new_event_loop()
+                    _loop.run_until_complete(client.close())
+                except Exception:
+                    pass
+
+        return list(self._accounts.values())
+
+    def get_client(self, account_id: int) -> PolymarketClient | None:
+        return self._clients.get(account_id)
+
+    def close_all(self):
+        for aid, client in self._clients.items():
+            try:
+                _loop = asyncio.new_event_loop()
+                _loop.run_until_complete(client.close())
+            except Exception:
+                pass
+        self._clients.clear()
+        self._accounts.clear()
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def run_loop(
@@ -1254,10 +1366,13 @@ def run_loop(
     base_stake = max(1.0, float(stake))
     mode_label = "DRY-RUN" if dry_run else "*** LIVE ***"
 
-    # Initialize PolymarketClient for order placement (live only)
+    # Initialize PolymarketClient for main account (account_id=0)
     poly_client = None
     if not dry_run:
         poly_client = PolymarketClient()
+
+    # Multi-account manager
+    acct_mgr = AccountManager(dry_run=dry_run)
 
     logger.warning(
         "ETH5 live trading %s: stake=$%.2f interval=%.1fs "
@@ -1280,7 +1395,22 @@ def run_loop(
                 # Read signal and check entry
                 cached = _read_signal_cache(conn)
                 if cached is not None:
+                    # Main account (account_id=0)
                     _check_entry(conn, cached, poly_client, dry_run, base_stake)
+
+                    # Additional accounts
+                    active_accounts = acct_mgr.refresh(conn)
+                    for acct in active_accounts:
+                        aid = int(acct["id"])
+                        acct_client = acct_mgr.get_client(aid)
+                        acct_stake = float(acct.get("fixed_stake") or base_stake)
+                        if acct_client is not None:
+                            try:
+                                _check_entry(conn, cached, acct_client, False, acct_stake,
+                                             account_id=aid)
+                            except Exception as ae:
+                                logger.warning("Account %d entry error: %s", aid, ae)
+
             except Exception as e:
                 try:
                     conn.rollback()
@@ -1309,7 +1439,10 @@ def run_loop(
         except Exception:
             pass
 
-        # Close PolymarketClient
+        # Close all clients
+        acct_mgr.close_all()
+
+        # Close main PolymarketClient
         if poly_client is not None:
             try:
                 loop = asyncio.get_event_loop()

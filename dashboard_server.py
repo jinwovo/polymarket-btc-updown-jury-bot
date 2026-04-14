@@ -3778,19 +3778,32 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
     if not acct.get("api_key") or not acct.get("private_key"):
         return {"ok": False, "error": "API key or private key not configured"}
 
+    # ETH5: single-process multi-account. Just update DB status.
+    # live_eth5.py polls accounts table and picks up RUNNING accounts.
+    if market == "eth5":
+        try:
+            conn = _connect_db()
+            execute_write(conn, "UPDATE accounts SET status='RUNNING' WHERE id=%s", (account_id,))
+            conn.commit()
+            conn.close()
+            logger.info("Account %d marked RUNNING for %s (single-process mode)", account_id, market)
+            return {"ok": True, "status": "running", "mode": "single_process",
+                    "account_id": account_id, "market": market}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # BTC5 / BTC15: separate process per account (legacy)
     script = _MARKET_SCRIPTS.get(market, "main.py")
     proc_key = (account_id, market)
 
     # Stop if already running
     if proc_key in LIVE_ACCOUNT_MARKET_PROCS and LIVE_ACCOUNT_MARKET_PROCS[proc_key].running():
         LIVE_ACCOUNT_MARKET_PROCS[proc_key].stop()
-    # Legacy single-market compat
     if market == "btc5" and account_id in LIVE_ACCOUNT_PROCS and LIVE_ACCOUNT_PROCS[account_id].running():
         LIVE_ACCOUNT_PROCS[account_id].stop()
 
     # Auto-start signal generator for non-btc5 markets
-    _sig_map = {"btc15": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC),
-                "eth5": ("signal_generator_eth5.py", SIGNAL_ETH5_PROC)}
+    _sig_map = {"btc15": ("signal_generator_btc15.py", SIGNAL_BTC15_PROC)}
     if market in _sig_map:
         sig_script, sig_proc = _sig_map[market]
         if not sig_proc.running():
@@ -3805,7 +3818,7 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
         env_overrides=env_overrides,
     )
     LIVE_ACCOUNT_MARKET_PROCS[proc_key] = proc
-    LIVE_ACCOUNT_PROCS[account_id] = proc  # legacy compat
+    LIVE_ACCOUNT_PROCS[account_id] = proc
 
     # Update DB status
     try:
@@ -3821,6 +3834,20 @@ def control_account_start(account_id: int, market: str = "btc5") -> dict:
 
 def control_account_stop(account_id: int, market: str = "btc5") -> dict:
     """Stop live trading for a specific account + market."""
+
+    # ETH5: single-process mode. Just update DB status.
+    if market == "eth5":
+        try:
+            conn = _connect_db()
+            execute_write(conn, "UPDATE accounts SET status='STOPPED', pid=NULL WHERE id=%s", (account_id,))
+            conn.commit()
+            conn.close()
+            logger.info("Account %d marked STOPPED for %s", account_id, market)
+            return {"ok": True, "message": "stopped", "account_id": account_id}
+        except Exception as e:
+            return {"ok": False, "message": str(e), "account_id": account_id}
+
+    # BTC5 / BTC15: kill process
     proc_key = (account_id, market)
     proc = LIVE_ACCOUNT_MARKET_PROCS.get(proc_key) or LIVE_ACCOUNT_PROCS.get(account_id)
     if proc:
