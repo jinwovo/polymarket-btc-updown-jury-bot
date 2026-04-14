@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "start": "concurrently -k -n COLLECTOR,API,WEB -c yellow,cyan,magenta \"python data_collector.py\" \"python dashboard_server.py --host 127.0.0.1 --port 8790\" \"npm.cmd run build && next start -p 3100\"",
+    "start": "concurrently -n COLLECTOR,API,WEB -c yellow,cyan,magenta \"python run_collector.py\" \"python dashboard_server.py --host 127.0.0.1 --port 8790\" \"npm.cmd run build && next start -p 3100\"",
     "dev": "next dev -p 3100",
     "build": "next build",
     "start:web": "next start -p 3100"
