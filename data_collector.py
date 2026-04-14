@@ -2220,15 +2220,25 @@ async def _scrape_extra_ptb(self, slug: str, window_start: int, label: str):
             self.db.commit()
             logger.info("Extra PTB scraped: %s %s $%.2f (was $%.2f, delta=$%.2f)", label, slug, ptb, prev, delta)
 
-            # Also use current price for ETH calibration if available
+            # Use PTB or current price for ETH calibration
+            # PTB = authoritative Chainlink price at window start
+            # current = live Chainlink price (often unavailable for ETH)
+            _cal_price = None
             if current and current > 100 and current < 10000:
-                _cal_age = time.time() - getattr(self, '_eth_rtds_updated_at', 0.0)
+                _cal_price = current
+            elif ptb and ptb > 100 and ptb < 10000:
+                # PTB is close to current price (within 5min window)
+                _cal_price = ptb
+            if _cal_price:
                 binance_eth = _eth_price.get("price", 0)
-                if binance_eth > 0 and _cal_age > 30:
-                    # RTDS stale, use Playwright current for calibration
-                    self._eth_cal_offset = binance_eth - current
+                if binance_eth > 0:
+                    new_offset = binance_eth - _cal_price
+                    old_offset = self._eth_cal_offset
+                    self._eth_cal_offset = new_offset
                     self._eth_rtds_updated_at = time.time()
-                    logger.info("ETH calibration from Playwright: $%.2f (offset=$%.2f)", current, self._eth_cal_offset)
+                    if abs(new_offset - old_offset) > 0.05:
+                        logger.info("ETH calibration from PTB/Playwright: $%.2f (offset=$%.2f, was $%.2f)",
+                                    _cal_price, new_offset, old_offset)
         else:
             logger.debug("Extra PTB not found for %s %s", label, slug)
     except Exception as e:
