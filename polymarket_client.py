@@ -2155,7 +2155,8 @@ class PolymarketClient:
                     logger.warning("Rust order exception: %s, falling back to Python", _re)
 
             # Python fallback — FAK first, then GTC retry if no match
-            _py_limit = float(os.getenv("PAPER_MAX_ENTRY_PRICE", "0.54"))
+            # Use same limit as Rust: reference_ask + 0.05 (not env max_entry_price)
+            _py_limit = round(reference_ask + 0.05, 2)
             _py_limit = round(min(max(_py_limit, working_ask), 0.99), 2)
             _py_size = max(1, int(amount / _py_limit))
             _fak_result = await self.place_limit_order(
