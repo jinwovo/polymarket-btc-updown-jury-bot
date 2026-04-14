@@ -547,7 +547,7 @@ def _check_entry(
         stake = round(stake * qs, 2)
         logger.debug("Dynamic sizing: quality=%.2f stake=$%.2f", qs, stake)
 
-    if stake < max(5.0, MIN_BET_SIZE):
+    if stake < max(3.0, MIN_BET_SIZE):
         logger.warning("Stake too small ws=%s: $%.2f", window_start, stake)
         return False
 
