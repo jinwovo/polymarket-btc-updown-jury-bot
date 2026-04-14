@@ -304,18 +304,24 @@ def _read_signal_cache(conn) -> dict | None:
 # ---------------------------------------------------------------------------
 # Telegram helper
 # ---------------------------------------------------------------------------
-def _send_telegram(text: str):
-    """Best-effort Telegram notification (non-blocking)."""
-    if not TELEGRAM_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
+def _send_telegram(text: str, account_id: int = 0, acct_info: dict = None):
+    """Best-effort Telegram notification. Uses account-specific credentials if provided."""
+    if account_id > 0 and acct_info:
+        # Per-account telegram
+        token = str(acct_info.get("telegram_token") or "").strip()
+        chat_id = str(acct_info.get("telegram_chat_id") or "").strip()
+        if not token or not chat_id:
+            return  # account has no telegram configured
+    else:
+        # Main account telegram
+        if not TELEGRAM_ENABLED or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            return
+        token = TELEGRAM_BOT_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
     try:
-        send_telegram_message(
-            token=TELEGRAM_BOT_TOKEN,
-            chat_id=TELEGRAM_CHAT_ID,
-            text=text,
-        )
+        send_telegram_message(token=token, chat_id=chat_id, text=text)
     except Exception as e:
-        logger.debug("Telegram send failed: %s", e)
+        logger.debug("Telegram send failed (acct=%d): %s", account_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +334,7 @@ def _check_entry(
     dry_run: bool,
     base_stake: float,
     account_id: int = 0,
+    acct_info: dict = None,
 ) -> bool:
     """Check entry conditions and place a live order if conditions are met.
     Returns True if a trade was opened. account_id=0 is main account."""
@@ -733,7 +740,8 @@ def _check_entry(
         f"to-win total: ${float(shares):,.2f}\n"
         f"expected pnl: ${float(potential_win_pnl):,.2f}\n"
         f"confidence: {float(confidence):.3f}\n"
-        f"reason: {_reason_tg or '--'}"
+        f"reason: {_reason_tg or '--'}",
+        account_id=account_id, acct_info=acct_info,
     )
 
     return True
@@ -1414,7 +1422,7 @@ def run_loop(
                         if acct_client is not None:
                             try:
                                 _check_entry(conn, cached, acct_client, False, acct_stake,
-                                             account_id=aid)
+                                             account_id=aid, acct_info=acct)
                             except Exception as ae:
                                 logger.warning("Account %d entry error: %s", aid, ae)
 

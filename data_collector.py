@@ -593,7 +593,7 @@ class DataCollector:
                     )
                     live_trades = fetch_all_dicts(
                         self.db,
-                        f"SELECT window_start, opened_at FROM {live_table} WHERE window_start >= %s ORDER BY opened_at DESC LIMIT 10",
+                        f"SELECT window_start, opened_at FROM {live_table} WHERE window_start >= %s AND (account_id = 0 OR account_id IS NULL) ORDER BY opened_at DESC LIMIT 10",
                         (int(now) - 600,),
                     )
                 except Exception:

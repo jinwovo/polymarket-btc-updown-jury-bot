@@ -2693,6 +2693,18 @@ class TradingBot:
                 )
                 self._pending_settlement_exit = None
                 await self._refresh_adaptive_balance_cap(force=True, reason="post_settlement_exit")
+
+                # Mirror settlement exit to additional accounts
+                for aid, client in list(self._acct_clients.items()):
+                    try:
+                        _acct_exit = await client.place_settlement_exit_order(
+                            token_id=str(token_id), shares=float(shares),
+                        )
+                        _filled = bool(_acct_exit and _acct_exit.get("filled"))
+                        logger.info("Account %d settlement exit: filled=%s", aid, _filled)
+                    except Exception as _ae:
+                        logger.warning("Account %d settlement exit error: %s", aid, _ae)
+
                 return
 
         if int(pending.get("attempt_index") or 0) >= len(offsets):
