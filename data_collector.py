@@ -2516,13 +2516,21 @@ async def _eth_ws(self):
                     volume = float(data.get("q", 0))
                     _eth_price["price"] = price
                     _eth_price["ts"] = ts
-                    # Apply Chainlink calibration (same as BTC: adjusted = raw - offset)
-                    _cal_age = ts - getattr(self, '_eth_rtds_updated_at', 0.0)
-                    _cal_offset = getattr(self, '_eth_cal_offset', 0.0)
-                    if _cal_age < 120 and abs(_cal_offset) > 0.01:
-                        calibrated = price - _cal_offset
+                    # Price priority: ETH RTDS > Playwright calibration > raw Binance
+                    _rtds_age = time.time() - getattr(self, '_eth_rtds_updated_at', 0.0)
+                    if getattr(self, '_eth_rtds_price', 0) > 0 and _rtds_age < 10:
+                        # RTDS alive: use RTDS price directly
+                        calibrated = self._eth_rtds_price
+                        # Keep offset in sync for when RTDS goes down
+                        self._eth_cal_offset = price - self._eth_rtds_price
                     else:
-                        calibrated = price
+                        # RTDS down: use Playwright calibration offset
+                        _cal_age = ts - getattr(self, '_eth_rtds_updated_at', 0.0)
+                        _cal_offset = getattr(self, '_eth_cal_offset', 0.0)
+                        if _cal_age < 120 and abs(_cal_offset) > 0.01:
+                            calibrated = price - _cal_offset
+                        else:
+                            calibrated = price
                     _eth_price["adjusted"] = calibrated
                     # Store 1 tick per second (bucket)
                     bucket = round(ts, 0)
