@@ -456,6 +456,13 @@ def init_market_schema(conn):
         # Quality score for dynamic sizing (0.5=low, 1.0=normal, 1.5=good, 2.0=great)
         "ALTER TABLE signal_cache ADD COLUMN quality_score DOUBLE NULL",
         "ALTER TABLE signal_cache_log ADD COLUMN quality_score DOUBLE NULL",
+        # Price position in range (0=at low, 1=at high). p_pos>=0.8->UP, <=0.2->DOWN
+        "ALTER TABLE signal_cache ADD COLUMN p_pos DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN p_pos DOUBLE NULL",
+        # Path R-squared: linear fit quality of price path (0=noise, 1=perfect line)
+        # R2>=0.3 + direction match => strong trend => bet 2x. R2<0.05 => noise => bet 0.5x.
+        "ALTER TABLE signal_cache ADD COLUMN path_r2 DOUBLE NULL",
+        "ALTER TABLE signal_cache_log ADD COLUMN path_r2 DOUBLE NULL",
     ]:
         try:
             execute_write(conn, alter_sql)
@@ -496,7 +503,9 @@ def _multi_market_tables(conn):
                 lag_arb_entry_price DOUBLE NULL,
                 bb_pos DOUBLE NULL, vwap_agree TINYINT NULL,
                 ask_drift DOUBLE NULL, btc_still_moving TINYINT NULL,
-                quality_score DOUBLE NULL
+                quality_score DOUBLE NULL,
+                p_pos DOUBLE NULL,
+                path_r2 DOUBLE NULL
             ) ENGINE=InnoDB""",
             f"""CREATE TABLE IF NOT EXISTS signal_cache_log{suffix} (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -525,6 +534,8 @@ def _multi_market_tables(conn):
                 bb_pos DOUBLE NULL, vwap_agree TINYINT NULL,
                 ask_drift DOUBLE NULL, btc_still_moving TINYINT NULL,
                 quality_score DOUBLE NULL,
+                p_pos DOUBLE NULL,
+                path_r2 DOUBLE NULL,
                 INDEX idx_scl{suffix}_ws_ts (window_start, ts),
                 INDEX idx_scl{suffix}_ws_gate (window_start, gate_allow)
             ) ENGINE=InnoDB""",
@@ -570,6 +581,18 @@ def _multi_market_tables(conn):
         ]:
             try:
                 execute_write(conn, stmt)
+            except Exception:
+                pass
+
+        # ALTER TABLE for existing multi-market tables (schema additions)
+        for alter_stmt in [
+            f"ALTER TABLE signal_cache{suffix} ADD COLUMN p_pos DOUBLE NULL",
+            f"ALTER TABLE signal_cache_log{suffix} ADD COLUMN p_pos DOUBLE NULL",
+            f"ALTER TABLE signal_cache{suffix} ADD COLUMN path_r2 DOUBLE NULL",
+            f"ALTER TABLE signal_cache_log{suffix} ADD COLUMN path_r2 DOUBLE NULL",
+        ]:
+            try:
+                execute_write(conn, alter_stmt)
             except Exception:
                 pass
 

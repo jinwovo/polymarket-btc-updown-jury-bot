@@ -389,6 +389,15 @@ class PaperReplay:
         self.clob_exit_remaining_sec = float(os.getenv("REPLAY_CLOB_EXIT_REMAINING", "10"))  # check at Ns remaining
         # Half-stake for high-ask entries: reduce risk on expensive trades
         self.half_stake_above = float(os.getenv("REPLAY_HALF_STAKE_ABOVE", "0"))  # 0=off, e.g. 0.46
+        # New discovery filters
+        self.require_wide_spread = os.getenv("REPLAY_REQUIRE_WIDE_SPREAD", "0") == "1"
+        self.wide_spread_lo = float(os.getenv("REPLAY_WIDE_SPREAD_LO", "0.12"))
+        self.wide_spread_hi = float(os.getenv("REPLAY_WIDE_SPREAD_HI", "0.20"))
+        self.require_opp_mild = os.getenv("REPLAY_REQUIRE_OPP_MILD", "0") == "1"  # opp_ask 0.40-0.50
+        self.require_conf_mid = os.getenv("REPLAY_REQUIRE_CONF_MID", "0") == "1"  # conf 0.55-0.70
+        self.require_bsr_contra = os.getenv("REPLAY_REQUIRE_BSR_CONTRA", "0") == "1"
+        self.min_spread = float(os.getenv("REPLAY_MIN_SPREAD", "0"))  # 0=off
+        self.min_overround = float(os.getenv("REPLAY_MIN_OVERROUND", "0"))  # 0=off, up+down-1.0
 
         # Score-based entry mode: replace AND-gate filters with point system
         self.score_mode = os.getenv("REPLAY_SCORE_MODE", "0") == "1"
@@ -761,6 +770,34 @@ class PaperReplay:
             spread = abs(up_ask - down_ask)
             if spread > self.max_spread:
                 continue
+            if self.min_spread > 0 and spread < self.min_spread:
+                continue
+            # Min overround: skip tight book (up_ask + down_ask - 1.0 < threshold)
+            if self.min_overround > 0:
+                overround = up_ask + down_ask - 1.0
+                if overround < self.min_overround:
+                    continue
+            # Wide spread filter: only enter when spread in sweet spot
+            if self.require_wide_spread:
+                if spread < self.wide_spread_lo or spread >= self.wide_spread_hi:
+                    continue
+            # Opposite ask mild: opp_ask in 0.40-0.50
+            if self.require_opp_mild:
+                _opp = down_ask if direction == "UP" else up_ask
+                if _opp < 0.40 or _opp >= 0.50:
+                    continue
+            # Confidence mid: 0.55-0.70
+            if self.require_conf_mid and not (0.55 <= confidence < 0.70):
+                continue
+            # BSR contrarian
+            if self.require_bsr_contra:
+                _bsr = entry.get("buy_sell_ratio")
+                if _bsr is not None:
+                    _bsr_f = float(_bsr)
+                    if direction == "UP" and _bsr_f >= 0.8:
+                        continue
+                    if direction == "DOWN" and _bsr_f <= 1.2:
+                        continue
 
             # Score filter — skip if pre-computed signals are NULL (old rebuild data)
             # Paper doesn't have this score filter on entry; it's only for sizing.
@@ -1360,6 +1397,14 @@ def main():
     parser.add_argument("--clob-exit-opp-threshold", type=float, default=None, help="Opposing ask threshold for CLOB exit (default 0.65)")
     parser.add_argument("--btc-still-lookback", type=float, default=None, help="BTC still moving lookback seconds (default 30)")
     parser.add_argument("--half-stake-above", type=float, default=None, help="Half stake when entry_price >= this (e.g. 0.46)")
+    parser.add_argument("--require-wide-spread", action="store_true", help="Only enter when spread in 0.12-0.20")
+    parser.add_argument("--wide-spread-lo", type=float, default=None)
+    parser.add_argument("--wide-spread-hi", type=float, default=None)
+    parser.add_argument("--require-opp-mild", action="store_true", help="Only enter when opp_ask 0.40-0.50")
+    parser.add_argument("--require-conf-mid", action="store_true", help="Only enter when conf 0.55-0.70")
+    parser.add_argument("--require-bsr-contra", action="store_true", help="Only enter when BSR contradicts direction")
+    parser.add_argument("--min-spread", type=float, default=None, help="Min spread to enter (e.g. 0.06)")
+    parser.add_argument("--min-overround", type=float, default=None, help="Min overround (up+down-1.0) to enter (e.g. 0.02)")
     parser.add_argument("--score-mode", action="store_true", help="Use score-based entry instead of AND-gate filters")
     parser.add_argument("--score-threshold", type=int, default=None, help="Min score to enter (default 5, max 10)")
     parser.add_argument("--score-entry-start", type=float, default=None, help="Entry start sec in score mode (default 80)")
@@ -1449,6 +1494,22 @@ def main():
         os.environ["PAPER_BTC_STILL_LOOKBACK"] = str(args.btc_still_lookback)
     if args.half_stake_above is not None:
         os.environ["REPLAY_HALF_STAKE_ABOVE"] = str(args.half_stake_above)
+    if args.require_wide_spread:
+        os.environ["REPLAY_REQUIRE_WIDE_SPREAD"] = "1"
+    if args.wide_spread_lo is not None:
+        os.environ["REPLAY_WIDE_SPREAD_LO"] = str(args.wide_spread_lo)
+    if args.wide_spread_hi is not None:
+        os.environ["REPLAY_WIDE_SPREAD_HI"] = str(args.wide_spread_hi)
+    if args.require_opp_mild:
+        os.environ["REPLAY_REQUIRE_OPP_MILD"] = "1"
+    if args.require_conf_mid:
+        os.environ["REPLAY_REQUIRE_CONF_MID"] = "1"
+    if args.require_bsr_contra:
+        os.environ["REPLAY_REQUIRE_BSR_CONTRA"] = "1"
+    if args.min_spread is not None:
+        os.environ["REPLAY_MIN_SPREAD"] = str(args.min_spread)
+    if args.min_overround is not None:
+        os.environ["REPLAY_MIN_OVERROUND"] = str(args.min_overround)
     if args.score_mode:
         os.environ["REPLAY_SCORE_MODE"] = "1"
     if args.score_threshold is not None:

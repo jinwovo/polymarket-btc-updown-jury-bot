@@ -673,6 +673,8 @@ class TradingBot:
     def __init__(self):
         self.price_feed = BinancePriceFeed()
         self.poly_client = PolymarketClient()
+        # Pre-warm Rust daemon (TLS handshake + connection pool)
+        self.poly_client._start_daemon()
         self.jury = Jury(threshold=config.trading.jury_threshold)
         self.risk_mgr = RiskManager()  # equity synced from real balance in _refresh_adaptive_balance_cap
         self.position_mode = _normalize_position_mode(config.trading.position_mode)
@@ -4029,10 +4031,22 @@ class TradingBot:
             if _sig_spread > float(MIRROR_MAX_ODDS_SPREAD):
                 logger.info("Skip wide spread: %.3f > %.3f", _sig_spread, MIRROR_MAX_ODDS_SPREAD)
                 return
-            # Max BTC move filter: skip overextended entries (mean reversion risk)
-            _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
+            _min_overround = float(os.getenv("PAPER_MIN_OVERROUND", "0.0"))
+            if _min_overround > 0:
+                _overround = _sig_up + _sig_dn - 1.0
+                if _overround < _min_overround:
+                    logger.info("Skip tight overround: %.3f < %.3f", _overround, _min_overround)
+                    return
+            # Min BTC move filter: skip coin-flip windows (barely moved)
+            # Only strategy profitable in ALL periods: move>=0.03%
+            _min_btc_move_pct = float(os.getenv("PAPER_MIN_BTC_MOVE_PCT", "0"))
             _sig_btc_move_raw = float(_sig_row.get("btc_move_pct") or 0)
             _sig_btc_move = abs(_sig_btc_move_raw)
+            if _min_btc_move_pct > 0 and _sig_btc_move < _min_btc_move_pct:
+                logger.info("Skip low move: |btc_move|=%.4f%% < %.4f%%", _sig_btc_move, _min_btc_move_pct)
+                return
+            # Max BTC move filter: skip overextended entries (mean reversion risk)
+            _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
             if _max_btc_move > 0 and _sig_btc_move > _max_btc_move:
                 logger.info("Skip overextended: btc_move=%.4f%% > %.2f%%", _sig_btc_move, _max_btc_move)
                 return
@@ -4044,6 +4058,25 @@ class TradingBot:
                 if decision.direction == "DOWN" and _sig_btc_move_raw > 0.005:
                     logger.info("Skip momentum conflict: DOWN but btc_move=+%.4f%%", _sig_btc_move_raw)
                     return
+            # Prev window block: skip same-direction bet after decisive prev window (mean reversion)
+            # paper_replay: WR 54%->61%, 12h: 27%->67%
+            _prev_block_pct = float(os.getenv("PAPER_PREV_WINDOW_BLOCK_PCT", "0"))
+            if _prev_block_pct > 0:
+                _prev_ws = int(current_start) - 300
+                _prev_mw = fetch_one_dict(self._ensure_state_conn(),
+                    "SELECT actual_outcome, btc_start_price, btc_end_price FROM market_windows WHERE window_start=%s AND slug LIKE 'btc-updown-5m%%'",
+                    (_prev_ws,))
+                if _prev_mw and _prev_mw.get('btc_start_price') and _prev_mw.get('btc_end_price'):
+                    _psp = float(_prev_mw['btc_start_price'])
+                    _pep = float(_prev_mw['btc_end_price'])
+                    _prev_move = (_pep - _psp) / _psp * 100
+                    # Block: prev UP big + bet UP (expect reversion), prev DOWN big + bet DOWN
+                    if decision.direction == "UP" and _prev_move > _prev_block_pct:
+                        logger.info("Skip prev-window-block: UP after prev UP %.4f%% > %.2f%%", _prev_move, _prev_block_pct)
+                        return
+                    if decision.direction == "DOWN" and _prev_move < -_prev_block_pct:
+                        logger.info("Skip prev-window-block: DOWN after prev DOWN %.4f%% > %.2f%%", abs(_prev_move), _prev_block_pct)
+                        return
 
         # Entry gate: use signal_cache result in parity mode (same as Paper)
         # gate_allow flips 0↔1 every 0.1s. Once we see gate_allow=1, lock it for 5s
@@ -4082,12 +4115,54 @@ class TradingBot:
                 _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
                 if _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
                     _filters_pass = False
+                # R2 filter: skip when price path is noisy (no clear trend)
+                # Analysis: 240h WR 46% -> 50% by filtering r2<0.10 entries (131t/+$5199 vs 188t/+$4660)
+                # Recent 72h WR 41% -> 49% with this filter. +$458 PnL.
+                # Bypass for late entries (elapsed >= 150s) since they have their own higher WR.
+                _r2_min = float(os.getenv("PAPER_R2_MIN_FILTER", "0.10"))
+                _r2_val_filt = _sig_row.get("path_r2") if _sig_row else None
+                _r2_bypass_late = os.getenv("PAPER_R2_BYPASS_LATE", "true").lower() == "true"
+                _elapsed_r2 = _sig_row.get("seconds_elapsed") if _sig_row else None
+                _r2_filter_failed = False
+                if _r2_min > 0 and _r2_val_filt is not None:
+                    _is_late = _r2_bypass_late and _elapsed_r2 is not None and float(_elapsed_r2) >= 150
+                    if not _is_late and float(_r2_val_filt) < _r2_min:
+                        _filters_pass = False
+                        _r2_filter_failed = True
+
+                # Bad-hour filter (2026-04-20 split-half validated):
+                # UTC hours [3, 9, 15] show consistent WR<45% in both data halves.
+                _bad_hours_str = os.getenv("PAPER_BAD_HOURS_UTC", "3,9,15")
+                _bad_hour_hit = False
+                if _bad_hours_str:
+                    import datetime as _dt_mod
+                    _bad_hours = {int(h.strip()) for h in _bad_hours_str.split(",") if h.strip()}
+                    _cur_hour = _dt_mod.datetime.utcfromtimestamp(int(_cur_ws)).hour
+                    if _cur_hour in _bad_hours:
+                        _filters_pass = False
+                        _bad_hour_hit = True
+
+                # BB bad-zone filter (2026-04-20 regime analysis):
+                # BTC5 240h: -$229 -> +$1,482 by skipping 3 zones (30% WR / -$1,711 excluded)
+                _bb_bad_zone = False
+                _bb_bad_reason = ""
+                if os.getenv("PAPER_BB_BAD_ZONE_FILTER", "true").lower() == "true" and _bb_pos_val is not None:
+                    _bb_v = float(_bb_pos_val)
+                    if _gate_dir == "UP" and 0.5 <= _bb_v < 1.0:
+                        _bb_bad_zone = True; _bb_bad_reason = "UP+bb[0.5,1.0) fake momentum"
+                    elif _gate_dir == "DOWN" and _bb_v >= 0.5:
+                        _bb_bad_zone = True; _bb_bad_reason = "DOWN+bb>=0.5 fighting trend"
+                    elif _gate_dir == "DOWN" and _bb_v <= -1.5:
+                        _bb_bad_zone = True; _bb_bad_reason = "DOWN+bb<=-1.5 extreme oversold"
+                    if _bb_bad_zone:
+                        _filters_pass = False
 
                 if _filters_pass:
                     self._gate_lock = {
                         "ts": _now, "dir": _gate_dir, "ev": _gate_ev, "reason": _gate_reason,
                         "ws": _cur_ws, "bb_pos": _bb_pos_val, "vwap_agree": _vwap_val,
                         "ask_drift": _drift_val, "btc_still_moving": _bsm_val, "quality_score": _qs_val,
+                        "path_r2": _r2_val_filt,
                     }
                 else:
                     # Filters failed — don't lock, don't trade
@@ -4099,6 +4174,12 @@ class TradingBot:
                         logger.info("Skip BTC not moving in direction")
                     elif _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
                         logger.info("Skip ask drift: %.3f > %.3f", float(_drift_val), _max_ask_drift)
+                    elif _r2_filter_failed:
+                        logger.info("Skip low R2: r2=%.3f < %.2f (early entry)", float(_r2_val_filt or 0), _r2_min)
+                    elif _bb_bad_zone:
+                        logger.info("Skip BB bad-zone: bb=%.2f %s", float(_bb_pos_val), _bb_bad_reason)
+                    elif _bad_hour_hit:
+                        logger.info("Skip bad hour UTC=%d", _cur_hour)
                     return
 
             elif _lock and _lock.get("ws") == _cur_ws and (_now - _lock["ts"]) < 5.0:
@@ -4113,6 +4194,39 @@ class TradingBot:
             if not _gate_allow:
                 logger.info("Skip: gate_allow=0 (gate: %s)", _gate_reason)
                 return
+
+            # Judge Bias Correction: flip direction when judges stuck on one side
+            # Data: lb=4 bias>=80% -> WR 56%, PnL 2x baseline
+            _bias_on = os.getenv("PAPER_JUDGE_BIAS_CORRECTION", "false").lower() == "true"
+            if _bias_on:
+                _bias_lb = int(os.getenv("PAPER_BIAS_LOOKBACK", "4"))
+                _bias_th = float(os.getenv("PAPER_BIAS_THRESHOLD", "0.80"))
+                if not hasattr(self, '_judge_hist'):
+                    self._judge_hist = []
+                _orig_dir = str(decision.direction)
+                if len(self._judge_hist) >= _bias_lb:
+                    _dn_p = sum(1 for d in self._judge_hist[-_bias_lb:] if d == "DOWN") / _bias_lb
+                    if _orig_dir == "DOWN" and _dn_p >= _bias_th:
+                        decision.direction = "UP"
+                        logger.info("Bias correction: flip DOWN->UP (last %d: %.0f%% DOWN)", _bias_lb, _dn_p * 100)
+                    elif _orig_dir == "UP" and (1 - _dn_p) >= _bias_th:
+                        decision.direction = "DOWN"
+                        logger.info("Bias correction: flip UP->DOWN (last %d: %.0f%% UP)", _bias_lb, (1 - _dn_p) * 100)
+                self._judge_hist.append(_orig_dir)  # record ORIGINAL direction
+
+            # P_pos override: price at range extreme overrides judge direction
+            _ppos_on = os.getenv("PAPER_PPOS_OVERRIDE", "false").lower() == "true"
+            if _ppos_on and _sig_row:
+                _pp = _sig_row.get("p_pos")
+                if _pp is not None:
+                    _pp = float(_pp)
+                    _pp_th = float(os.getenv("PAPER_PPOS_THRESHOLD", "0.80"))
+                    if _pp >= _pp_th and decision.direction != "UP":
+                        logger.info("P_pos override: %.2f -> force UP (was %s)", _pp, decision.direction)
+                        decision.direction = "UP"
+                    elif _pp <= (1.0 - _pp_th) and decision.direction != "DOWN":
+                        logger.info("P_pos override: %.2f -> force DOWN (was %s)", _pp, decision.direction)
+                        decision.direction = "DOWN"
 
             # Store quality_score from locked values
             if _lock and _lock.get("ws") == _cur_ws and _lock.get("quality_score") is not None:
@@ -4314,6 +4428,15 @@ class TradingBot:
                         support_ratio * 100.0,
                     )
                     return
+                # Hard confidence floor (not reduced by aggressive relax)
+                _hard_min_conf = float(MIRROR_MIN_CONFIDENCE)
+                if float(decision.avg_confidence) < _hard_min_conf:
+                    logger.info(
+                        "Skip live low confidence(hard): conf=%.3f < %.3f",
+                        float(decision.avg_confidence),
+                        _hard_min_conf,
+                    )
+                    return
                 if float(decision.avg_confidence) < adaptive_min_conf:
                     logger.info(
                         "Skip live low confidence(parity): conf=%.3f < %.3f",
@@ -4436,6 +4559,75 @@ class TradingBot:
                     return
             except Exception as _score_err:
                 logger.warning("Score check failed: %s", _score_err)
+
+        # Trend-aware sizing: BTC5 mean-reversion in 5min binary
+        # Last 3 windows all same dir -> WITH trend WR=53%, AGAINST WR=71%
+        _trend_sizing = os.getenv("PAPER_TREND_SIZING", "false").lower() == "true"
+        if _trend_sizing and _sig_row:
+            _trend_lb = int(os.getenv("PAPER_TREND_LOOKBACK", "3"))
+            try:
+                _prev_outs = []
+                for _ti in range(1, _trend_lb + 1):
+                    _pw = int(current_start) - _ti * 300
+                    _pr = fetch_one_dict(self._ensure_state_conn(),
+                        "SELECT actual_outcome FROM market_windows WHERE window_start=%s AND slug LIKE 'btc-updown-5m%%'", (_pw,))
+                    if _pr and _pr.get("actual_outcome"):
+                        _prev_outs.append(_pr["actual_outcome"])
+                if len(_prev_outs) >= _trend_lb:
+                    _up_p = sum(1 for p in _prev_outs if p == "UP") / len(_prev_outs)
+                    _d = decision.direction
+                    _with = (_d == "UP" and _up_p >= 0.67) or (_d == "DOWN" and (1 - _up_p) >= 0.67)
+                    _against = (_d == "UP" and _up_p <= 0.33) or (_d == "DOWN" and (1 - _up_p) <= 0.33)
+                    if _with:
+                        _tm = float(os.getenv("PAPER_TREND_WITH_MULT", "0.5"))
+                        bet_size = round(bet_size * _tm, 2)
+                        logger.info("Trend sizing: WITH trend (prev=%s) -> %.1fx = $%.2f",
+                                    "/".join(_prev_outs), _tm, bet_size)
+                    elif _against:
+                        _tm = float(os.getenv("PAPER_TREND_AGAINST_MULT", "2.0"))
+                        bet_size = round(bet_size * _tm, 2)
+                        logger.info("Trend sizing: AGAINST trend (prev=%s) -> %.1fx = $%.2f",
+                                    "/".join(_prev_outs), _tm, bet_size)
+            except Exception as _te:
+                logger.debug("Trend sizing error: %s", _te)
+
+        # QS-inverse sizing: bet MORE when quality_score is LOW
+        _qs_inv = os.getenv("PAPER_QS_INVERSE_SIZING", "false").lower() == "true"
+        if _qs_inv and _sig_row:
+            _qs_val = float(_sig_row.get("quality_score") or 1.0)
+            _qs_factor = float(os.getenv("PAPER_QS_INVERSE_FACTOR", "1.0"))
+            _qs_mult = max(0.5, min(2.5, (1.0 / max(0.3, _qs_val)) * _qs_factor))
+            bet_size = round(bet_size * _qs_mult, 2)
+            logger.info("QS-inverse: qs=%.2f -> %.2fx = $%.2f", _qs_val, _qs_mult, bet_size)
+
+        # R2-direct sizing: bet MORE when price path is a smooth line (strong trend)
+        # Backtest: QS-inv * R2-direct = +$5,244/240h vs QS-inv alone +$2,420 (+117%)
+        if os.getenv("PAPER_R2_SIZING", "true").lower() == "true" and _sig_row:
+            _r2_val = _sig_row.get("path_r2")
+            if _r2_val is not None:
+                _r2_val = float(_r2_val)
+                if _r2_val >= 0.30:
+                    _r2_mult = 2.0
+                elif _r2_val >= 0.15:
+                    _r2_mult = 1.5
+                elif _r2_val >= 0.05:
+                    _r2_mult = 1.0
+                else:
+                    _r2_mult = 0.5
+                bet_size = round(bet_size * _r2_mult, 2)
+                logger.info("R2-direct: r2=%.3f -> %.2fx = $%.2f", _r2_val, _r2_mult, bet_size)
+
+        # Cap: total sizing floor 0.5x, ceiling 3.0x of pre-sizing bet
+        # Raised from 2.0x to 3.0x so QS-inv * R2-direct can stack ($4,427 vs $3,375 at 2.0x cap)
+        _pre_sizing_bet = self._compute_entry_bet_size(
+            decision.avg_confidence, decision.max_edge,
+            expected_roi=float(gate.expected_roi), model_prob=float(gate.model_prob),
+            entry_price=float(price),
+        )
+        if _pre_sizing_bet > 0:
+            _cap_floor = float(os.getenv("PAPER_SIZING_CAP_FLOOR", "0.5"))
+            _cap_ceiling = float(os.getenv("PAPER_SIZING_CAP_CEILING", "3.0"))
+            bet_size = max(round(_pre_sizing_bet * _cap_floor, 2), min(bet_size, round(_pre_sizing_bet * _cap_ceiling, 2)))
 
         if bet_size < max(float(config.trading.min_bet_size), float(MIRROR_LIVE_MIN_BET)):
             return

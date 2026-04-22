@@ -1312,11 +1312,17 @@ def open_trade_if_signal(
     # Spread/momentum/max_btc filters: always apply
     if True:
         _max_spread = float(os.getenv("PAPER_MAX_ODDS_SPREAD", "0.12"))
+        _min_overround = float(os.getenv("PAPER_MIN_OVERROUND", "0.0"))
         if up_ask_val is not None and down_ask_val is not None:
             _spread = abs(float(up_ask_val) - float(down_ask_val))
             if _spread > _max_spread:
                 logger.debug("Skip wide spread ws=%s: spread=%.3f > %.3f", window_start, _spread, _max_spread)
                 return False
+            if _min_overround > 0:
+                _overround = float(up_ask_val) + float(down_ask_val) - 1.0
+                if _overround < _min_overround:
+                    logger.debug("Skip tight overround ws=%s: overround=%.3f < %.3f", window_start, _overround, _min_overround)
+                    return False
 
         _max_btc_move = float(os.getenv("PAPER_MAX_BTC_MOVE_PCT", "0.10"))
         if _max_btc_move > 0 and cached:
@@ -1333,6 +1339,22 @@ def open_trade_if_signal(
             if direction == "DOWN" and _btc_move > 0.005:
                 logger.debug("Skip momentum conflict ws=%s: DOWN but btc_move=+%.4f%%", window_start, _btc_move)
                 return False
+
+        # Prev window block: skip same-dir bet after decisive prev window (mean reversion)
+        _prev_block_pct = float(os.getenv("PAPER_PREV_WINDOW_BLOCK_PCT", "0"))
+        if _prev_block_pct > 0:
+            _prev_ws = int(window_start) - 300
+            _prev_mw = fetch_one_dict(conn, "SELECT actual_outcome, btc_start_price, btc_end_price FROM market_windows WHERE window_start=%s AND slug LIKE 'btc-updown-5m%%'", (_prev_ws,))
+            if _prev_mw and _prev_mw.get('btc_start_price') and _prev_mw.get('btc_end_price'):
+                _psp = float(_prev_mw['btc_start_price'])
+                _pep = float(_prev_mw['btc_end_price'])
+                _prev_move = (_pep - _psp) / _psp * 100
+                if direction == "UP" and _prev_move > _prev_block_pct:
+                    logger.info("Skip prev-window-block ws=%s: UP after prev UP %.4f%%", window_start, _prev_move)
+                    return False
+                if direction == "DOWN" and _prev_move < -_prev_block_pct:
+                    logger.info("Skip prev-window-block ws=%s: DOWN after prev DOWN %.4f%%", window_start, abs(_prev_move))
+                    return False
 
     side_implied = up_ask_val if direction == "UP" else down_ask_val
     opposite_implied = down_ask_val if direction == "UP" else up_ask_val
@@ -1356,6 +1378,12 @@ def open_trade_if_signal(
     btc_move_from_start_pct = float(cached.get("btc_move_pct") or 0) if cached else (
         ((float(btc_now) - float(btc_start)) / float(btc_start)) * 100.0
     )
+    # Min move filter: skip coin-flip windows (BTC barely moved)
+    # Data: move>=0.03% is the ONLY strategy profitable in ALL periods (12/24/48/120/240h)
+    _min_move_pct = float(os.getenv("PAPER_MIN_BTC_MOVE_PCT", "0"))
+    if _min_move_pct > 0 and abs(btc_move_from_start_pct) < _min_move_pct:
+        logger.debug("Skip low move ws=%s: |move|=%.4f%% < %.4f%%", window_start, abs(btc_move_from_start_pct), _min_move_pct)
+        return False
     if cached and not int(cached.get("guards_passed") or 0):
         logger.debug("Skip guards_passed=0 ws=%s dir=%s", window_start, direction)
         return False
@@ -1391,6 +1419,41 @@ def open_trade_if_signal(
         if not _gate_allow:
             logger.debug("Entry blocked ws=%s: gate_allow=0 (%s)", window_start, _gate_reason)
             return False
+
+        # Judge Bias Correction: when recent judges are stuck on one direction,
+        # flip the prediction. Data: lb=4 bias>=80% -> WR 56%, PnL 2x baseline.
+        _bias_correction = os.getenv("PAPER_JUDGE_BIAS_CORRECTION", "false").lower() == "true"
+        if _bias_correction:
+            _bias_lb = int(os.getenv("PAPER_BIAS_LOOKBACK", "4"))
+            _bias_thresh = float(os.getenv("PAPER_BIAS_THRESHOLD", "0.80"))
+            if not hasattr(open_trade_if_signal, '_judge_history'):
+                open_trade_if_signal._judge_history = []
+            _jh = open_trade_if_signal._judge_history
+            if len(_jh) >= _bias_lb:
+                _dn_pct = sum(1 for d in _jh[-_bias_lb:] if d == "DOWN") / _bias_lb
+                _up_pct = 1.0 - _dn_pct
+                if direction == "DOWN" and _dn_pct >= _bias_thresh:
+                    logger.info("Bias correction: flip DOWN->UP (last %d: %.0f%% DOWN)", _bias_lb, _dn_pct * 100)
+                    direction = "UP"
+                elif direction == "UP" and _up_pct >= _bias_thresh:
+                    logger.info("Bias correction: flip UP->DOWN (last %d: %.0f%% UP)", _bias_lb, _up_pct * 100)
+                    direction = "DOWN"
+            _jh.append(str(cached.get("direction") or direction))  # record ORIGINAL direction
+
+        # P_pos override: price at range extreme overrides judge direction
+        # Data: p_pos>=0.8->UP WR 61% with 500ms delay (vs judges 52%)
+        _ppos_override = os.getenv("PAPER_PPOS_OVERRIDE", "false").lower() == "true"
+        if _ppos_override and cached:
+            _ppos_val = cached.get("p_pos")
+            if _ppos_val is not None:
+                _ppos_val = float(_ppos_val)
+                _ppos_thresh = float(os.getenv("PAPER_PPOS_THRESHOLD", "0.80"))
+                if _ppos_val >= _ppos_thresh and direction != "UP":
+                    logger.info("P_pos override: %.2f>=%.2f -> force UP (was %s)", _ppos_val, _ppos_thresh, direction)
+                    direction = "UP"
+                elif _ppos_val <= (1.0 - _ppos_thresh) and direction != "DOWN":
+                    logger.info("P_pos override: %.2f<=%.2f -> force DOWN (was %s)", _ppos_val, 1.0-_ppos_thresh, direction)
+                    direction = "DOWN"
     else:
         # No signal_cache = no trade (was fallback to local gate, caused Paper/Live mismatch)
         return False
@@ -1414,6 +1477,35 @@ def open_trade_if_signal(
             logger.warning("Entry gate blocked ws=%s dir=%s: %s", window_start, direction, gate.reason)
             return False
         _gate_ev = gate.expected_roi
+    # Trend-aware SIZING: BTC5 mean-reversion tendency
+    # Data: AGAINST trend (last 3 windows) = WR 71%, WITH trend = WR 53%
+    # Reduce stake when WITH trend, increase when AGAINST (no trades blocked)
+    _trend_sizing_enabled = os.getenv("PAPER_TREND_SIZING", "false").lower() == "true"
+    _trend_stake_mult = 1.0  # default: no change
+    if _trend_sizing_enabled and cached:
+        _trend_lookback = int(os.getenv("PAPER_TREND_LOOKBACK", "3"))
+        try:
+            _prev_outcomes = []
+            for _ti in range(1, _trend_lookback + 1):
+                _prev_ws = int(window_start) - _ti * 300
+                _prev_row = fetch_one_dict(conn, "SELECT actual_outcome FROM market_windows WHERE window_start=%s AND slug LIKE 'btc-updown-5m%%'", (_prev_ws,))
+                if _prev_row and _prev_row.get("actual_outcome"):
+                    _prev_outcomes.append(_prev_row["actual_outcome"])
+            if len(_prev_outcomes) >= _trend_lookback:
+                _up_pct = sum(1 for p in _prev_outcomes if p == "UP") / len(_prev_outcomes)
+                _with_trend = (direction == "UP" and _up_pct >= 0.67) or (direction == "DOWN" and (1 - _up_pct) >= 0.67)
+                _against_trend = (direction == "UP" and _up_pct <= 0.33) or (direction == "DOWN" and (1 - _up_pct) <= 0.33)
+                if _with_trend:
+                    _trend_stake_mult = float(os.getenv("PAPER_TREND_WITH_MULT", "0.5"))
+                    logger.info("Trend sizing: %s WITH trend (prev=%s) -> %.1fx stake",
+                                direction, "/".join(_prev_outcomes), _trend_stake_mult)
+                elif _against_trend:
+                    _trend_stake_mult = float(os.getenv("PAPER_TREND_AGAINST_MULT", "2.0"))
+                    logger.info("Trend sizing: %s AGAINST trend (prev=%s) -> %.1fx stake",
+                                direction, "/".join(_prev_outcomes), _trend_stake_mult)
+        except Exception:
+            pass  # Don't affect trades on DB errors
+
     # BB/VWAP/drift/btc_still filter with per-window lock (parity with live)
     # Once filters pass for a window, lock for 2s so paper sees same values as live
     global _paper_filter_lock
@@ -1452,6 +1544,51 @@ def open_trade_if_signal(
             if _max_ask_drift > 0 and _drift_val is not None and float(_drift_val) > _max_ask_drift:
                 _filters_pass = False
                 logger.debug("Skip ask drift ws=%s: %.3f > %.3f", window_start, float(_drift_val), _max_ask_drift)
+            # R2 filter: skip when price path is too noisy (no clear trend)
+            # Analysis: recent 72h WR 41% -> 49% by filtering r2<0.10 entries.
+            # 240h: 188t/46%/$4660 (unfiltered) -> 131t/50%/$5199 (r2>=0.10)
+            # Backtest filter: path_r2 >= 0.10 improves all periods.
+            _r2_min = float(os.getenv("PAPER_R2_MIN_FILTER", "0.10"))
+            _r2_val_filt = cached.get("path_r2") if cached else None
+            _r2_bypass_late = os.getenv("PAPER_R2_BYPASS_LATE", "true").lower() == "true"
+            _elapsed_for_r2 = cached.get("seconds_elapsed") if cached else None
+            if _r2_min > 0 and _r2_val_filt is not None:
+                # Bypass R2 filter when elapsed >= 150s (enough data, late entries have higher WR)
+                _is_late = _r2_bypass_late and _elapsed_for_r2 is not None and float(_elapsed_for_r2) >= 150
+                if not _is_late and float(_r2_val_filt) < _r2_min:
+                    _filters_pass = False
+                    logger.info("Skip low R2 ws=%s: r2=%.3f < %.2f (early entry)", window_start, float(_r2_val_filt), _r2_min)
+
+            # Bad-hour filter (2026-04-20 split-half validated):
+            # UTC hours [3, 9, 15] show WR < 45% in BOTH halves of 240h data.
+            # Skip these hours entirely. Improves 240h: $1,510 -> $2,279 (+$769).
+            _bad_hours_str = os.getenv("PAPER_BAD_HOURS_UTC", "3,9,15")
+            if _bad_hours_str:
+                import datetime as _dt_mod
+                _bad_hours = {int(h.strip()) for h in _bad_hours_str.split(",") if h.strip()}
+                _cur_hour = _dt_mod.datetime.utcfromtimestamp(int(window_start)).hour
+                if _cur_hour in _bad_hours:
+                    _filters_pass = False
+                    logger.info("Skip bad hour UTC=%d ws=%s", _cur_hour, window_start)
+
+            # BB bad-zone filter (regime-specific, 2026-04-20 analysis):
+            # Recent 240h live paper: composite filter turns -$229 -> +$1,482
+            # BTC5 zones that lose (33 trades / 30% WR / -$1,711):
+            #   - UP direction + bb in [0.5, 1.0): fake moderate momentum (28% WR)
+            #   - DOWN direction + bb >= 0.5: fighting the trend (17% WR, catastrophic)
+            #   - DOWN direction + bb <= -1.5: extreme oversold reversal (38% WR)
+            if os.getenv("PAPER_BB_BAD_ZONE_FILTER", "true").lower() == "true" and _bb_pos_val is not None:
+                _bb_v = float(_bb_pos_val)
+                _bb_reason = None
+                if direction == "UP" and 0.5 <= _bb_v < 1.0:
+                    _bb_reason = "UP+bb[0.5,1.0) fake momentum"
+                elif direction == "DOWN" and _bb_v >= 0.5:
+                    _bb_reason = "DOWN+bb>=0.5 fighting trend"
+                elif direction == "DOWN" and _bb_v <= -1.5:
+                    _bb_reason = "DOWN+bb<=-1.5 extreme oversold"
+                if _bb_reason:
+                    _filters_pass = False
+                    logger.info("Skip BB bad-zone ws=%s: bb=%.2f %s", window_start, _bb_v, _bb_reason)
 
             if _filters_pass:
                 # Lock for this window
@@ -1609,6 +1746,13 @@ def open_trade_if_signal(
                 window_start, direction, strictness, strictness_eff, support_ratio * 100.0,
             )
             return False
+        # Hard confidence floor (not reduced by aggressive relax)
+        if confidence < float(PAPER_MIN_CONFIDENCE):
+            logger.warning(
+                "Skip low confidence(hard) ws=%s dir=%s: conf=%.3f < %.3f",
+                window_start, direction, confidence, float(PAPER_MIN_CONFIDENCE),
+            )
+            return False
         if confidence < adaptive_min_conf:
             logger.warning(
                 "Skip low confidence ws=%s dir=%s: conf=%.3f < %.3f",
@@ -1717,6 +1861,35 @@ def open_trade_if_signal(
             elif _k_score <= 1:
                 stake = round(stake * 0.5, 2)
             logger.info("Kelly: score=%d stake=$%.2f (base=$%.2f)", _k_score, stake, _fixed_val)
+        # Trend-aware sizing: multiply stake by trend factor
+        if _trend_sizing_enabled and _trend_stake_mult != 1.0:
+            stake = round(stake * _trend_stake_mult, 2)
+            logger.info("Trend sizing applied: %.1fx -> stake=$%.2f", _trend_stake_mult, stake)
+        # QS-inverse sizing: bet MORE when quality_score is LOW (market uncertain = our edge)
+        # Data: qs<0.70 WR=60% vs qs>=0.70 WR=48%. Combined with trend: PnL +$187
+        if os.getenv("PAPER_QS_INVERSE_SIZING", "false").lower() == "true" and cached:
+            _qs_val = float(cached.get("quality_score") or 1.0)
+            _qs_factor = float(os.getenv("PAPER_QS_INVERSE_FACTOR", "1.0"))
+            _qs_mult = max(0.5, min(2.5, (1.0 / max(0.3, _qs_val)) * _qs_factor))
+            stake = round(stake * _qs_mult, 2)
+            logger.info("QS-inverse sizing: qs=%.2f -> %.2fx = $%.2f", _qs_val, _qs_mult, stake)
+        # R2-direct sizing: bet MORE when price path is a smooth line (strong trend)
+        # R2>=0.3 -> 2x, R2>=0.15 -> 1.5x, R2>=0.05 -> 1x, R2<0.05 -> 0.5x
+        # Backtest: QS-inv * R2-direct = +$5,244/240h vs QS-inv alone +$2,420 (+117%)
+        if os.getenv("PAPER_R2_SIZING", "true").lower() == "true" and cached:
+            _r2_val = cached.get("path_r2")
+            if _r2_val is not None:
+                _r2_val = float(_r2_val)
+                if _r2_val >= 0.30:
+                    _r2_mult = 2.0
+                elif _r2_val >= 0.15:
+                    _r2_mult = 1.5
+                elif _r2_val >= 0.05:
+                    _r2_mult = 1.0
+                else:
+                    _r2_mult = 0.5
+                stake = round(stake * _r2_mult, 2)
+                logger.info("R2-direct sizing: r2=%.3f -> %.2fx = $%.2f", _r2_val, _r2_mult, stake)
     elif sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
     elif sizing_mode == "all_in_equity":

@@ -724,6 +724,34 @@ class ETH5SignalGenerator:
             decision.direction, up_ask, dn_ask,
         )
 
+        # -- P_pos: price position in window range (0=low, 1=high) --
+        # -- Path R2: linear fit quality of price path (0=noise, 1=perfect line) --
+        p_pos = None
+        path_r2 = None
+        try:
+            win_prices = [p for p, t in zip(prices, ts_arr) if t >= float(ws)]
+            if len(win_prices) >= 20:
+                p_hi, p_lo = max(win_prices), min(win_prices)
+                p_rng = p_hi - p_lo
+                if p_rng > 0.01:
+                    p_pos = round((win_prices[-1] - p_lo) / p_rng, 4)
+                # R2: linear regression quality over window prices
+                try:
+                    import numpy as _np
+                    _n = len(win_prices)
+                    _x = _np.arange(_n, dtype=float)
+                    _y = _np.array(win_prices, dtype=float)
+                    _xm, _ym = _x.mean(), _y.mean()
+                    _sxy = _np.sum((_x - _xm) * (_y - _ym))
+                    _sxx = _np.sum((_x - _xm) ** 2)
+                    _syy = _np.sum((_y - _ym) ** 2)
+                    if _sxx > 0 and _syy > 0:
+                        path_r2 = round(float((_sxy ** 2) / (_sxx * _syy)), 4)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # -- Binance-RTDS gap (not applicable for ETH, set None) --
         binance_rtds_gap = None
 
@@ -748,7 +776,8 @@ class ETH5SignalGenerator:
             bs_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
             prev_outcome, odds_velocity, btc_accel_ok,
             lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-            bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score,
+            bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score, p_pos,
+            path_r2,
         )
 
         try:
@@ -762,14 +791,15 @@ class ETH5SignalGenerator:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score, p_pos, path_r2)
                    VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s)""",
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 sc_params,
             )
-            # Log when gate_allow or guards_passed or lag_arb
-            if gate_allow or guards_passed or lag_arb_allow:
+            # Log when gate_allow or guards_passed or lag_arb or p_pos extreme
+            _ppos_extreme = p_pos is not None and (p_pos >= 0.80 or p_pos <= 0.20)
+            if gate_allow or guards_passed or lag_arb_allow or _ppos_extreme:
                 execute_write(
                     self.db,
                     f"""INSERT INTO {SIGNAL_LOG}
@@ -780,10 +810,10 @@ class ETH5SignalGenerator:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score, p_pos, path_r2)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s)""",
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     sc_params,
                 )
             self.db.commit()

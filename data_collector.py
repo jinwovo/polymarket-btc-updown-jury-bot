@@ -926,6 +926,41 @@ class DataCollector:
             except Exception as _e:
                 logger.warning("BB/VWAP calc err: %s", _e)
 
+            # --- Price position in range (p_pos): 1=at high, 0=at low ---
+            # p_pos >= 0.8 -> strong UP momentum, <= 0.2 -> strong DOWN
+            # With 500ms delay: WR 61% (vs judges 52%). Independent of judges.
+            _p_pos = None
+            _path_r2 = None
+            try:
+                _prices = list(self._recent_prices)
+                _ws_ts = float(self.current_window_start)
+                _win_prices = [p for p, t in zip(_prices, self._recent_timestamps) if t >= _ws_ts]
+                if len(_win_prices) >= 20:
+                    _p_hi = max(_win_prices)
+                    _p_lo = min(_win_prices)
+                    _p_rng = _p_hi - _p_lo
+                    if _p_rng > 0.01:
+                        _p_pos = round((_win_prices[-1] - _p_lo) / _p_rng, 4)
+                    # --- Path R-squared: linear fit quality of price path ---
+                    # R2>=0.3 = smooth trend -> bet bigger. R2<0.05 = noise -> bet smaller.
+                    # QS-inv * R2-direct v2: +$5,244/240h vs FLAT +$1,688 (+211%)
+                    try:
+                        import numpy as _np
+                        _pr_n = len(_win_prices)
+                        _pr_x = _np.arange(_pr_n, dtype=float)
+                        _pr_y = _np.array(_win_prices, dtype=float)
+                        _pr_xm = _pr_x.mean()
+                        _pr_ym = _pr_y.mean()
+                        _pr_sxy = _np.sum((_pr_x - _pr_xm) * (_pr_y - _pr_ym))
+                        _pr_sxx = _np.sum((_pr_x - _pr_xm) ** 2)
+                        _pr_syy = _np.sum((_pr_y - _pr_ym) ** 2)
+                        if _pr_sxx > 0 and _pr_syy > 0:
+                            _path_r2 = round(float((_pr_sxy ** 2) / (_pr_sxx * _pr_syy)), 4)
+                    except Exception:
+                        pass
+            except Exception as _e:
+                logger.warning("p_pos calc err: %s", _e)
+
             # --- Ask drift: how much CLOB ask moved from window start ---
             _ask_drift = None
             try:
@@ -1021,7 +1056,8 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     _prev_outcome, _odds_velocity, _btc_accel_ok,
                     _lag_arb_allow, _lag_arb_direction, _lag_arb_entry_price,
-                    _bb_pos, _vwap_agree, _ask_drift, _btc_still_moving, _quality_score,
+                    _bb_pos, _vwap_agree, _ask_drift, _btc_still_moving, _quality_score, _p_pos,
+                    _path_r2,
             )
             execute_write(
                 self.db,
@@ -1033,13 +1069,14 @@ class DataCollector:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score, p_pos, path_r2)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 _sc_params,
             )
             # Append to signal_cache_log for backtest parity
-            # Record when gate_allow=1 OR lag_arb_allow=1 OR guards_passed=1
-            if gate_allow or guards_passed or _lag_arb_allow:
+            # Record when gate_allow=1 OR lag_arb_allow=1 OR guards_passed=1 OR p_pos extreme
+            _ppos_extreme = _p_pos is not None and (_p_pos >= 0.80 or _p_pos <= 0.20)
+            if gate_allow or guards_passed or _lag_arb_allow or _ppos_extreme:
                 execute_write(
                     self.db,
                     """INSERT INTO signal_cache_log
@@ -1050,8 +1087,8 @@ class DataCollector:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score, p_pos, path_r2)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     _sc_params,
                 )
             self.db.commit()

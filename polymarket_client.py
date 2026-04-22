@@ -2088,7 +2088,8 @@ class PolymarketClient:
                     logger.info("Rust daemon FAK: limit=%.3f (ask=%.3f) size=%d", _fak_limit, working_ask, _fak_size)
                     import time as _time_mod
                     _t0 = _time_mod.monotonic()
-                    _dr = self._daemon_order_sync(
+                    _dr = await asyncio.to_thread(
+                        self._daemon_order_sync,
                         str(token_id), _fak_limit, float(_fak_size),
                         side, 1000, False, _funder,
                     )

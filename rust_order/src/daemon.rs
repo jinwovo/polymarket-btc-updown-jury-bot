@@ -15,8 +15,9 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::env;
-use std::io::{self, BufRead, Write};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::io::{self, Write};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::time::timeout;
 
 const NEG_RISK_EXCHANGE: &str = "C5d563A36AE78145C45a50134d48A1215220f80a";
 const NORMAL_EXCHANGE: &str = "4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
@@ -382,13 +383,24 @@ async fn main() {
     println!("{{\"status\":\"ready\"}}");
     let _ = io::stdout().flush();
 
-    // Read orders from stdin, one JSON per line
-    let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,  // stdin closed
+    // Read orders from stdin with TLS keep-alive ping every 60s idle
+    let keep_alive_interval = Duration::from_secs(60);
+    let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    let mut lines = tokio::io::AsyncBufReadExt::lines(stdin);
+
+    loop {
+        // Wait for next line with timeout — if idle too long, ping to keep TLS alive
+        let line = match timeout(keep_alive_interval, lines.next_line()).await {
+            Ok(Ok(Some(line))) => line,
+            Ok(Ok(None)) => break,       // stdin closed (EOF)
+            Ok(Err(_)) => break,          // stdin read error
+            Err(_) => {
+                // Timeout — no order for 60s, ping to keep TLS connection warm
+                let _ = http.get("https://clob.polymarket.com/time").send().await;
+                continue;
+            }
         };
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;

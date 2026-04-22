@@ -24,6 +24,14 @@ tokio = { version = "1", features = ["full"] }
 # Salt generation
 rand = "0.9"
 
+[[bin]]
+name = "polymarket-fast-order"
+path = "src/main.rs"
+
+[[bin]]
+name = "polymarket-order-daemon"
+path = "src/daemon.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -165,10 +165,12 @@ def _close_prob_from_diffusion(ctx: MarketContext, mu: float, sigma: float) -> f
     t = max(1.0, float(ctx.seconds_remaining))
     sigma = max(float(sigma), _SIGMA_FLOOR_PER_SQRT_SEC)
     x = math.log(ctx.current_binance_price / ctx.market_start_price)
-    # OU-style time decay for drift memory + cap to avoid saturation.
+    # Drift: OU-style time decay + cap. Sweep showed drift value barely matters
+    # (raw_drift*decay already within +-0.0003), so clamp is rarely active.
+    # Kept at +-0.0005 as marginal best from 2s-sampled replay.
     decay = math.exp(-1.6 * (t / 300.0))
     raw_drift = (mu - 0.5 * sigma * sigma) * t
-    drift = _clamp(raw_drift * decay, -0.0018, 0.0018)
+    drift = _clamp(raw_drift * decay, -0.0005, 0.0005)
     denom = sigma * math.sqrt(t)
     if denom < 1e-8:
         return 1.0 if (x + drift) > 0 else 0.0

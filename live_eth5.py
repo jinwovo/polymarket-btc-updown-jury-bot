@@ -339,9 +339,22 @@ def _check_entry(
     """Check entry conditions and place a live order if conditions are met.
     Returns True if a trade was opened. account_id=0 is main account."""
 
-    direction = str(cached.get("direction", "NO_TRADE"))
-    if direction not in ("UP", "DOWN"):
-        return False
+    # DIRECT-TRIGGER mode (2026-04-20): bypass judges, use price-based direction.
+    # Peak momentum BB 0.8-1.2 (UP) / -1.2 to -0.8 (DOWN) + r2>=0.15
+    # Backtest: 240h 107t/72% WR/+$375 ($10 stake), ALL PERIODS WR >= 61%.
+    _direct_mode = os.getenv("ETH5_DIRECT_TRIGGER", "false").lower() == "true"
+    if _direct_mode:
+        _eth_move = cached.get("btc_move_pct")
+        if _eth_move is None:
+            return False
+        _eth_move = float(_eth_move)
+        if abs(_eth_move) < 0.02:
+            return False
+        direction = "UP" if _eth_move > 0 else "DOWN"
+    else:
+        direction = str(cached.get("direction", "NO_TRADE"))
+        if direction not in ("UP", "DOWN"):
+            return False
 
     now_ts = time.time()
     window_start = int(cached.get("window_start") or 0)
@@ -397,10 +410,41 @@ def _check_entry(
           and (now_ts - _glock.get("ts", 0)) < 5.0
           and _glock.get("dir") == direction):
         gate_allow = 1
-    if not gate_allow:
+    if not gate_allow and not _direct_mode:
         logger.debug("Skip gate_allow=0 ws=%s dir=%s reason=%s",
                       window_start, direction, cached.get("gate_reason", ""))
         return False
+
+    # Judge Bias Correction: flip when judges stuck on one direction
+    _bias_on = env(MARKET, "JUDGE_BIAS_CORRECTION", "false").lower() == "true"
+    if _bias_on:
+        _bias_lb = int(env(MARKET, "BIAS_LOOKBACK", "4"))
+        _bias_th = float(env(MARKET, "BIAS_THRESHOLD", "0.80"))
+        if not hasattr(_check_entry, '_judge_hist'):
+            _check_entry._judge_hist = []
+        _orig_dir = direction
+        _jh = _check_entry._judge_hist
+        if len(_jh) >= _bias_lb:
+            _dn_p = sum(1 for d in _jh[-_bias_lb:] if d == "DOWN") / _bias_lb
+            if _orig_dir == "DOWN" and _dn_p >= _bias_th:
+                direction = "UP"
+                logger.info("Bias correction: flip DOWN->UP (last %d: %.0f%% DOWN)", _bias_lb, _dn_p * 100)
+            elif _orig_dir == "UP" and (1 - _dn_p) >= _bias_th:
+                direction = "DOWN"
+                logger.info("Bias correction: flip UP->DOWN (last %d: %.0f%% UP)", _bias_lb, (1 - _dn_p) * 100)
+        _jh.append(_orig_dir)
+
+    # P_pos override: price at range extreme overrides judge direction
+    _ppos_on = env(MARKET, "PPOS_OVERRIDE", "false").lower() == "true"
+    if _ppos_on and cached.get("p_pos") is not None:
+        _pp = float(cached["p_pos"])
+        _pp_th = float(env(MARKET, "PPOS_THRESHOLD", "0.80"))
+        if _pp >= _pp_th and direction != "UP":
+            logger.info("P_pos override: %.2f -> force UP (was %s)", _pp, direction)
+            direction = "UP"
+        elif _pp <= (1.0 - _pp_th) and direction != "DOWN":
+            logger.info("P_pos override: %.2f -> force DOWN (was %s)", _pp, direction)
+            direction = "DOWN"
 
     # Guards skipped for ETH -- too strict, matches paper_replay parity
 
@@ -484,6 +528,48 @@ def _check_entry(
             logger.debug("Skip ETH not still moving ws=%s", window_start)
             return False
 
+    # ETH5 Bad-hour filter (split-half validated 2026-04-20)
+    bad_hours_str = os.getenv("ETH5_BAD_HOURS_UTC", "1,8,12,15")
+    if bad_hours_str:
+        import datetime as _dt_mod
+        bad_hours = {int(h.strip()) for h in bad_hours_str.split(",") if h.strip()}
+        cur_hour = _dt_mod.datetime.utcfromtimestamp(int(window_start)).hour
+        if cur_hour in bad_hours:
+            logger.info("Skip ETH5 bad hour UTC=%d ws=%s", cur_hour, window_start)
+            return False
+
+    # ETH5 BB filter — two modes (must match paper_sim_eth5):
+    # DIRECT: Peak momentum BB [0.8, 1.2) UP / (-1.2, -0.8) DOWN + r2>=0.15
+    # JUDGE:  Symmetric BB [0.5, 1.5) UP / (-1.5, 0.5) DOWN
+    if os.getenv("ETH5_BB_BAD_ZONE_FILTER", "true").lower() == "true":
+        bb_val = cached.get("bb_pos")
+        if bb_val is None:
+            logger.info("Skip ETH5 no BB ws=%s", window_start)
+            return False
+        bb_f = float(bb_val)
+        if _direct_mode:
+            if direction == "UP":
+                if not (0.8 <= bb_f < 1.2):
+                    logger.info("Skip ETH5 direct UP bb=%.2f (need [0.8, 1.2))", bb_f)
+                    return False
+            else:
+                if not (-1.2 < bb_f < -0.8):
+                    logger.info("Skip ETH5 direct DOWN bb=%.2f (need (-1.2, -0.8))", bb_f)
+                    return False
+            r2_val = cached.get("path_r2")
+            if r2_val is None or float(r2_val) < 0.15:
+                logger.info("Skip ETH5 direct weak r2=%s ws=%s", r2_val, window_start)
+                return False
+        else:
+            if direction == "UP":
+                if not (0.5 <= bb_f < 1.5):
+                    logger.info("Skip ETH5 UP bb=%.2f", bb_f)
+                    return False
+            else:
+                if not (-1.5 < bb_f < 0.5):
+                    logger.info("Skip ETH5 DOWN bb=%.2f", bb_f)
+                    return False
+
     # BTC activity filter: skip dead markets (must match paper_sim_eth5)
     if not _check_btc_activity(conn, now_ts):
         return False
@@ -504,6 +590,12 @@ def _check_entry(
         # Confidence filter: skip low-confidence entries
         if MIN_CONFIDENCE > 0 and conf < MIN_CONFIDENCE:
             logger.info("Skip low confidence ws=%s: conf=%.2f < %.2f", window_start, conf, MIN_CONFIDENCE)
+            return False
+        # Min move filter: skip when price barely moved (coin flip zone)
+        # Live data: move<0.02% = WR 42%, move>=0.02% = WR 62%
+        _min_move = float(env(MARKET, "MIN_MOVE_PCT", "0.02"))
+        if _min_move > 0 and btc_move < _min_move:
+            logger.info("Skip low move ws=%s: move=%.4f%% < %.4f%%", window_start, btc_move, _min_move)
             return False
 
         ev = float(cached.get("gate_ev") or 0)
@@ -542,18 +634,46 @@ def _check_entry(
 
     # Sizing
     stake = round(base_stake, 2)
+    _total_mult = 1.0
 
     # Confidence sizing: multiply when BB+VWAP+BTC-leads all agree (must match paper)
     conf_mult = _compute_confidence_mult(conn, direction, window_start, now_ts)
     if conf_mult > 1.0:
-        stake = round(stake * conf_mult, 2)
+        _total_mult *= conf_mult
 
-    # Dynamic sizing via quality_score
-    qs = cached.get("quality_score")
-    if qs is not None:
-        qs = float(qs)
-        stake = round(stake * qs, 2)
-        logger.debug("Dynamic sizing: quality=%.2f stake=$%.2f", qs, stake)
+    # Dynamic sizing via quality_score — QS-INVERSE (env-controlled, off by default)
+    qs_mult = 1.0
+    if os.getenv(f"{MARKET}_QS_INVERSE_SIZING", "false").lower() == "true":
+        qs = cached.get("quality_score")
+        if qs is not None:
+            qs = float(qs)
+            qs_mult = max(0.5, min(2.0, 1.0 / max(0.3, qs)))
+            _total_mult *= qs_mult
+
+    # R2-direct sizing: smooth price path = strong trend = bet bigger
+    # Backtest: QS-inv * R2-direct = +$5,244/240h vs QS-inv alone +$2,420 (+117%)
+    r2_mult = 1.0
+    if os.getenv(f"{MARKET}_R2_SIZING", "true").lower() == "true":
+        r2_val = cached.get("path_r2")
+        if r2_val is not None:
+            r2_val = float(r2_val)
+            if r2_val >= 0.30:
+                r2_mult = 2.0
+            elif r2_val >= 0.15:
+                r2_mult = 1.5
+            elif r2_val >= 0.05:
+                r2_mult = 1.0
+            else:
+                r2_mult = 0.5
+            _total_mult *= r2_mult
+
+    # Cap total multiplier: floor 0.5x, ceiling 3.0x (raised from 2.0x for R2 stacking)
+    _cap_ceiling = float(os.getenv(f"{MARKET}_SIZING_CAP_CEILING", "3.0"))
+    _total_mult = max(0.5, min(_total_mult, _cap_ceiling))
+    stake = round(base_stake * _total_mult, 2)
+    if _total_mult != 1.0:
+        logger.info("Sizing: conf=%.1fx qs=%.2fx r2=%.2fx total=%.2fx -> $%.2f",
+                    conf_mult, qs_mult, r2_mult, _total_mult, stake)
 
     # Floor at $5 minimum (Polymarket requires ~$5 notional)
     _min_stake = max(5.0, MIN_BET_SIZE)
@@ -651,10 +771,15 @@ def _check_entry(
         if 0.0 < _exec_price < 1.0:
             executed_price = _exec_price
 
+        # NOTE: Daemon reports requested size/price, not actual fill.
+        # FAK fills at multiple price levels -> actual avg price > best ask.
+        # Actual shares verified at settlement (exit) via balance check.
+        # No extra API call here to avoid slowing entry.
+
         # Recalculate with actual fill
         stake = executed_stake
         entry_price = executed_price
-        shares = stake / entry_price
+        shares = _exec_size if _exec_size > 0 else stake / entry_price
         payout_multiple = 1.0 / entry_price
         potential_win_pnl = apply_fee_to_pnl(shares - stake, stake)
         entry_source = str(order_result.get("mode") or "live_fak")
@@ -1088,6 +1213,17 @@ def _resolve_open_trades(conn, dry_run: bool = True, poly_client=None, acct_mgr=
                                     if _capped < _exit_shares:
                                         logger.info("Capping exit shares: requested=%.2f available=%.2f used=%.2f", _exit_shares, _avail, _capped)
                                     _exit_shares = _capped
+                                    # Correct PnL using actual shares from exchange
+                                    if _avail < shares * 0.95:
+                                        _real_pnl = apply_fee_to_pnl(_avail - stake, stake)
+                                        if abs(_real_pnl - pnl) > 1.0:
+                                            logger.info("PnL correction: DB=%.2f real=%.2f (actual_shares=%.1f vs recorded=%.1f)",
+                                                        pnl, _real_pnl, _avail, shares)
+                                            pnl = _real_pnl
+                                            roi_pct = (pnl / stake) * 100.0 if stake > 0 else 0.0
+                                            execute_write(conn, f"UPDATE {TRADES_TABLE} SET pnl=?, roi_pct=? WHERE id=?",
+                                                          (pnl, roi_pct, trade_id))
+                                            conn.commit()
                                 else:
                                     logger.warning("No %s balance on exchange, skipping exit", direction)
                                     _exit_shares = 0
@@ -1385,6 +1521,7 @@ def run_loop(
     poly_client = None
     if not dry_run:
         poly_client = PolymarketClient()
+        poly_client._start_daemon()  # Pre-warm Rust daemon TLS
 
     # Multi-account manager
     acct_mgr = AccountManager(dry_run=dry_run)
