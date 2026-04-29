@@ -1112,11 +1112,14 @@ def _backfill_unresolved_windows(conn) -> int:
         try:
             import httpx
             slug = f"btc-updown-5m-{ws}"
+            # Gamma API V2 (2026-05-01 deadline): /events deprecated, use /events/keyset
+            # New response: {"events": [...], "next_cursor": "..."} vs old [...]
             resp = httpx.get(
-                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                f"https://gamma-api.polymarket.com/events/keyset?slug={slug}&limit=1",
                 timeout=5,
             )
-            events = resp.json()
+            _payload = resp.json()
+            events = _payload.get("events", []) if isinstance(_payload, dict) else _payload
             if events:
                 meta = events[0].get("eventMetadata") or {}
                 if meta.get("priceToBeat") is not None and meta.get("finalPrice") is not None:

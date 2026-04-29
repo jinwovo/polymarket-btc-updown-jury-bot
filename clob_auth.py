@@ -356,7 +356,7 @@ def _signer_address(private_key: str) -> str:
     if not private_key:
         return ""
     try:
-        from py_clob_client.signer import Signer
+        from py_clob_client_v2.signer import Signer
 
         addr = Signer(private_key, 137).address()
         return _clean(addr)
@@ -450,8 +450,8 @@ def auth_config_status() -> dict[str, Any]:
 
 
 def _build_api_creds(private_key: str, funder: str):
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import ApiCreds
+    from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import ApiCreds
 
     if _has_direct_api_creds():
         creds = ApiCreds(
@@ -494,7 +494,7 @@ def create_authenticated_clob_client():
         ValueError: when required env values are missing.
         RuntimeError / Exception: when derivation or client init fails.
     """
-    from py_clob_client.client import ClobClient
+    from py_clob_client_v2.client import ClobClient
 
     status = auth_config_status()
     if not bool(status["configured"]):

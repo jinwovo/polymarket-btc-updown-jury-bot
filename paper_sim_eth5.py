@@ -356,11 +356,13 @@ def _settle_outcome(conn, window_start: int, window_end: int) -> str | None:
     try:
         import httpx
         slug = f"eth-updown-5m-{window_start}"
+        # Gamma API V2 (2026-05-01 deadline): /events -> /events/keyset
         resp = httpx.get(
-            f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+            f"https://gamma-api.polymarket.com/events/keyset?slug={slug}&limit=1",
             timeout=5,
         )
-        events = resp.json()
+        _payload = resp.json()
+        events = _payload.get("events", []) if isinstance(_payload, dict) else _payload
         if events:
             meta = events[0].get("eventMetadata") or {}
             if meta.get("priceToBeat") is not None and meta.get("finalPrice") is not None:
@@ -449,11 +451,13 @@ def _backfill_unresolved_trades(conn) -> int:
         try:
             import httpx
             slug = f"eth-updown-5m-{ws}"
+            # Gamma API V2: /events -> /events/keyset
             resp = httpx.get(
-                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                f"https://gamma-api.polymarket.com/events/keyset?slug={slug}&limit=1",
                 timeout=5,
             )
-            events = resp.json()
+            _payload = resp.json()
+            events = _payload.get("events", []) if isinstance(_payload, dict) else _payload
             if not events:
                 continue
             meta = events[0].get("eventMetadata") or {}

@@ -895,8 +895,9 @@ def _find_eth_market(
         import httpx
         # Synchronous Gamma API query (same pattern as PolymarketClient.find_market)
         gamma_url = config.polymarket.gamma_url
+        # Gamma API V2: /markets -> /markets/keyset, /events -> /events/keyset (2026-05-01)
         resp = httpx.get(
-            f"{gamma_url}/markets",
+            f"{gamma_url}/markets/keyset",
             params={"slug": slug, "closed": "false"},
             timeout=10.0,
         )
@@ -904,15 +905,17 @@ def _find_eth_market(
             logger.warning("Gamma API returned %s for slug=%s", resp.status_code, slug)
             return None
 
-        markets = resp.json()
+        _payload = resp.json()
+        markets = _payload.get("markets", []) if isinstance(_payload, dict) else _payload
         if not markets:
             resp2 = httpx.get(
-                f"{gamma_url}/events",
+                f"{gamma_url}/events/keyset",
                 params={"slug": slug},
                 timeout=10.0,
             )
             if resp2.status_code == 200:
-                events = resp2.json()
+                _ev_payload = resp2.json()
+                events = _ev_payload.get("events", []) if isinstance(_ev_payload, dict) else _ev_payload
                 if events and len(events) > 0:
                     event = events[0]
                     if "markets" in event and len(event["markets"]) > 0:

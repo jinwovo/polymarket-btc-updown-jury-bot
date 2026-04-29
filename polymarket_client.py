@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Polymarket API which often takes 3-8s under load. Also add transport-
 # level retries for connection errors.
 try:
-    import py_clob_client.http_helpers.helpers as _clob_http
+    import py_clob_client_v2.http_helpers.helpers as _clob_http
     # HTTP/2 causes ReadTimeout on POST /order -- Polymarket's server
     # doesn't reliably close HTTP/2 streams. Switch to HTTP/1.1.
     _patched_transport = httpx.HTTPTransport(
@@ -411,16 +411,24 @@ class PolymarketClient:
         if not slug:
             return None
         try:
+            # Gamma API V2: /events -> /events/keyset (2026-05-01 deadline)
             resp = await self._http.get(
-                f"{config.polymarket.gamma_url}/events",
+                f"{config.polymarket.gamma_url}/events/keyset",
                 params={"slug": slug},
             )
             if resp.status_code != 200:
                 return None
             payload = resp.json()
-            if not isinstance(payload, list) or not payload:
+            # V2 response: {"events": [...]}; old: [...]. Handle both.
+            if isinstance(payload, dict):
+                events = payload.get("events", [])
+            elif isinstance(payload, list):
+                events = payload
+            else:
+                events = []
+            if not events:
                 return None
-            event = payload[0] if isinstance(payload[0], dict) else None
+            event = events[0] if isinstance(events[0], dict) else None
             if not event:
                 return None
             meta = event.get("eventMetadata")
@@ -486,10 +494,15 @@ class PolymarketClient:
         """Send order to daemon via stdin/stdout (blocking)."""
         if not self._daemon_proc or self._daemon_proc.poll() is not None:
             return None
+        # V2: builderCode (bytes32) replaces HMAC builder auth.
+        # Get from polymarket.com/settings -> Builder Profile.
+        # Empty string = no builder (zeros), still works for own orders.
+        builder_code = os.getenv("POLYMARKET_BUILDER_CODE", "")
         req = json.dumps({
             "token_id": token_id, "price": price, "size": size,
             "side": side, "order_type": "FAK",
             "fee_rate_bps": fee_bps, "neg_risk": neg_risk, "funder": funder,
+            "builder_code": builder_code,
         })
         try:
             self._daemon_proc.stdin.write(req + "\n")
@@ -995,22 +1008,25 @@ class PolymarketClient:
         """Find a BTC Up/Down 5m market by its start timestamp."""
         slug = market_slug_for_timestamp(start_timestamp)
         try:
+            # Gamma API V2: /markets -> /markets/keyset, /events -> /events/keyset
             resp = await self._http.get(
-                f"{config.polymarket.gamma_url}/markets",
+                f"{config.polymarket.gamma_url}/markets/keyset",
                 params={"slug": slug, "closed": "false"},
             )
             if resp.status_code != 200:
                 logger.warning(f"Gamma API returned {resp.status_code} for slug={slug}")
                 return None
 
-            markets = resp.json()
+            _payload = resp.json()
+            markets = _payload.get("markets", []) if isinstance(_payload, dict) else _payload
             if not markets:
                 resp2 = await self._http.get(
-                    f"{config.polymarket.gamma_url}/events",
+                    f"{config.polymarket.gamma_url}/events/keyset",
                     params={"slug": slug},
                 )
                 if resp2.status_code == 200:
-                    events = resp2.json()
+                    _ev_payload = resp2.json()
+                    events = _ev_payload.get("events", []) if isinstance(_ev_payload, dict) else _ev_payload
                     if events and len(events) > 0:
                         event = events[0]
                         if "markets" in event and len(event["markets"]) > 0:
@@ -1351,7 +1367,7 @@ class PolymarketClient:
         last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
-                from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+                from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
                 params = BalanceAllowanceParams(
                     asset_type=AssetType.CONDITIONAL,
@@ -1386,7 +1402,7 @@ class PolymarketClient:
         if not self._clob_client:
             return None
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             payload = await asyncio.to_thread(self._clob_client.get_balance_allowance, params)
@@ -1415,7 +1431,7 @@ class PolymarketClient:
         last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
-                from py_clob_client.clob_types import OpenOrderParams
+                from py_clob_client_v2.clob_types import OpenOrderParams
 
                 params = OpenOrderParams(asset_id=str(asset_id))
                 payload = await asyncio.to_thread(self._clob_client.get_orders, params)
@@ -1531,8 +1547,8 @@ class PolymarketClient:
             return None
 
         try:
-            from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
-            from py_clob_client.order_builder.constants import BUY, SELL
+            from py_clob_client_v2.clob_types import MarketOrderArgs, OrderArgs, OrderType
+            from py_clob_client_v2.order_builder.constants import BUY, SELL
 
             order_side = _normalize_order_side(side, default="BUY")
             side_const = BUY if order_side == "BUY" else SELL
@@ -1713,8 +1729,8 @@ class PolymarketClient:
             return None
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType
-            from py_clob_client.order_builder.constants import BUY, SELL
+            from py_clob_client_v2.clob_types import OrderArgs, OrderType
+            from py_clob_client_v2.order_builder.constants import BUY, SELL
 
             ot = str(order_type or "GTC").strip().upper()
             order_type_value = getattr(OrderType, ot, OrderType.GTC)
@@ -2462,7 +2478,7 @@ class PolymarketClient:
                 collateral = ""
                 conditional_tokens = ""
         if not collateral or not conditional_tokens:
-            from py_clob_client.config import get_contract_config
+            from py_clob_client_v2.config import get_contract_config
 
             cfg = get_contract_config(int(getattr(config.polymarket, "relayer_chain_id", 137) or 137))
             collateral = str(cfg.collateral)

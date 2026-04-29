@@ -22,25 +22,27 @@ const NEG_RISK_EXCHANGE: &str = "C5d563A36AE78145C45a50134d48A1215220f80a";
 const NORMAL_EXCHANGE: &str = "4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 
 // EIP-712 Order struct — matches Polymarket CTF Exchange contract
+// CLOB V2 (2026-04-28): nonce/feeRateBps/taker/expiration removed from signed struct.
+// timestamp (ms), metadata (bytes32), builder (bytes32) added. Domain version "1"->"2".
 alloy_sol_types::sol! {
     #[derive(Debug)]
     struct Order {
         uint256 salt;
         address maker;
         address signer;
-        address taker;
         uint256 tokenId;
         uint256 makerAmount;
         uint256 takerAmount;
-        uint256 expiration;
-        uint256 nonce;
-        uint256 feeRateBps;
         uint8 side;
         uint8 signatureType;
+        uint256 timestamp;
+        bytes32 metadata;
+        bytes32 builder;
     }
 }
 
 // --- JSON types for API communication ---
+// V2 POST body: timestamp(ms), metadata, builder added; nonce/feeRateBps removed.
 
 #[derive(Serialize)]
 struct ApiOrder {
@@ -55,12 +57,12 @@ struct ApiOrder {
     #[serde(rename = "takerAmount")]
     taker_amount: String,
     expiration: String,
-    nonce: String,
-    #[serde(rename = "feeRateBps")]
-    fee_rate_bps: String,
     side: String,
     #[serde(rename = "signatureType")]
     signature_type: u8,
+    timestamp: String,
+    metadata: String,
+    builder: String,
     signature: String,
 }
 
@@ -254,30 +256,38 @@ async fn main() {
         (signer_addr, 0u8)  // EOA
     };
 
-    // Build EIP-712 order
+    // V2 timestamp in milliseconds (replaces nonce for uniqueness)
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // V2 metadata + builder (both bytes32, default zeros for now)
+    let metadata_bytes32 = alloy_primitives::FixedBytes::<32>::ZERO;
+    let builder_bytes32 = alloy_primitives::FixedBytes::<32>::ZERO;
+
+    // Build V2 EIP-712 order
     let order = Order {
         salt: U256::from(salt),
         maker: maker_addr,
         signer: signer_addr,
-        taker: Address::ZERO,
         tokenId: token_id_u256,
         makerAmount: U256::from(maker_amount),
         takerAmount: U256::from(taker_amount),
-        expiration: U256::ZERO,
-        nonce: U256::ZERO,
-        feeRateBps: U256::from(fee_rate_bps),
         side: if is_buy { 0u8 } else { 1u8 },
         signatureType: sig_type, // 0=EOA, 1=Proxy
+        timestamp: U256::from(timestamp_ms),
+        metadata: metadata_bytes32,
+        builder: builder_bytes32,
     };
 
-    // Sign with EIP-712 domain
+    // Sign with V2 EIP-712 domain (version "2")
+    const CHAIN_ID: u64 = 137;
     let domain = eip712_domain! {
         name: "Polymarket CTF Exchange",
-        version: "1",
+        version: "2",
         chain_id: CHAIN_ID,
         verifying_contract: exchange_addr,
     };
-    const CHAIN_ID: u64 = 137;
 
     let sig_hash = order.eip712_signing_hash(&domain);
     let signature = match wallet.sign_hash_sync(&sig_hash) {
@@ -310,10 +320,11 @@ async fn main() {
             maker_amount: maker_amount.to_string(),
             taker_amount: taker_amount.to_string(),
             expiration: "0".to_string(),
-            nonce: "0".to_string(),
-            fee_rate_bps: fee_rate_bps.to_string(),
             side: side_api.to_string(),
             signature_type: sig_type,
+            timestamp: timestamp_ms.to_string(),
+            metadata: format!("0x{}", alloy_primitives::hex::encode(metadata_bytes32.as_slice())),
+            builder: format!("0x{}", alloy_primitives::hex::encode(builder_bytes32.as_slice())),
             signature: signature.clone(),
         },
         order_type: order_type_api.to_string(),

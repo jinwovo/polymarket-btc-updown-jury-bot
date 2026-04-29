@@ -2330,11 +2330,13 @@ async def _extra_market_poll(self):
                 # New window? discover market
                 if _current.get(prefix, {}).get("ws") != ws:
                     try:
+                        # Gamma API V2: /events -> /events/keyset (2026-05-01 deadline)
                         resp = await _http.get(
-                            "https://gamma-api.polymarket.com/events",
+                            "https://gamma-api.polymarket.com/events/keyset",
                             params={"slug": slug},
                         )
-                        events = resp.json()
+                        _payload = resp.json()
+                        events = _payload.get("events", []) if isinstance(_payload, dict) else _payload
                         if events:
                             m = events[0]["markets"][0]
                             ids = m.get("clobTokenIds", [])

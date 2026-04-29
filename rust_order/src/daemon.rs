@@ -23,21 +23,23 @@ const NEG_RISK_EXCHANGE: &str = "C5d563A36AE78145C45a50134d48A1215220f80a";
 const NORMAL_EXCHANGE: &str = "4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 const CHAIN_ID: u64 = 137;
 
+// CLOB V2 (2026-04-28): nonce/feeRateBps/taker/expiration removed from signed struct.
+// timestamp (ms), metadata (bytes32), builder (bytes32) added. Domain version "1"->"2".
+// expiration still in POST body (just not signed). taker still in POST body (always 0x0).
 alloy_sol_types::sol! {
     #[derive(Debug)]
     struct Order {
         uint256 salt;
         address maker;
         address signer;
-        address taker;
         uint256 tokenId;
         uint256 makerAmount;
         uint256 takerAmount;
-        uint256 expiration;
-        uint256 nonce;
-        uint256 feeRateBps;
         uint8 side;
         uint8 signatureType;
+        uint256 timestamp;
+        bytes32 metadata;
+        bytes32 builder;
     }
 }
 
@@ -50,17 +52,43 @@ struct OrderRequest {
     #[serde(default = "default_order_type")]
     order_type: String,
     #[serde(default)]
-    fee_rate_bps: u64,
+    fee_rate_bps: u64,  // V2: kept in request struct for backward compat; not signed
     #[serde(default)]
     neg_risk: bool,
     #[serde(default)]
     funder: String,
+    #[serde(default)]
+    builder_code: String,  // V2: bytes32 hex string from polymarket.com/settings
 }
 
 fn default_order_type() -> String {
     "FAK".to_string()
 }
 
+// V2: parse bytes32 hex string (with or without 0x prefix). Empty -> all zeros.
+fn parse_bytes32_hex(s: &str) -> alloy_primitives::FixedBytes<32> {
+    let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.is_empty() {
+        return alloy_primitives::FixedBytes::<32>::ZERO;
+    }
+    // Pad to 64 hex chars (32 bytes) - left pad with zeros if shorter
+    let padded = if trimmed.len() < 64 {
+        format!("{:0>64}", trimmed)
+    } else {
+        trimmed.to_string()
+    };
+    match alloy_primitives::hex::decode(&padded) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            alloy_primitives::FixedBytes::<32>::from(arr)
+        }
+        _ => alloy_primitives::FixedBytes::<32>::ZERO,
+    }
+}
+
+// V2 POST body: still has taker/expiration but not nonce/feeRateBps.
+// New fields: timestamp (ms), metadata, builder.
 #[derive(Serialize)]
 struct ApiOrder {
     salt: u64,
@@ -74,12 +102,12 @@ struct ApiOrder {
     #[serde(rename = "takerAmount")]
     taker_amount: String,
     expiration: String,
-    nonce: String,
-    #[serde(rename = "feeRateBps")]
-    fee_rate_bps: String,
     side: String,
     #[serde(rename = "signatureType")]
     signature_type: u8,
+    timestamp: String,
+    metadata: String,
+    builder: String,
     signature: String,
 }
 
@@ -197,25 +225,36 @@ async fn execute_order(
         (signer_addr, 0u8)
     };
 
-    // Build & sign EIP-712 order
+    // V2 builder code (bytes32). Empty string -> all zeros.
+    let builder_bytes32 = parse_bytes32_hex(&req.builder_code);
+    // V2 metadata (bytes32). Currently always zeros (per V2 spec example).
+    let metadata_bytes32 = alloy_primitives::FixedBytes::<32>::ZERO;
+
+    // V2 timestamp in milliseconds (replaces nonce for uniqueness)
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Build & sign EIP-712 V2 order
     let order = Order {
         salt: U256::from(salt),
         maker: maker_addr,
         signer: signer_addr,
-        taker: Address::ZERO,
         tokenId: token_id_u256,
         makerAmount: U256::from(maker_amount),
         takerAmount: U256::from(taker_amount),
-        expiration: U256::ZERO,
-        nonce: U256::ZERO,
-        feeRateBps: U256::from(req.fee_rate_bps),
         side: if is_buy { 0u8 } else { 1u8 },
         signatureType: sig_type,
+        timestamp: U256::from(timestamp_ms),
+        metadata: metadata_bytes32,
+        builder: builder_bytes32,
     };
 
+    // V2: domain version "2"
     let domain = eip712_domain! {
         name: "Polymarket CTF Exchange",
-        version: "1",
+        version: "2",
         chain_id: CHAIN_ID,
         verifying_contract: exchange_addr,
     };
@@ -243,10 +282,11 @@ async fn execute_order(
             maker_amount: maker_amount.to_string(),
             taker_amount: taker_amount.to_string(),
             expiration: "0".to_string(),
-            nonce: "0".to_string(),
-            fee_rate_bps: req.fee_rate_bps.to_string(),
             side: side_api.to_string(),
             signature_type: sig_type,
+            timestamp: timestamp_ms.to_string(),
+            metadata: format!("0x{}", alloy_primitives::hex::encode(metadata_bytes32.as_slice())),
+            builder: format!("0x{}", alloy_primitives::hex::encode(builder_bytes32.as_slice())),
             signature,
         },
         order_type: order_type_api.to_string(),

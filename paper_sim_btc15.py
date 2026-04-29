@@ -516,11 +516,13 @@ def _backfill_unresolved_trades(conn) -> int:
         try:
             import httpx
             slug = f"{SLUG_PREFIX}-{ws}"
+            # Gamma API V2: /events -> /events/keyset (response: {"events":[...]})
             resp = httpx.get(
-                f"https://gamma-api.polymarket.com/events?slug={slug}&limit=1",
+                f"https://gamma-api.polymarket.com/events/keyset?slug={slug}&limit=1",
                 timeout=5,
             )
-            events = resp.json()
+            _payload = resp.json()
+            events = _payload.get("events", []) if isinstance(_payload, dict) else _payload
             if not events:
                 continue
             meta = events[0].get("eventMetadata") or {}
