@@ -19,8 +19,12 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 
-const NEG_RISK_EXCHANGE: &str = "C5d563A36AE78145C45a50134d48A1215220f80a";
-const NORMAL_EXCHANGE: &str = "4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+// CLOB V2 (2026-04-28): exchange contracts changed.
+// V1 was: Normal=0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E,
+//         NegRisk=0xC5d563A36AE78145C45a50134d48A1215220f80a
+// V2 (per docs.polymarket.com/v2-migration):
+const NEG_RISK_EXCHANGE: &str = "e2222d279d744050d28e00520010520000310F59";
+const NORMAL_EXCHANGE: &str = "E111180000d2663C0091e4f400237545B87B996B";
 const CHAIN_ID: u64 = 137;
 
 // CLOB V2 (2026-04-28): nonce/feeRateBps/taker/expiration removed from signed struct.

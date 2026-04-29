@@ -1,9 +1,10 @@
-//! Fast Polymarket order execution in Rust (v2 — official EIP-712 signing).
+//! Fast Polymarket order execution in Rust (CLOB V2, 2026-04-28).
 //! Called from Python via subprocess. ~200ms vs Python's ~1100ms.
 //!
-//! Uses the same signing scheme as Polymarket/rs-clob-client:
-//!   EIP-712 domain: "Polymarket CTF Exchange" v1, chain 137
-//!   Neg-risk exchange: 0xC5d563A36AE78145C45a50134d48A1215220f80a
+//! V2 signing scheme (post April 28, 2026):
+//!   EIP-712 domain: "Polymarket CTF Exchange" v2, chain 137
+//!   Normal exchange: 0xE111180000d2663C0091e4f400237545B87B996B
+//!   Neg-risk exchange: 0xe2222d279d744050d28e00520010520000310F59
 //!   L2 auth: HMAC-SHA256 with URL-safe base64
 
 use alloy_primitives::{Address, U256};
@@ -18,8 +19,9 @@ use std::env;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Polygon mainnet exchange addresses
-const NEG_RISK_EXCHANGE: &str = "C5d563A36AE78145C45a50134d48A1215220f80a";
-const NORMAL_EXCHANGE: &str = "4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+// CLOB V2 (2026-04-28): updated exchange contracts.
+const NEG_RISK_EXCHANGE: &str = "e2222d279d744050d28e00520010520000310F59";
+const NORMAL_EXCHANGE: &str = "E111180000d2663C0091e4f400237545B87B996B";
 
 // EIP-712 Order struct — matches Polymarket CTF Exchange contract
 // CLOB V2 (2026-04-28): nonce/feeRateBps/taker/expiration removed from signed struct.
