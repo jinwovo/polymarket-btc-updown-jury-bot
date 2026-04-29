@@ -1932,6 +1932,25 @@ def open_trade_if_signal(
                     _r2_mult = 0.5
                 stake = round(stake * _r2_mult, 2)
                 logger.info("R2-direct sizing: r2=%.3f -> %.2fx = $%.2f", _r2_val, _r2_mult, stake)
+
+        # SAFETY CAP: prevent stake explosion if any multiplier accidentally on.
+        # Cap stake at PAPER_SIZING_CAP_CEILING * base (default 1.5x = $15 from $10).
+        try:
+            _cap_floor = float(os.getenv("PAPER_SIZING_CAP_FLOOR", "0.5"))
+            _cap_ceiling = float(os.getenv("PAPER_SIZING_CAP_CEILING", "1.5"))
+            _cap_base = float(os.getenv("PAPER_FIXED_STAKE", "10.0"))
+            _min_stake = round(_cap_base * _cap_floor, 2)
+            _max_stake = round(_cap_base * _cap_ceiling, 2)
+            if stake > _max_stake:
+                logger.warning("Sizing cap: $%.2f -> $%.2f (ceiling=%.1fx base=$%.2f)",
+                               stake, _max_stake, _cap_ceiling, _cap_base)
+                stake = _max_stake
+            elif stake < _min_stake and stake > 0:
+                logger.warning("Sizing floor: $%.2f -> $%.2f (floor=%.1fx base=$%.2f)",
+                               stake, _min_stake, _cap_floor, _cap_base)
+                stake = _min_stake
+        except Exception as _cap_err:
+            logger.warning("Cap calc error (ignored): %s", _cap_err)
     elif sizing_mode == "all_in_fixed":
         stake = round(initial_capital, 2)
     elif sizing_mode == "all_in_equity":
