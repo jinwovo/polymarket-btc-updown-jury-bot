@@ -556,15 +556,17 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
     """Attempt to open a paper trade from signal_cache_eth5."""
     now_ts = time.time()
 
-    # DIRECT-TRIGGER mode (2026-04-20): bypass judges, use price-based direction.
-    # Strategy: Peak momentum BB 0.8-1.2 (UP) or -1.2 to -0.8 (DOWN) + r2>=0.15.
-    # Paper_replay: 240h 107t/72% WR/+$375 (stake $10), ALL PERIODS WR >= 61%.
+    # DIRECT-TRIGGER mode (2026-04-29): bypass judges, use price-based direction.
+    # Strategy: Wide BB (0.3-1.5/-1.5--0.3) + abs(move) >= 0.04%.
+    # Paper_replay: 396h 340t/63% WR/+$635 ($10 stake), 0.86/h volume.
+    # ALL 33 12h-periods POSITIVE. 24h: 32t/87.5% WR.
     _direct_mode = os.getenv("ETH5_DIRECT_TRIGGER", "false").lower() == "true"
     if _direct_mode:
-        _eth_move = cached.get("btc_move_pct")  # ETH move in ETH5 context
+        _eth_move = cached.get("btc_move_pct")  # ETH move stored here for ETH5
         if _eth_move is None:
             return False
         _eth_move = float(_eth_move)
+        # Min direction-detection threshold (BB filter applies stricter move>=0.04% later)
         if abs(_eth_move) < 0.02:
             return False
         # Direction from price move (not judges)
@@ -665,12 +667,13 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
         logger.debug("Skip overextended btc_move=%.4f%% > %.2f%% ws=%s", abs(btc_move), MAX_BTC_MOVE_PCT, window_start)
         return False
 
-    # Confidence filter: skip low-confidence jury decisions
-    # 150h backtest: conf<0.55 = 9L/5W removal -> WR 70%->75%, PnL +$898
-    confidence = float(cached.get("avg_confidence") or 0)
-    if MIN_CONFIDENCE > 0 and confidence < MIN_CONFIDENCE:
-        logger.info("Skip low confidence ws=%s: conf=%.2f < %.2f dir=%s", window_start, confidence, MIN_CONFIDENCE, direction)
-        return False
+    # Confidence filter: skip low-confidence jury decisions (JUDGE MODE ONLY)
+    # In direct mode, judges are bypassed so confidence is irrelevant.
+    if not _direct_mode:
+        confidence = float(cached.get("avg_confidence") or 0)
+        if MIN_CONFIDENCE > 0 and confidence < MIN_CONFIDENCE:
+            logger.info("Skip low confidence ws=%s: conf=%.2f < %.2f dir=%s", window_start, confidence, MIN_CONFIDENCE, direction)
+            return False
 
     # Score filter
     if MIN_ENTRY_SCORE > 0:
@@ -681,7 +684,8 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
         logger.info("Score OK: %d/%d dir=%s ask=%.3f ws=%s", score, MIN_ENTRY_SCORE, direction, entry_price, window_start)
 
     # Technical filters from signal_cache
-    if REQUIRE_VWAP_AGREE:
+    # In direct mode: skip vwap_agree (judge-direction-aligned) since direction may differ
+    if REQUIRE_VWAP_AGREE and not _direct_mode:
         vwap_ok = int(cached.get("vwap_agree") or 0)
         if not vwap_ok:
             logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
@@ -709,43 +713,33 @@ def _open_trade(conn, cached: dict, stake_amount: float, sizing_mode: str) -> bo
             logger.info("Skip ETH5 bad hour UTC=%d ws=%s", cur_hour, window_start)
             return False
 
-    # ETH5 BB filter — two modes:
-    # MODE A: direct-trigger (ETH5_DIRECT_TRIGGER=true) - Peak momentum BB + r2>=0.15
-    #   480h test: 107t/72%WR/+$375 ($10 stake), ALL periods WR >= 61%
-    #   UP: bb in [0.8, 1.2) / DOWN: bb in (-1.2, -0.8)
-    # MODE B: judge-based (default) - Symmetric BB
-    #   UP: bb in [0.5, 1.5) / DOWN: bb in (-1.5, 0.5)
+    # ETH5 BB filter (2026-04-29): Wide BB + abs(move)>=0.04
+    # Backtest 396h: 340t/0/33 neg/63% WR/+$635 ($10 stake), 0.86/h volume.
+    # 24h: 32t/87.5% WR. ALL 33 12h-periods positive.
+    # UP: bb in [0.3, 1.5) AND move >= +0.04%
+    # DOWN: bb in (-1.5, -0.3) AND move <= -0.04%
     if os.getenv("ETH5_BB_BAD_ZONE_FILTER", "true").lower() == "true":
         bb_val = cached.get("bb_pos")
         if bb_val is None:
             logger.info("Skip ETH5 no BB ws=%s", window_start)
             return False
         bb_f = float(bb_val)
-        if _direct_mode:
-            # Peak momentum zone
-            if direction == "UP":
-                if not (0.8 <= bb_f < 1.2):
-                    logger.info("Skip ETH5 direct UP bb=%.2f (need [0.8, 1.2))", bb_f)
-                    return False
-            else:  # DOWN
-                if not (-1.2 < bb_f < -0.8):
-                    logger.info("Skip ETH5 direct DOWN bb=%.2f (need (-1.2, -0.8))", bb_f)
-                    return False
-            # r2 requirement for direct mode
-            r2_val = cached.get("path_r2")
-            if r2_val is None or float(r2_val) < 0.15:
-                logger.info("Skip ETH5 direct weak r2=%s ws=%s", r2_val, window_start)
+        # Wide BB range
+        if direction == "UP":
+            if not (0.3 <= bb_f < 1.5):
+                logger.info("Skip ETH5 UP bb=%.2f (need [0.3, 1.5))", bb_f)
                 return False
         else:
-            # Judge mode: Symmetric BB
-            if direction == "UP":
-                if not (0.5 <= bb_f < 1.5):
-                    logger.info("Skip ETH5 UP bb=%.2f (need [0.5, 1.5))", bb_f)
-                    return False
-            else:  # DOWN
-                if not (-1.5 < bb_f < 0.5):
-                    logger.info("Skip ETH5 DOWN bb=%.2f (need (-1.5, 0.5))", bb_f)
-                    return False
+            if not (-1.5 < bb_f < -0.3):
+                logger.info("Skip ETH5 DOWN bb=%.2f (need (-1.5, -0.3))", bb_f)
+                return False
+        # Direct mode: require strong move (abs >= 0.04%)
+        if _direct_mode:
+            _move_thresh = float(os.getenv("ETH5_DIRECT_MOVE_THRESHOLD", "0.04"))
+            _eth_move_val = float(cached.get("btc_move_pct") or 0)
+            if abs(_eth_move_val) < _move_thresh:
+                logger.info("Skip ETH5 direct weak move=%.4f%% ws=%s", _eth_move_val, window_start)
+                return False
 
     # BTC activity filter: skip dead markets
     if not _check_btc_activity(conn, now_ts):

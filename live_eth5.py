@@ -339,9 +339,10 @@ def _check_entry(
     """Check entry conditions and place a live order if conditions are met.
     Returns True if a trade was opened. account_id=0 is main account."""
 
-    # DIRECT-TRIGGER mode (2026-04-20): bypass judges, use price-based direction.
-    # Peak momentum BB 0.8-1.2 (UP) / -1.2 to -0.8 (DOWN) + r2>=0.15
-    # Backtest: 240h 107t/72% WR/+$375 ($10 stake), ALL PERIODS WR >= 61%.
+    # DIRECT-TRIGGER mode (2026-04-29): bypass judges, use price-based direction.
+    # Strategy: Wide BB (0.3-1.5/-1.5--0.3) + abs(move) >= 0.04%.
+    # Paper_replay: 396h 340t/63% WR/+$635 ($10 stake), 0.86/h volume.
+    # ALL 33 12h-periods POSITIVE. 24h: 32t/87.5% WR.
     _direct_mode = os.getenv("ETH5_DIRECT_TRIGGER", "false").lower() == "true"
     if _direct_mode:
         _eth_move = cached.get("btc_move_pct")
@@ -506,8 +507,8 @@ def _check_entry(
                           window_start, float(bb_pos_val), BB_THRESHOLD)
             return False
 
-    # VWAP agree filter
-    if REQUIRE_VWAP_AGREE:
+    # VWAP agree filter (skip in direct mode - judge-direction-aligned)
+    if REQUIRE_VWAP_AGREE and not _direct_mode:
         vwap_val = cached.get("vwap_agree")
         if vwap_val is None or int(vwap_val) == 0:
             logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
@@ -538,8 +539,8 @@ def _check_entry(
             logger.info("Skip ETH5 bad hour UTC=%d ws=%s", cur_hour, window_start)
             return False
 
-    # ETH5 BB filter — two modes (must match paper_sim_eth5):
-    # DIRECT: Peak momentum BB [0.8, 1.2) UP / (-1.2, -0.8) DOWN + r2>=0.15
+    # ETH5 BB filter (must match paper_sim_eth5):
+    # DIRECT: Wide BB [0.3, 1.5) UP / (-1.5, -0.3) DOWN + abs(move)>=0.04%
     # JUDGE:  Symmetric BB [0.5, 1.5) UP / (-1.5, 0.5) DOWN
     if os.getenv("ETH5_BB_BAD_ZONE_FILTER", "true").lower() == "true":
         bb_val = cached.get("bb_pos")
@@ -549,16 +550,18 @@ def _check_entry(
         bb_f = float(bb_val)
         if _direct_mode:
             if direction == "UP":
-                if not (0.8 <= bb_f < 1.2):
-                    logger.info("Skip ETH5 direct UP bb=%.2f (need [0.8, 1.2))", bb_f)
+                if not (0.3 <= bb_f < 1.5):
+                    logger.info("Skip ETH5 UP bb=%.2f (need [0.3, 1.5))", bb_f)
                     return False
             else:
-                if not (-1.2 < bb_f < -0.8):
-                    logger.info("Skip ETH5 direct DOWN bb=%.2f (need (-1.2, -0.8))", bb_f)
+                if not (-1.5 < bb_f < -0.3):
+                    logger.info("Skip ETH5 DOWN bb=%.2f (need (-1.5, -0.3))", bb_f)
                     return False
-            r2_val = cached.get("path_r2")
-            if r2_val is None or float(r2_val) < 0.15:
-                logger.info("Skip ETH5 direct weak r2=%s ws=%s", r2_val, window_start)
+            # Direct mode requires strong move
+            _move_thresh = float(os.getenv("ETH5_DIRECT_MOVE_THRESHOLD", "0.04"))
+            _eth_move_val = float(cached.get("btc_move_pct") or 0)
+            if abs(_eth_move_val) < _move_thresh:
+                logger.info("Skip ETH5 direct weak move=%.4f%% ws=%s", _eth_move_val, window_start)
                 return False
         else:
             if direction == "UP":
@@ -583,8 +586,8 @@ def _check_entry(
     if exists:
         return False
 
-    # Score filter
-    if MIN_ENTRY_SCORE > 0:
+    # Score filter (skip judge-based filters in direct mode)
+    if MIN_ENTRY_SCORE > 0 and not _direct_mode:
         btc_move = abs(float(cached.get("btc_move_pct") or 0))
         conf = float(cached.get("avg_confidence") or 0)
         # Confidence filter: skip low-confidence entries

@@ -1201,9 +1201,25 @@ def open_trade_if_signal(
     if cached is None:
         return False
 
-    direction = str(cached.get("direction", "NO_TRADE"))
-    if direction not in ("UP", "DOWN"):
-        return False
+    # DIRECT-TRIGGER mode (2026-04-29): bypass judges, use price-based direction.
+    # Strategy: Wide BB (0.3-1.5/-1.5--0.3) + r2>=0.15
+    # Paper_replay 480h: 155t/0/40 neg/58% WR/+$381 ($10 stake), 0.32/h volume.
+    # ALL 40 12h-periods POSITIVE.
+    _direct_mode = os.getenv("PAPER_DIRECT_TRIGGER", "false").lower() == "true"
+    if _direct_mode:
+        _btc_move = cached.get("btc_move_pct")
+        if _btc_move is None:
+            return False
+        _btc_move = float(_btc_move)
+        # Min direction-detection threshold (BB filter applies stricter check later)
+        if abs(_btc_move) < 0.02:
+            return False
+        # Direction from price move (not judges)
+        direction = "UP" if _btc_move > 0 else "DOWN"
+    else:
+        direction = str(cached.get("direction", "NO_TRADE"))
+        if direction not in ("UP", "DOWN"):
+            return False
 
     now_ts = time.time()
     window_start = int(cached.get("window_start") or 0)
@@ -1416,7 +1432,8 @@ def open_trade_if_signal(
             _gate_ev = _glock.get("ev", 0)
             _gate_reason = _glock.get("reason", "")
         # lag_arb DISABLED: 45% WR in paper_replay (loses money)
-        if not _gate_allow:
+        # Direct mode: bypass gate_allow check entirely
+        if not _gate_allow and not _direct_mode:
             logger.debug("Entry blocked ws=%s: gate_allow=0 (%s)", window_start, _gate_reason)
             return False
 
@@ -1530,14 +1547,15 @@ def open_trade_if_signal(
             _drift_val = cached.get("ask_drift")
 
             _filters_pass = True
-            if _bb_filter_on and _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh:
+            # Skip judge-based filters in direct mode (BB threshold replaced by Wide BB below)
+            if _bb_filter_on and _bb_pos_val is not None and abs(float(_bb_pos_val)) < _bb_thresh and not _direct_mode:
                 _filters_pass = False
                 logger.debug("Skip BB not extreme ws=%s: bb_pos=%.3f < %.1f", window_start, float(_bb_pos_val), _bb_thresh)
-            if _vwap_filter_on and _vwap_val is not None and int(_vwap_val) == 0:
+            if _vwap_filter_on and _vwap_val is not None and int(_vwap_val) == 0 and not _direct_mode:
                 _filters_pass = False
                 logger.debug("Skip VWAP disagree ws=%s dir=%s", window_start, direction)
             _require_btc_still = os.getenv("PAPER_REQUIRE_BTC_STILL_MOVING", "false").lower() == "true"
-            if _require_btc_still and _bsm_val is not None and int(_bsm_val) == 0:
+            if _require_btc_still and _bsm_val is not None and int(_bsm_val) == 0 and not _direct_mode:
                 _filters_pass = False
                 logger.debug("Skip BTC not moving ws=%s", window_start)
             _max_ask_drift = float(os.getenv("PAPER_MAX_ASK_DRIFT", "0"))
@@ -1571,13 +1589,10 @@ def open_trade_if_signal(
                     _filters_pass = False
                     logger.info("Skip bad hour UTC=%d ws=%s", _cur_hour, window_start)
 
-            # BB bad-zone filter (regime-specific, 2026-04-20 analysis):
-            # Recent 240h live paper: composite filter turns -$229 -> +$1,482
-            # BTC5 zones that lose (33 trades / 30% WR / -$1,711):
-            #   - UP direction + bb in [0.5, 1.0): fake moderate momentum (28% WR)
-            #   - DOWN direction + bb >= 0.5: fighting the trend (17% WR, catastrophic)
-            #   - DOWN direction + bb <= -1.5: extreme oversold reversal (38% WR)
-            if os.getenv("PAPER_BB_BAD_ZONE_FILTER", "true").lower() == "true" and _bb_pos_val is not None:
+            # BB bad-zone filter (regime-specific, JUDGE MODE only):
+            # In direct mode, the Wide BB filter below replaces this.
+            if (os.getenv("PAPER_BB_BAD_ZONE_FILTER", "true").lower() == "true"
+                and _bb_pos_val is not None and not _direct_mode):
                 _bb_v = float(_bb_pos_val)
                 _bb_reason = None
                 if direction == "UP" and 0.5 <= _bb_v < 1.0:
@@ -1589,6 +1604,30 @@ def open_trade_if_signal(
                 if _bb_reason:
                     _filters_pass = False
                     logger.info("Skip BB bad-zone ws=%s: bb=%.2f %s", window_start, _bb_v, _bb_reason)
+
+            # DIRECT MODE: Wide BB filter (2026-04-29 paper_replay validated)
+            # UP: bb in [0.3, 1.5). DOWN: bb in (-1.5, -0.3).
+            # 480h: 155t/0/40 neg/58% WR/+$381 ($10 stake).
+            if _direct_mode:
+                if _bb_pos_val is None:
+                    _filters_pass = False
+                    logger.info("Skip BTC5 direct no BB ws=%s", window_start)
+                else:
+                    _bb_v = float(_bb_pos_val)
+                    if direction == "UP":
+                        if not (0.3 <= _bb_v < 1.5):
+                            _filters_pass = False
+                            logger.info("Skip BTC5 direct UP bb=%.2f (need [0.3, 1.5))", _bb_v)
+                    else:
+                        if not (-1.5 < _bb_v < -0.3):
+                            _filters_pass = False
+                            logger.info("Skip BTC5 direct DOWN bb=%.2f (need (-1.5, -0.3))", _bb_v)
+                    # Direct mode requires r2>=0.15 for trend strength
+                    if _filters_pass:
+                        _r2v = cached.get("path_r2")
+                        if _r2v is None or float(_r2v) < float(os.getenv("PAPER_DIRECT_R2_MIN", "0.15")):
+                            _filters_pass = False
+                            logger.info("Skip BTC5 direct weak r2=%s ws=%s", _r2v, window_start)
 
             if _filters_pass:
                 # Lock for this window

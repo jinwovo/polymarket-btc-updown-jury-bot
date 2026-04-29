@@ -3641,9 +3641,21 @@ class TradingBot:
             if _sig_age > 5.0:
                 logger.info("signal_cache: stale (age=%.1fs)", _sig_age)
                 return  # stale
-            _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
-            if _sig_dir == "NO_TRADE":
-                return
+            # DIRECT-TRIGGER mode (2026-04-29): bypass judges, use price-based direction.
+            # Wide BB (0.3-1.5/-1.5--0.3) + r2>=0.15. ALL 40 12h-periods POSITIVE.
+            _direct_mode = os.getenv("PAPER_DIRECT_TRIGGER", "false").lower() == "true"
+            if _direct_mode:
+                _btc_move = _sig_row.get("btc_move_pct")
+                if _btc_move is None:
+                    return
+                _btc_move = float(_btc_move)
+                if abs(_btc_move) < 0.02:
+                    return
+                _sig_dir = "UP" if _btc_move > 0 else "DOWN"
+            else:
+                _sig_dir = str(_sig_row.get("direction", "NO_TRADE"))
+                if _sig_dir == "NO_TRADE":
+                    return
             _sig_ws = int(_sig_row.get("window_start") or 0)
             if _sig_ws != int(current_start):
                 return  # different window
@@ -4092,7 +4104,34 @@ class TradingBot:
             _lock = getattr(self, '_gate_lock', None)
             _cur_ws = int(_sig_row.get("window_start") or 0)
 
-            if _gate_allow and _gate_dir in ("UP", "DOWN"):
+            # DIRECT MODE: bypass judge gate, apply Wide BB + r2 filter
+            if _direct_mode:
+                _bb_pos_val = _sig_row.get("bb_pos")
+                _r2_val_filt = _sig_row.get("path_r2")
+                _filters_pass = True
+                if _bb_pos_val is None:
+                    _filters_pass = False
+                else:
+                    _bb_v = float(_bb_pos_val)
+                    if decision.direction == "UP":
+                        if not (0.3 <= _bb_v < 1.5):
+                            _filters_pass = False
+                    else:
+                        if not (-1.5 < _bb_v < -0.3):
+                            _filters_pass = False
+                _r2_min_direct = float(os.getenv("PAPER_DIRECT_R2_MIN", "0.15"))
+                if _filters_pass and (_r2_val_filt is None or float(_r2_val_filt) < _r2_min_direct):
+                    _filters_pass = False
+                if not _filters_pass:
+                    logger.info("BTC5 direct skip ws=%s dir=%s bb=%s r2=%s",
+                                _cur_ws, decision.direction, _bb_pos_val, _r2_val_filt)
+                    return
+                # Direct mode: set gate_allow=1 for downstream code
+                _gate_allow = 1
+                _gate_dir = decision.direction
+                _gate_ev = 0.10  # placeholder
+                _gate_reason = "direct_trigger"
+            elif _gate_allow and _gate_dir in ("UP", "DOWN"):
                 # Check filters NOW and lock the result
                 _bb_pos_val = _sig_row.get("bb_pos") if _sig_row else None
                 _vwap_val = _sig_row.get("vwap_agree") if _sig_row else None
