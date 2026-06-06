@@ -1617,14 +1617,16 @@ def open_trade_if_signal(
                     logger.info("Skip BTC5 direct no BB ws=%s", window_start)
                 else:
                     _bb_v = float(_bb_pos_val)
+                    _bb_max = float(os.getenv("PAPER_DIRECT_BB_MAX", "2.5"))
+                    _bb_min = float(os.getenv("PAPER_DIRECT_BB_MIN_ABS", "0.5"))
                     if direction == "UP":
-                        if not (0.3 <= _bb_v < 1.5):
+                        if not (_bb_min <= _bb_v < _bb_max):
                             _filters_pass = False
-                            logger.info("Skip BTC5 direct UP bb=%.2f (need [0.3, 1.5))", _bb_v)
+                            logger.info("Skip BTC5 direct UP bb=%.2f (need [%.1f, %.1f))", _bb_v, _bb_min, _bb_max)
                     else:
-                        if not (-1.5 < _bb_v < -0.3):
+                        if not (-_bb_max < _bb_v < -_bb_min):
                             _filters_pass = False
-                            logger.info("Skip BTC5 direct DOWN bb=%.2f (need (-1.5, -0.3))", _bb_v)
+                            logger.info("Skip BTC5 direct DOWN bb=%.2f (need (-%.1f, -%.1f))", _bb_v, _bb_max, _bb_min)
                     # Direct mode requires r2>=0.15 for trend strength
                     if _filters_pass:
                         _r2v = cached.get("path_r2")
@@ -1664,10 +1666,34 @@ def open_trade_if_signal(
         gate = _GateProxy()
         # Skip lag edge and contra gap -- already passed in data_collector
     else:
-        pass  # fallback path uses real gate object
+        # Fallback proxy when no signal_cache row is available (e.g. direct-trigger
+        # mode). The downstream lag-edge / contra-gap checks reference gate.model_prob;
+        # neutral defaults make those branches no-ops instead of crashing.
+        class _GateProxy:
+            allow = True
+            expected_roi = 0.0
+            model_prob = 0.5
+            reason = ""
+            win_prob = 0.5
+            prob_floor = 0.5
+            fee_rate = 0.01
+            is_coinflip = False
+            fair_up = 0.5
+            dispersion = 0.0
+            alignment = 0.0
+            penalty = 0.0
+            spread_cost = 0.0
+            net_ev_before_penalty = 0.0
+            regime_pass = True
+            regime_details = ""
+            skip_reason = ""
+        gate = _GateProxy()
 
-    # Lag probability edge: our model_prob must beat normalized market prob
-    if not (cached and _gate_allow) and side_implied is not None and opposite_implied is not None:
+    # Lag probability edge: our model_prob must beat normalized market prob.
+    # Skipped when (a) cached signal already passed gate, or (b) direct-trigger mode
+    # bypasses gate evaluation entirely (no real model_prob available).
+    if (not (cached and _gate_allow) and not _direct_mode
+            and side_implied is not None and opposite_implied is not None):
         market_total = float(side_implied) + float(opposite_implied)
         if market_total > 0:
             market_dir_prob = float(side_implied) / market_total
@@ -1681,7 +1707,8 @@ def open_trade_if_signal(
                 return False
 
     contra_gap = None
-    if not (cached and _gate_allow) and side_implied is not None and opposite_implied is not None:
+    if (not (cached and _gate_allow) and not _direct_mode
+            and side_implied is not None and opposite_implied is not None):
         contra_gap = float(opposite_implied) - float(side_implied)
     if contra_gap is not None and contra_gap > PAPER_MAX_CONTRA_GAP:
         strong_override = (
@@ -1743,7 +1770,9 @@ def open_trade_if_signal(
 
     # When signal_cache gate_allow=1, data_collector already validated all entry
     # conditions. Skip ALL adaptive guards to ensure Paper=Live parity.
-    if not (cached and _gate_allow):
+    # Direct-trigger mode: bypass judge gate entirely; gate.expected_roi=0 in fallback
+    # would otherwise fail the EV check and block every direct entry.
+    if not (cached and _gate_allow) and not _direct_mode:
         if direction == "DOWN" and btc_move_from_start_pct > 0.0:
             if btc_move_from_start_pct >= PAPER_DOWN_ABOVE_START_BLOCK_PCT:
                 logger.warning(
