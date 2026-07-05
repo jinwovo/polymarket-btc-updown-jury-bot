@@ -611,6 +611,33 @@ class BTC15SignalGenerator:
                 prices, decision.direction, up_ask, dn_ask, self._ask_history,
             )
 
+            # P_pos: price position in window range / Path R2: linear fit quality
+            # (same computation as signal_generator_eth5; was missing here, leaving
+            #  signal_cache_btc15.path_r2 NULL and blocking r2-based strategies)
+            p_pos = None
+            path_r2 = None
+            try:
+                win_prices = [p for p, t in zip(prices, timestamps) if t >= float(ws)]
+                if len(win_prices) >= 20:
+                    p_hi, p_lo = max(win_prices), min(win_prices)
+                    p_rng = p_hi - p_lo
+                    if p_rng > 0.01:
+                        p_pos = round((win_prices[-1] - p_lo) / p_rng, 4)
+                    try:
+                        import numpy as _np
+                        _x = _np.arange(len(win_prices), dtype=float)
+                        _y = _np.array(win_prices, dtype=float)
+                        _xm, _ym = _x.mean(), _y.mean()
+                        _sxy = _np.sum((_x - _xm) * (_y - _ym))
+                        _sxx = _np.sum((_x - _xm) ** 2)
+                        _syy = _np.sum((_y - _ym) ** 2)
+                        if _sxx > 0 and _syy > 0:
+                            path_r2 = round(float((_sxy ** 2) / (_sxx * _syy)), 4)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # -- Build judges JSON --
             judges_json = json.dumps([
                 {"judge": v.judge_name, "vote": v.vote.value,
@@ -630,6 +657,7 @@ class BTC15SignalGenerator:
                 prev_outcome, odds_velocity, btc_accel_ok,
                 lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
                 bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score,
+                p_pos, path_r2,
             )
 
             execute_write(
@@ -642,10 +670,12 @@ class BTC15SignalGenerator:
                     buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                     prev_outcome, odds_velocity, btc_accel_ok,
                     lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                    bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score,
+                    p_pos, path_r2)
                    VALUES (1, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
                            %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
-                           %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s)"""
+                           %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
+                           %%s, %%s)"""
                 % CACHE_TABLE,
                 sc_params,
             )
@@ -662,10 +692,12 @@ class BTC15SignalGenerator:
                         buy_sell_ratio, gate_allow, gate_ev, gate_reason, binance_rtds_gap,
                         prev_outcome, odds_velocity, btc_accel_ok,
                         lag_arb_allow, lag_arb_direction, lag_arb_entry_price,
-                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score)
+                        bb_pos, vwap_agree, ask_drift, btc_still_moving, quality_score,
+                        p_pos, path_r2)
                        VALUES (%%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
                                %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
-                               %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s)"""
+                               %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s, %%s,
+                               %%s, %%s)"""
                     % CACHE_LOG_TABLE,
                     sc_params,
                 )

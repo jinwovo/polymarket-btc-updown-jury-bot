@@ -549,13 +549,15 @@ def _check_entry(
             return False
         bb_f = float(bb_val)
         if _direct_mode:
+            _bb_min = float(os.getenv("ETH5_BB_MIN_ABS", "0.7"))
+            _bb_max = float(os.getenv("ETH5_BB_MAX_ABS", "2.5"))
             if direction == "UP":
-                if not (0.3 <= bb_f < 1.5):
-                    logger.info("Skip ETH5 UP bb=%.2f (need [0.3, 1.5))", bb_f)
+                if not (_bb_min <= bb_f < _bb_max):
+                    logger.info("Skip ETH5 UP bb=%.2f (need [%.1f, %.1f))", bb_f, _bb_min, _bb_max)
                     return False
             else:
-                if not (-1.5 < bb_f < -0.3):
-                    logger.info("Skip ETH5 DOWN bb=%.2f (need (-1.5, -0.3))", bb_f)
+                if not (-_bb_max < bb_f < -_bb_min):
+                    logger.info("Skip ETH5 DOWN bb=%.2f (need (-%.1f, -%.1f))", bb_f, _bb_max, _bb_min)
                     return False
             # Direct mode requires strong move
             _move_thresh = float(os.getenv("ETH5_DIRECT_MOVE_THRESHOLD", "0.04"))

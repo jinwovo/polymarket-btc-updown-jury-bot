@@ -104,6 +104,36 @@ data_collector (single process, 0.1s tick)
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason, bb_pos, vwap_agree, ask_drift
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
+## PnL Levers, Ranked (2026-07-04 analysis)
+1. **UPTIME — dominant lever.** Collector coverage: Mar 65%, Apr 96%, May 17%, Jun 7%, Jul 1%.
+   May-Jun PnL was earned in 7-17% of the month. Full-month extrapolation: $1,000+/mo at $10
+   stake (vs Apr actual $244 at 96%). Everything else is second-order until the stack runs 24/7.
+   (Caveat: partial-month hours may be biased toward active/volatile sessions.)
+2. **Stake scaling.** Validated edge ~25-35% avg ROI/trade (PF 1.7-2.3). $10 -> $50-100 is a
+   direct multiplier IF slippage holds — scale stepwise ($25 -> $50 -> $100), watch realized
+   fill price vs signal ask at each step. LIMIT_FAK price cap already bounds worst case.
+3. **Multi-account** (infra already built) — parallel capital once single-account slippage is known.
+4. NOT levers (tested, rejected): maker-first entry, gap arb, volume ratio, BTC15 (see below).
+
+## OOS Validation + Param Update (2026-07-04)
+- **Method**: replay signal_cache_log directly (`oos_replay_signal_cache.py`) — exact values
+  paper/live read at runtime, unlike paper_replay_direct.py which re-derives BB/R2 from ticks
+- **Direct-trigger strategy VALIDATED out-of-sample** (tuned on Mar-Apr, tested May-Jun):
+  - BTC5 baseline: Apr 145t/PF1.29, May 62t/PF1.58, Jun 39t/PF1.74 — held up, no decay
+  - ETH5: Apr-Jun 28t / 75% WR / PF 3.07 — stable but low volume (0.3 t/day)
+- **Params updated** (each knob improved ALL months independently; sweep selected on May-Jun,
+  cross-validated on Apr):
+  - `PAPER_MAX_ASK_DRIFT` 0.05 -> 0.08
+  - `PAPER_DIRECT_R2_MIN` 0.05 -> 0.10
+  - `PAPER_ENTRY_START_SEC` 80 -> 100 (also fixes drift: live was already 100)
+  - Combo result: Apr $+244/PF1.51, May $+201/PF2.06, Jun $+119/PF2.32 ($10 stake)
+- **Parity bugs fixed (2026-07-04)**: main.py + live_eth5.py direct-mode BB band was
+  HARDCODED 0.3-1.5 while paper read env (0.9-2.5 / 0.7-2.5). Live now reads same env vars.
+- **Known residual gap**: direct mode never enforces PAPER_MAX_ENTRY_PRICE (adaptive_max_ask
+  check skipped). OOS data says ask>0.55 entries were mildly profitable (63.5% WR, +$40/63t),
+  so left as-is — but paper_replay_direct.py DOES cap at 0.55, so its results diverge from sim.
+- Entry price band [0.40,0.45) is weak: 41.9% WR / 31t (Apr-Jul). Watch, small sample.
+
 ## Current Strategy (2026-04-11)
 - **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
 - **Technical filters (2026-04-11)**:
@@ -189,24 +219,37 @@ data_collector (single process, 0.1s tick)
 - prev3x (3x when prev momentum): 20d +$5,015 but unstable (48h +$72)
 - PROFIT_TAKE_ENABLED=true, offset=0.10 → hold better for settlement
 
-## TODO: Pending Data Analysis (apply after sufficient data)
+## Tested & Rejected: Gap Arb + Volume Ratio (2026-07-04, 3 months of data)
 
-### Binance-RTDS Gap Arbitrage (data collecting since 2026-03-22 03:45 KST)
-- `signal_cache.binance_rtds_gap` = Binance raw - RTDS Chainlink price
-- **NOT the raw gap itself** — need gap DELTA (change from average)
-- Strategy: avg_gap_60s = rolling mean, gap_delta = current - avg
-  - gap_delta > threshold → UP (Binance surging ahead)
-  - gap_delta < -threshold → DOWN (Binance dropping ahead)
-- **Wait for 48+ hours of data**, then:
-  1. Analyze avg gap, std dev, distribution
-  2. Find optimal threshold via backtest
-  3. Apply as fast-lane trigger or ArbitrageJudge enhancement
-- Risk: don't apply raw gap as signal (constant offset ≠ direction)
+### Binance-RTDS Gap Delta — REJECTED as trigger AND as filter
+- Analyzed Apr-Jun signal_cache_log (10,434 windows). gap_delta = gap - rolling_avg_60s.
+- Pure direction signal: |gd|>=$8 -> 54-56% WR, |gd|>=$20 -> 58-65% WR (small n)
+- **BUT CLOB already prices it in**: avg ask at signal time 0.52-0.61, EV mostly NEGATIVE
+- Apparent +EV pocket at T=150s/|gd|>=8 does NOT survive sensitivity: T=165 flips to
+  -$1.76/trade in May, T=180 all negative, T=120 June -$1.66. Zigzag = noise, not edge.
+- As filter on existing entries: gap-agree trades WR 63.3% vs gap-DISAGREE 65.2% (worse!)
+- **Do not revisit without a fundamentally different mechanism (e.g. sub-second execution)**
 
-### Buy/Sell Volume Ratio (data collecting since 2026-03-20)
-- `btc_ticks.buy_volume / sell_volume` stored, ratio in signal_cache
-- Judge bias DISABLED — backtest showed PF 1.71 → 1.26
-- Revisit after 1 week of data with proper feature analysis
+### Buy/Sell Volume Ratio — REJECTED again
+- Standalone signal: bsr>=1.3 at T=90s -> 57.6% WR, BUT EV unstable by month
+  (Apr +$0.36, May +$0.52, Jun **-$0.63** per $10 trade)
+- As filter on entries: bsr-agree 62.7% WR vs bsr-DISAGREE 66.7% (contrarian confirmed again)
+- Matches 2026-04-02 judge-bias rejection (PF 1.71 -> 1.26). **Closed.**
+
+### Maker-First Entry — REJECTED (2026-07-04)
+- Simulated on 217 OOS trades (poly_odds 0.1s book): post bid at entry, fill when ask <= limit,
+  0% fee if filled, taker fallback at deadline. ALL variants (join/improve/undercut x 15s/30s
+  wait) LOSE $150-175 vs pure taker (+$385~403 vs +$560).
+- Cause: adverse selection. Winners run away (no fill -> pricier fallback), losers come back
+  down and fill us. Momentum entries must TAKE. Fee saving (3%) < selection cost (~30% of PnL).
+- Corrects earlier note "maker 0% fee = biggest unrealized opportunity" — FALSE for entries.
+
+### BTC15 Market — NOT DEPLOYABLE yet (2026-07-04)
+- Current judge-gate config: 3 trades / 3 months (gate blocks everything, like BTC5 pre-direct)
+- BTC5 direct recipe (momentum): Apr 43% WR / PF 0.83 — 15min windows mean-revert, momentum LOSES
+- Contrarian (fade overextended BB): unstable, May negative in every variant
+- **signal_generator_btc15 never computed path_r2/p_pos (always NULL)** — fixed 2026-07-04,
+  need ~1 month of new data before retesting r2-filtered variants. Keep collecting, don't trade.
 
 ## Backtest Reference
 - Last validated (48h, 2026-03-25): 39 trades, 66.7% WR, +$1,891, PF=2.00
@@ -221,6 +264,11 @@ data_collector (single process, 0.1s tick)
 - **data_collector guards_passed is often 0** — momentum + trend too strict, blocks everything
 - **Live bypassed guards in some code paths** — traded when Paper couldn't
 - **entry_gate called with different prices** — Paper uses DB odds, Live uses CLOB cache
+- ~~Live direct-mode BB band hardcoded 0.3-1.5 vs paper env 0.9-2.5~~ — FIXED 2026-07-04
+  (main.py + live_eth5.py now read PAPER_DIRECT_BB_* / ETH5_BB_* env vars)
+- **paper_replay_direct.py caps ask at 0.55 but paper_trade_sim direct mode has NO ask cap**
+  (adaptive_max_ask skipped in direct mode) — replay understates sim's trade set
+- **Live ETH5_DIRECT_MOVE_THRESHOLD default 0.04 vs env 0.05** — env always set, but defaults differ
 
 ## Polymarket API Notes
 - GET /book: 1,500 req/10s (150/s)

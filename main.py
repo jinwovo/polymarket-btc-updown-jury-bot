@@ -4113,11 +4113,13 @@ class TradingBot:
                     _filters_pass = False
                 else:
                     _bb_v = float(_bb_pos_val)
+                    _bb_max_d = float(os.getenv("PAPER_DIRECT_BB_MAX", "2.5"))
+                    _bb_min_d = float(os.getenv("PAPER_DIRECT_BB_MIN_ABS", "0.5"))
                     if decision.direction == "UP":
-                        if not (0.3 <= _bb_v < 1.5):
+                        if not (_bb_min_d <= _bb_v < _bb_max_d):
                             _filters_pass = False
                     else:
-                        if not (-1.5 < _bb_v < -0.3):
+                        if not (-_bb_max_d < _bb_v < -_bb_min_d):
                             _filters_pass = False
                 _r2_min_direct = float(os.getenv("PAPER_DIRECT_R2_MIN", "0.15"))
                 if _filters_pass and (_r2_val_filt is None or float(_r2_val_filt) < _r2_min_direct):
