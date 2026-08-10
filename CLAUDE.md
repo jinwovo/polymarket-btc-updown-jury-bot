@@ -97,10 +97,21 @@ data_collector (single process, 0.1s tick)
 - **polygon.llamarpc.com DNS failure** — removed from RPC list, added polygon-rpc.com
 - **Chainlink stale warning log spam** — fired every 0.1s tick, rate-limited to 30s
 - **Settlement verification too short** — 15/30s retries missed slow Polymarket API, extended to 15/30/60/120s
+- **RTDS silent stream stall** — socket stays open but price messages stop; `_rtds_price_loop` had no stall detection (recv timeout just sent text "PING" and waited), so reconnect only happened at the RTDS server's exactly-2h connection lifetime. Caused 47-min Playwright fallback 2026-08-10 and the 7/29 "12h RTDS outage" (log fingerprint: reconnects at exact 2h intervals). Fixed 2026-08-10: 30s no-price stall watchdog forces reconnect. Note: "Price MISMATCH" warnings with diff $10-30 while RTDS is alive are Playwright scrape lag noise, not a fault
 
 ## Data Collection
 - `btc_ticks`: price, volume, buy_volume, sell_volume (Binance "m" flag)
-- `poly_odds`: up/down bid/ask/mid/spread/overround (0.1s)
+- `eth_ticks` / `sol_ticks`: 1s buckets, Chainlink-calibrated (RTDS-primary, PTB-offset fallback)
+- `poly_odds`: up/down bid/ask/mid/spread/overround (0.1s) — slugs btc-updown-5m/15m, eth-updown-5m, sol-updown-5m
+- **SOL5 collection added 2026-08-10** (collection ONLY, no signal generator/trading yet):
+  `_EXTRA_MARKETS` sol-updown-5m + `_sol_ws` (solusdt@trade) + RTDS "sol/usd" branch + PTB scrape.
+  RTDS probe 2026-08-10: feed carries btc/eth/sol/bnb/xrp/doge/zec/hype at ~1msg/s each, `symbol`
+  field ALWAYS populated -> classification is symbol-based; price-range fallback is dead code
+  (ETH fallback band tightened 100->1000 so SOL/BNB/ZEC can never leak into ETH calibration).
+  PTB calibration in `_scrape_extra_ptb` is now gated per market label (was: any 100<p<10000
+  applied to ETH offset -- would have corrupted ETH the day SOL crossed $100).
+  After ~2-4 weeks of data: validate SOL5 with the ETH5 direct recipe (tick-based replay), then
+  clone signal_generator_eth5 -> signal_generator_sol5 if it passes the all-months bar.
 - `signal_cache`: direction, guards_passed, btc_move_pct, buy_sell_ratio, binance_rtds_gap, gate_allow/ev/reason, bb_pos, vwap_agree, ask_drift
 - Buy/sell volume bias in judges: DISABLED (backtest showed negative PF impact)
 
@@ -133,6 +144,75 @@ data_collector (single process, 0.1s tick)
   check skipped). OOS data says ask>0.55 entries were mildly profitable (63.5% WR, +$40/63t),
   so left as-is — but paper_replay_direct.py DOES cap at 0.55, so its results diverge from sim.
 - Entry price band [0.40,0.45) is weak: 41.9% WR / 31t (Apr-Jul). Watch, small sample.
+  (2026-08-01: tested excluding it -- costs Apr -$25, May +$8. Not actionable as a filter.)
+
+## Dup-Collector Incident (2026-07-29) + Fix (2026-08-01)
+- First watchdog session ran 2+ data_collector processes at once: watchdog spawned one at
+  11:14:51, paper_trade_sim auto-started another 3s later (btc_ticks stale during warmup).
+  signal_cache id=1 flapped between writers with different BB rolling-window state (same
+  price, bb -1.6 vs +1.65 within 0.4s). Paper read the out-of-band writer at all 3 windows
+  that passed the full entry funnel that day -> 0 trades in 12h. Fingerprint:
+  signal_cache_log 2.11 rows/s vs 0.58 single-writer baseline; two interleaved bb series.
+- RTDS was ALSO down the entire 12h session (Playwright fallback, calibration offset swung
+  $59-80, one 5-min freeze) -> guards_passed rate 0.6% vs April 2.1%. Root cause SOLVED
+  2026-08-10: silent stream stall + no client-side stall detection (see Bugs Found & Fixed).
+- **Fixes applied**: `PAPER_AUTO_START_COLLECTOR=false` (watchdog owns the collector);
+  data_collector.py `_exit_if_duplicate()` psutil singleton -- first-starter-wins, newcomer
+  exits 0 so run_collector wrapper stops cleanly (kill-the-other would make wrappers duel).
+  Old `_kill_existing` was pgrep-based = silent no-op on Windows.
+- Healthy-state checks after restart: signal_cache_log ~0.5-0.6 rows/s (single writer),
+  BTC5 paper 1-3 trades per 12h.
+
+## Param Sweep on signal_cache_log (2026-08-01, Apr-01 ~ Jul-05, $10 stake)
+- Sweep engine reproduces oos_replay_signal_cache.py to the cent before sweeping
+  (BTC5 base 217t/$+560/PF1.73; ETH5 base [guards off] 124t/$+370/PF1.97).
+- **BTC5: current params CONFIRMED optimal.** None of 37 single-knob/combo configs beat
+  base in all months. Near-misses are Apr-concentrated (e.g. dend240+bb0.7 = $+656 total
+  but Jun PF 2.32->1.87). Inert knobs found: DOWN_MIN_PRICE 0.30-0.40 (no surviving DOWN
+  entries below 0.40), R2_MIN_FILTER (DIRECT_R2_MIN dominates in direct mode).
+- BTC5 guards_off: 3x trades (660t) at same total PnL, PF 1.73->1.20. NOT adopted --
+  capacity lever only if stake scaling ever saturates per-window size.
+- **ETH5_DOWN_ENTRY_END_SEC 200 -> 240 ADOPTED**: PnL up in EVERY month
+  (Apr $209->238, May $31->48, Jun $131->158; total $370->$451, PF 1.97->2.03, 124->146t).
+- ETH5 quality option (NOT adopted; vs dend240-only May PnL -$2.34): dend240 + BB_MIN 0.7
+  = 123t/$+484/PF2.51, beats base on PnL AND PF in every month at flat volume. Flip
+  ETH5_BB_MIN_ABS to 0.7 if live slippage at higher stakes demands more per-trade edge.
+
+## BB Artifact — DO NOT "FIX" (2026-08-10)
+- **BTC5 runtime BB is NOT a 60s Bollinger.** data_collector appends btc_price_adjusted to
+  _recent_prices per Binance @trade message (tens/s), so the 60-item window = 0.6-6s. With RTDS
+  alive (1s step prices) bb collapses to quantized artifacts: exactly +-3.84 (1 fresh value in
+  window), +-2.69 (2), +-2.18 (3), or None (std=0). Artifact rate 6-9.5% of rows Apr-Aug, None 13-30%.
+- **A/B replay verdict (same funnel, only bb swapped, Apr-Aug)**: logged-bb 0.9-2.5 = 220t/$+575/
+  PF1.74; true tick-BB (paper_replay formula, 60 btc_ticks rows ~= 25-37s) 0.9-2.5 = 172t/$+482;
+  every true-BB band loses in at least one month; no-BB = $+289/PF1.09 (Jul -$65). Baseline
+  reproduced documented OOS numbers to the cent (Apr $244/May $201/Jun $119).
+- Why the junk works: bb!=None and |bb| in [0.9,2.5) accidentally requires "Chainlink printed
+  2+ fresh levels within the last ~1-3s AND trades flowing" = micro-momentum-continuation
+  detector. None = flat price (no continuation), +-3.84 = single lone step. Bug became a feature.
+- ETH5/BTC15 signal generators load prices from DB ticks (60 rows ~= 30s) — different, saner
+  semantics; leave unchanged. paper_replay.py BB differs from runtime BB — KNOWN and ACCEPTED:
+  sweeps on signal_cache_log (logged bb) are the source of truth for BTC5 entry tuning.
+
+## New-Strategy Calibration Scan (2026-08-10) — all REJECTED, don't re-test w/o new mechanism
+- Method: poly_odds sampled per 15s mark x side x 0.05-ask-bin, Apr-Aug (10.6k BTC5 + 7.4k ETH5
+  windows), then one-entry-per-window normalization + ask+3c slippage column. Key lesson: raw
+  cell tables produce "+EV all months" mirages via bucket-overlap double counting — always
+  normalize to one trade per window before judging.
+- **Late favorite buy** (elapsed 240-300s, ask 0.70-0.95): WR == implied everywhere, EV ~ $0.
+  The CLOB is perfectly calibrated at window end. ("92% accurate at 10s" is real AND priced.)
+- **Final-15s longshot** (ask ~0.05): realized 7.9% vs implied 5.2% — real mispricing, UNEXECUTABLE
+  (POST latency, book depth; +3c slip = -$2/t). April-concentrated.
+- **Cheap-side fade** (ask 0.20-0.40 any elapsed, both markets): normalized result = April
+  bear-regime artifact (ETH5 DOWN Apr +$1,336, May/Jun/Jul all negative; UP mirror -$2,652 —
+  directional regime bet, not structure). Slippage-adjusted negative EVERY month.
+- **Mid-window favorite** (ask 0.75-0.95, elapsed 75-240s): +$0.13-0.43/t pre-slip, ~$0 after
+  +3c slip. Same underreaction the direct trigger already harvests at better prices.
+- **BTC->ETH lead-lag entry** (BTC |move|>=0.03-0.08% at 90-240s -> buy ETH side ask<=0.55/0.60):
+  negative in ALL configs (April strongly negative). Rejected.
+- BTC15: only 3 days of path_r2 data since the 7/04 fix — still untestable, keep collecting.
+- Only untested expansion: SOL5 + other alt 5m markets — needs collector support first
+  (no SOL ticks/odds collected; liquidity viable per 2026-07-12 scan).
 
 ## Current Strategy (2026-04-11)
 - **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
@@ -251,6 +331,24 @@ data_collector (single process, 0.1s tick)
 - **signal_generator_btc15 never computed path_r2/p_pos (always NULL)** — fixed 2026-07-04,
   need ~1 month of new data before retesting r2-filtered variants. Keep collecting, don't trade.
 
+### Complement Arbitrage (buy-both / mint-sell-both) — REJECTED (2026-07-04)
+- Scanned 21.5M poly_odds ticks Apr-Jul: askSum<=0.99 or bidSum>=1.01 happens ~0.1% of ticks
+- BUT median event duration = 0.1s (single tick). Events with dur>=2s AND edge>=2c: ~0 per month
+- These are stale-quote blips during fast moves; POST /order takes 0.2-23s. Not executable.
+
+### Live Fill Slippage (2026-07-04, 280 matched live trades, stakes $5-$22)
+- fill vs signal ask: mean +0.7c, median 0c, 65% at-or-below signal, p90 +5c
+- No stake-size effect visible up to $22. LIMIT_FAK cap works.
+- Green light for stepwise stake scaling; $50+ still unmeasured — verify at each step.
+
+### ETH5 Volume Expansion (2026-07-04)
+- True-chain replay (guards NOT required for ETH5 — earlier 28t figure was over-filtered): 53t/+$210
+- `ETH5_MAX_ENTRY_PRICE` 0.55 -> 0.60 + `ETH5_BB_MIN_ABS` 0.7 -> 0.5:
+  107t / +$265 / PF 1.5/1.8/2.8 by month (all positive, each knob independently stable)
+- Note: ETH5 score filter (ETH5_MIN_ENTRY_SCORE=2) is inert in direct mode — every candidate
+  already scores >=2. ETH5 "momentum conflict vs BTC" filter is vacuous in direct mode
+  (btc_move_pct column holds the ETH move for ETH5; direction is derived from the same value).
+
 ## Backtest Reference
 - Last validated (48h, 2026-03-25): 39 trades, 66.7% WR, +$1,891, PF=2.00
 - Settings: start=90s, boundary=0.020/0.030, edge=0.08, roi=0.030
@@ -347,6 +445,25 @@ Signal generators auto-start when paper/live is started from dashboard.
 - signal_cache_eth5 / signal_cache_log_eth5
 - paper_trades_btc15 / paper_trades_eth5
 - live_trades_btc15 / live_trades_eth5
+
+## Ops: Uptime Automation (2026-07-29)
+- **`scripts/watchdog.py`** — self-healing supervisor, one pass per run (`--loop` = every 5 min):
+  MariaDB port -> API :8790 (restart if dead, killing orphaned managed children first)
+  -> collector (spawn if missing; kill data_collector.py if btc tick age > 180s, wrapper revives)
+  -> web :3100 -> paper/live/signal components via dashboard API.
+- Config: `scripts/watchdog_config.json` (per-component enable + live stakes).
+  Kill switch: create `scripts/watchdog_off.flag`. Log: `logs/watchdog.log`.
+- **Live components never start cold**: deferred one pass after their deps (collector/signal
+  generator) were (re)started, and only when btc tick age <= 30s — prevents entries off a
+  stale signal_cache row after downtime.
+- **live_btc5 auto-starts once wallet balance >= stake** (watchdog retries every 5 min;
+  dashboard's balance check refuses while $0). Fund the funder wallet -> trading resumes alone.
+- **Spawn flags: CREATE_NO_WINDOW only.** DETACHED_PROCESS made every grandchild
+  (dashboard's managed procs) open a visible terminal window.
+- Autostart at logon: copy `scripts\polybot_watchdog.cmd` into shell:startup (needs user action).
+- AC sleep/hibernate disabled via powercfg (2026-07-29).
+- `scripts/slippage_report.py` — fill-vs-signal-ask stats per stake bucket; the gate for the
+  stake ladder $10 -> $25 -> $50 -> $100 (advance only while p90 slip <= +5c, mean <= +1.5c).
 
 ## Database Connection
 - **Credentials in `.env.secrets`** (not `env/` dir, project root)

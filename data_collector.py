@@ -110,6 +110,10 @@ class DataCollector:
         self._eth_rtds_price: float = 0.0
         self._eth_rtds_updated_at: float = 0.0
         self._eth_cal_offset: float = 0.0  # binance_eth - chainlink_eth
+        # RTDS WebSocket state (SOL)
+        self._sol_rtds_price: float = 0.0
+        self._sol_rtds_updated_at: float = 0.0
+        self._sol_cal_offset: float = 0.0  # binance_sol - chainlink_sol
         # Trade event tracking (for server console display)
         self._last_paper_trade_id: int = 0
         self._last_live_trade_id: int = 0
@@ -1271,6 +1275,7 @@ class DataCollector:
         import websockets as _ws
         _last_log_btc = 0.0
         _last_log_eth = 0.0
+        _last_log_sol = 0.0
         _reconnect_delay = 1.0
 
         while self._running:
@@ -1291,8 +1296,20 @@ class DataCollector:
                     logger.warning("RTDS Chainlink feed connected (BTC + ETH)")
                     _reconnect_delay = 1.0
                     self._rtds_alive = True
+                    _last_price_at = time.time()
 
                     while self._running:
+                        # Stall watchdog: stream can die silently while the socket
+                        # stays open (server keeps TCP alive but stops publishing).
+                        # Without this we only reconnect at the server's 2h
+                        # connection lifetime (2026-08-10: 47min fallback; likely
+                        # cause of the 2026-07-29 12h RTDS outage).
+                        if time.time() - _last_price_at > 30.0:
+                            logger.warning(
+                                "RTDS stalled: no price for %.0fs (socket open) -- forcing reconnect",
+                                time.time() - _last_price_at,
+                            )
+                            break
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=5)
                         except asyncio.TimeoutError:
@@ -1324,10 +1341,14 @@ class DataCollector:
 
                         if not chainlink_price or chainlink_price <= 0:
                             continue
+                        _last_price_at = time.time()
 
                         # Classify: symbol field or price range fallback
+                        # (probe 2026-08-10: feed carries btc/eth/sol/bnb/xrp/doge/zec/hype,
+                        # symbol ALWAYS populated -- range fallback is dead-code safety net)
                         _is_btc = "btc" in _symbol or (not _symbol and chainlink_price >= 10000)
-                        _is_eth = "eth" in _symbol or (not _symbol and 100 < chainlink_price < 10000)
+                        _is_eth = "eth" in _symbol or (not _symbol and 1000 < chainlink_price < 10000)
+                        _is_sol = "sol" in _symbol  # no range fallback: overlaps bnb/zec/hype
 
                         now = time.time()
 
@@ -1371,6 +1392,24 @@ class DataCollector:
                                         chainlink_price, binance_eth, new_offset,
                                     )
                                     _last_log_eth = now
+
+                        elif _is_sol:
+                            self._sol_rtds_price = chainlink_price
+                            self._sol_rtds_updated_at = now
+
+                            binance_sol = globals().get("_sol_price", {}).get("price", 0)
+                            if binance_sol and binance_sol > 0:
+                                new_offset = binance_sol - chainlink_price
+                                old_offset = self._sol_cal_offset
+                                self._sol_cal_offset = new_offset
+
+                                offset_delta = abs(new_offset - old_offset)
+                                if offset_delta > 0.2 or (now - _last_log_sol) > 60.0:
+                                    logger.info(
+                                        "RTDS SOL: $%.2f (binance=$%.2f offset=$%.2f)",
+                                        chainlink_price, binance_sol, new_offset,
+                                    )
+                                    _last_log_sol = now
 
             except Exception as e:
                 self._rtds_alive = False
@@ -2140,32 +2179,46 @@ def export_data():
 # Main
 # ---------------------------------------------------------------------------
 
-def _kill_existing(script_name: str):
-    """Kill any existing process running the same script (prevents duplicates)."""
-    import subprocess
-    my_pid = os.getpid()
+def _exit_if_duplicate(script_name: str):
+    """Exit cleanly if another live instance of this script is already running.
+
+    First-starter-wins, NOT kill-the-other: every spawner here sits behind a
+    restart wrapper (run_collector.py) or a babysitter (watchdog, paper
+    auto-start), so killing the other instance just makes its wrapper respawn
+    it and the two collectors duel over signal_cache (2026-07-29: interleaved
+    BB states made paper skip every valid entry). A clean exit(0) instead
+    stops our own wrapper (run_collector treats 0 as "do not restart").
+    Tie-break for near-simultaneous starts: older create_time wins, then
+    lower PID. The predecessor pgrep version was a no-op on Windows.
+    """
     try:
-        result = subprocess.run(
-            ["pgrep", "-f", f"python3? {script_name}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        pids = []
-        for line in result.stdout.strip().splitlines():
-            pid = int(line.strip())
-            if pid != my_pid:
-                pids.append(pid)
-                logger.info("Killing existing %s (PID %d)", script_name, pid)
-                os.kill(pid, signal.SIGTERM)
-        if pids:
-            time.sleep(2)
-            # SIGKILL any survivors
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # already dead
-    except Exception:
-        pass  # pgrep not available (Windows) or no matches
+        import psutil
+    except ImportError:
+        logger.warning("psutil unavailable; duplicate collector check skipped")
+        return
+    me = psutil.Process(os.getpid())
+    my_key = (me.create_time(), me.pid)
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
+        try:
+            if proc.pid == me.pid:
+                continue
+            if "python" not in (proc.info.get("name") or "").lower():
+                continue
+            cmdline = [str(a) for a in (proc.info.get("cmdline") or [])]
+            if not any(script_name in a for a in cmdline):
+                continue
+            # One-shot utility invocations are not collectors
+            if any(a in ("--status", "--export") for a in cmdline):
+                continue
+            other_key = (float(proc.info.get("create_time") or 0.0), proc.pid)
+            if other_key < my_key:
+                logger.warning(
+                    "Another %s is already running (PID %d) -- exiting to avoid duplicate collectors",
+                    script_name, proc.pid,
+                )
+                sys.exit(0)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
 
 def main():
@@ -2187,7 +2240,7 @@ def main():
         export_data()
         return
 
-    _kill_existing("data_collector.py")
+    _exit_if_duplicate("data_collector.py")
 
     collector = DataCollector()
 
@@ -2236,9 +2289,12 @@ def main():
 _EXTRA_MARKETS = [
     {"slug_prefix": "btc-updown-15m", "interval": 900, "price_source": "btc", "label": "BTC15m"},
     {"slug_prefix": "eth-updown-5m", "interval": 300, "price_source": "eth", "label": "ETH5m"},
+    {"slug_prefix": "sol-updown-5m", "interval": 300, "price_source": "sol", "label": "SOL5m"},
 ]
 # ETH price from Binance (raw + Chainlink-calibrated)
 _eth_price = {"price": 0.0, "adjusted": 0.0, "ts": 0.0}
+# SOL price from Binance (raw + Chainlink-calibrated)
+_sol_price = {"price": 0.0, "adjusted": 0.0, "ts": 0.0}
 
 async def _scrape_extra_ptb(self, slug: str, window_start: int, label: str):
     """Scrape PTB for extra market window via separate Playwright tab.
@@ -2254,25 +2310,43 @@ async def _scrape_extra_ptb(self, slug: str, window_start: int, label: str):
             self.db.commit()
             logger.info("Extra PTB scraped: %s %s $%.2f (was $%.2f, delta=$%.2f)", label, slug, ptb, prev, delta)
 
-            # Use PTB or current price for ETH calibration
-            # PTB = authoritative Chainlink price at window start
-            # current = live Chainlink price (often unavailable for ETH)
-            _cal_price = None
-            if current and current > 100 and current < 10000:
-                _cal_price = current
-            elif ptb and ptb > 100 and ptb < 10000:
-                # PTB is close to current price (within 5min window)
-                _cal_price = ptb
-            if _cal_price:
-                binance_eth = _eth_price.get("price", 0)
-                if binance_eth > 0:
-                    new_offset = binance_eth - _cal_price
-                    old_offset = self._eth_cal_offset
-                    self._eth_cal_offset = new_offset
-                    self._eth_rtds_updated_at = time.time()
-                    if abs(new_offset - old_offset) > 0.05:
-                        logger.info("ETH calibration from PTB/Playwright: $%.2f (offset=$%.2f, was $%.2f)",
-                                    _cal_price, new_offset, old_offset)
+            # Use PTB or current price for asset calibration.
+            # PTB = authoritative Chainlink price at window start.
+            # MUST be gated per market label -- a SOL PTB in the ETH range
+            # (or vice versa) would corrupt the other asset's offset.
+            if label == "ETH5m":
+                _cal_price = None
+                if current and current > 100 and current < 10000:
+                    _cal_price = current
+                elif ptb and ptb > 100 and ptb < 10000:
+                    # PTB is close to current price (within 5min window)
+                    _cal_price = ptb
+                if _cal_price:
+                    binance_eth = _eth_price.get("price", 0)
+                    if binance_eth > 0:
+                        new_offset = binance_eth - _cal_price
+                        old_offset = self._eth_cal_offset
+                        self._eth_cal_offset = new_offset
+                        self._eth_rtds_updated_at = time.time()
+                        if abs(new_offset - old_offset) > 0.05:
+                            logger.info("ETH calibration from PTB/Playwright: $%.2f (offset=$%.2f, was $%.2f)",
+                                        _cal_price, new_offset, old_offset)
+            elif label == "SOL5m":
+                _cal_price = None
+                if current and 1 < current < 5000:
+                    _cal_price = current
+                elif ptb and 1 < ptb < 5000:
+                    _cal_price = ptb
+                if _cal_price:
+                    binance_sol = _sol_price.get("price", 0)
+                    if binance_sol > 0:
+                        new_offset = binance_sol - _cal_price
+                        old_offset = self._sol_cal_offset
+                        self._sol_cal_offset = new_offset
+                        self._sol_rtds_updated_at = time.time()
+                        if abs(new_offset - old_offset) > 0.02:
+                            logger.info("SOL calibration from PTB/Playwright: $%.2f (offset=$%.2f, was $%.2f)",
+                                        _cal_price, new_offset, old_offset)
         else:
             logger.debug("Extra PTB not found for %s %s", label, slug)
     except Exception as e:
@@ -2284,21 +2358,23 @@ async def _extra_market_poll(self):
     _http = httpx.AsyncClient(timeout=10)
     await asyncio.sleep(10)  # let main system start first
 
-    # Start extra markets WebSocket + ETH price WebSocket
+    # Start extra markets WebSocket + ETH/SOL price WebSockets
     asyncio.get_event_loop().create_task(self._extra_markets_ws())
     asyncio.get_event_loop().create_task(self._eth_ws_loop())
+    asyncio.get_event_loop().create_task(self._sol_ws_loop())
 
-    # Create eth_ticks table if needed
-    try:
-        execute_write(self.db, """
-            CREATE TABLE IF NOT EXISTS eth_ticks (
-                ts DOUBLE PRIMARY KEY, price DOUBLE NOT NULL,
-                volume DOUBLE DEFAULT 0, buy_volume DOUBLE DEFAULT 0, sell_volume DOUBLE DEFAULT 0
-            ) ENGINE=InnoDB
-        """)
-        self.db.commit()
-    except Exception:
-        pass
+    # Create eth_ticks/sol_ticks tables if needed
+    for _tick_tbl in ("eth_ticks", "sol_ticks"):
+        try:
+            execute_write(self.db, f"""
+                CREATE TABLE IF NOT EXISTS {_tick_tbl} (
+                    ts DOUBLE PRIMARY KEY, price DOUBLE NOT NULL,
+                    volume DOUBLE DEFAULT 0, buy_volume DOUBLE DEFAULT 0, sell_volume DOUBLE DEFAULT 0
+                ) ENGINE=InnoDB
+            """)
+            self.db.commit()
+        except Exception:
+            pass
     while self._running:
         try:
             now = time.time()
@@ -2318,6 +2394,22 @@ async def _extra_market_poll(self):
                         # Store calibrated eth tick
                         execute_write(self.db, "INSERT INTO eth_ticks (ts, price) VALUES (%s, %s) ON DUPLICATE KEY UPDATE price=VALUES(price)",
                                      (now, _cal_eth))
+                except Exception:
+                    pass
+            # Poll SOL price from Binance (every 2s, only when WS hasn't updated)
+            if now - _sol_price["ts"] > 2.0:
+                try:
+                    resp_sol = await _http.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "SOLUSDT"})
+                    if resp_sol.status_code == 200:
+                        _raw_sol = float(resp_sol.json().get("price", 0))
+                        _sol_price["price"] = _raw_sol
+                        _sol_price["ts"] = now
+                        _cal_age = now - getattr(self, '_sol_rtds_updated_at', 0.0)
+                        _cal_off = getattr(self, '_sol_cal_offset', 0.0)
+                        _cal_sol = (_raw_sol - _cal_off) if (_cal_age < 120 and abs(_cal_off) > 0.001) else _raw_sol
+                        _sol_price["adjusted"] = _cal_sol
+                        execute_write(self.db, "INSERT INTO sol_ticks (ts, price) VALUES (%s, %s) ON DUPLICATE KEY UPDATE price=VALUES(price)",
+                                     (now, _cal_sol))
                 except Exception:
                     pass
 
@@ -2356,6 +2448,8 @@ async def _extra_market_poll(self):
                                 start_price = self.btc_price_adjusted
                             elif mkt["price_source"] == "eth" and _eth_price.get("adjusted", _eth_price["price"]) > 0:
                                 start_price = _eth_price.get("adjusted", _eth_price["price"])
+                            elif mkt["price_source"] == "sol" and _sol_price.get("adjusted", _sol_price["price"]) > 0:
+                                start_price = _sol_price.get("adjusted", _sol_price["price"])
                             execute_write(self.db, """
                                 INSERT IGNORE INTO market_windows (window_start, window_end, slug, btc_start_price)
                                 VALUES (%s, %s, %s, %s)
@@ -2424,9 +2518,11 @@ async def _extra_market_poll(self):
                         end_price = self.btc_price_adjusted
                     elif mkt["price_source"] == "eth" and _eth_price.get("adjusted", _eth_price["price"]) > 0:
                         end_price = _eth_price.get("adjusted", _eth_price["price"])
+                    elif mkt["price_source"] == "sol" and _sol_price.get("adjusted", _sol_price["price"]) > 0:
+                        end_price = _sol_price.get("adjusted", _sol_price["price"])
                     # DB fallback: if live price unavailable, try recent DB tick
                     if end_price <= 0 and elapsed >= interval + 10:
-                        _tick_table = "eth_ticks" if mkt["price_source"] == "eth" else "btc_ticks"
+                        _tick_table = {"eth": "eth_ticks", "sol": "sol_ticks"}.get(mkt["price_source"], "btc_ticks")
                         _fb_row = fetch_one(self.db,
                             f"SELECT price FROM {_tick_table} WHERE ts >= %s AND ts <= %s ORDER BY ABS(ts - %s) LIMIT 1",
                             (ws + interval - 10, ws + interval + 10, ws + interval))
@@ -2595,6 +2691,57 @@ async def _eth_ws(self):
             logger.debug("ETH WS error: %s, reconnecting...", e)
             await asyncio.sleep(3)
 
+async def _sol_ws(self):
+    """SOL/USDT price feed via Binance WebSocket (1-second ticks).
+    Stores Chainlink-calibrated price when RTDS SOL is alive."""
+    _sol_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
+    while self._running:
+        try:
+            async with websockets.connect(_sol_url) as ws:
+                logger.info("SOL WebSocket connected")
+                _last_bucket = 0
+                async for msg in ws:
+                    if not self._running:
+                        break
+                    data = json.loads(msg)
+                    ts = float(data["T"]) / 1000.0
+                    price = float(data["p"])
+                    volume = float(data.get("q", 0))
+                    _sol_price["price"] = price
+                    _sol_price["ts"] = ts
+                    # Price priority: SOL RTDS > PTB calibration > raw Binance
+                    _rtds_age = time.time() - getattr(self, '_sol_rtds_updated_at', 0.0)
+                    if getattr(self, '_sol_rtds_price', 0) > 0 and _rtds_age < 10:
+                        # RTDS alive: use RTDS price directly
+                        calibrated = self._sol_rtds_price
+                        # Keep offset in sync for when RTDS goes down
+                        self._sol_cal_offset = price - self._sol_rtds_price
+                    else:
+                        # RTDS down: use last calibration offset
+                        _cal_age = ts - getattr(self, '_sol_rtds_updated_at', 0.0)
+                        _cal_offset = getattr(self, '_sol_cal_offset', 0.0)
+                        if _cal_age < 120 and abs(_cal_offset) > 0.001:
+                            calibrated = price - _cal_offset
+                        else:
+                            calibrated = price
+                    _sol_price["adjusted"] = calibrated
+                    # Store 1 tick per second (bucket)
+                    bucket = round(ts, 0)
+                    if bucket != _last_bucket:
+                        _last_bucket = bucket
+                        is_buyer_maker = bool(data.get("m", False))
+                        buy_vol = volume if not is_buyer_maker else 0.0
+                        sell_vol = volume if is_buyer_maker else 0.0
+                        try:
+                            execute_write(self.db,
+                                "INSERT INTO sol_ticks (ts, price, volume, buy_volume, sell_volume) VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE price=VALUES(price), volume=VALUES(volume), buy_volume=VALUES(buy_volume), sell_volume=VALUES(sell_volume)",
+                                (bucket, calibrated, volume, buy_vol, sell_vol))
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.debug("SOL WS error: %s, reconnecting...", e)
+            await asyncio.sleep(3)
+
 # Need _current accessible from both methods
 _current = {}
 
@@ -2602,6 +2749,7 @@ _current = {}
 DataCollector._extra_markets_collector = _extra_market_poll
 DataCollector._extra_markets_ws = _extra_markets_ws_loop
 DataCollector._eth_ws_loop = _eth_ws
+DataCollector._sol_ws_loop = _sol_ws
 DataCollector._scrape_extra_ptb = _scrape_extra_ptb
 
 
