@@ -220,12 +220,15 @@ data_collector (single process, 0.1s tick)
   poly_trades/tape_windows; server-side, uptime-independent, resumable, newest-first;
   14d BTC5 = 4,032 windows / 7.5M prints in ~25min). `scripts/tape_leaderboard.py`
   (recency-decay leaderboard hl=5d + walk-forward mirror + lottery study).
-- **LEAD 1 — late-lottery resting bids (STRONGEST)**: real fills at price<=0.05 in final
-  30s: 58,369 fills / $161K cost -> $194K payout = **+20.3% ROI**; p<=0.02: **+25.3%**
-  (p0.03-0.05 only +9%). Others harvest this NOW via resting GTC bids that catch
-  losers' salvage dumps. Win rate 1.55-2.3% = extreme variance; capacity ~$11.5K/day
-  turnover market-wide. GTC-entry ban does NOT apply (passive resting, latency-proof).
-  Next: fill-rate/queue sim from poly_odds, then micro pilot (both-side bids ~$0.5-1/window cap).
+- **LEAD 1 -- late-lottery: REJECTED after fill simulation (adverse selection).**
+  Taker-BUY fills at <=0.05 in final 30s DO earn +20.3% ROI (58K fills, p<=0.02 +25.3%)
+  -- but that flow is 16.5M shares of taker BUYS vs only 1.16M taker SELLS: it is a
+  final-seconds ASK-SNIPING speed game (real-time info vs stale salvage asks), exactly
+  what our 0.2-23s POST latency cannot play. The passive version (resting GTC bids
+  both sides, price-priority sim on real SELL prints, grid p=0.02-0.05 x S=25-200sh):
+  **-44% to -53% ROI at EVERY combination** -- dumps that reach penny bids happen in
+  truly-decided windows (filled-share win rate 1.0-2.6% vs 2-5% breakeven). Do not
+  revisit either leg without sub-second execution.
 - **LEAD 2 — specialist mirror**: wallets split into archetypes: HFT grinders (every
   window, entry ~11s, 10-14 tr/win, $34-50 clips, $2-3M vol — UNMIRRORABLE scalping) vs
   specialists (10-30 win/day, entry ~120s median, px 0.36-0.61, $200+ clips — same
