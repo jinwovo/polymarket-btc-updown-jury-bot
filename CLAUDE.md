@@ -229,15 +229,18 @@ data_collector (single process, 0.1s tick)
   **-44% to -53% ROI at EVERY combination** -- dumps that reach penny bids happen in
   truly-decided windows (filled-share win rate 1.0-2.6% vs 2-5% breakeven). Do not
   revisit either leg without sub-second execution.
-- **LEAD 2 — specialist mirror**: wallets split into archetypes: HFT grinders (every
-  window, entry ~11s, 10-14 tr/win, $34-50 clips, $2-3M vol — UNMIRRORABLE scalping) vs
-  specialists (10-30 win/day, entry ~120s median, px 0.36-0.61, $200+ clips — same
-  time-zone as our funnel, +3-5s follow feasible). Walk-forward top-5 mirror (+2c slip,
-  selection strictly pre-day, UTC-aligned): all-wallets = +$0.26/t (1,798t); specialists-only
-  (pre-registered single variant: <=210 win/7d, med clip>=$100, med entry>=60s) =
-  **197t / 58.4% WR / +$1.46/t (+14.6%)**, 4/6 days positive, ~28 signals/day.
-  NOT yet deployable (6 test days, 2 days carry PnL, fill assumption optimistic).
-  Next: extend harvest to 30d for more walk-forward days before building a live poller.
+- **LEAD 2 — specialist mirror: VALIDATED on paper (30d, 23 walk-forward test days)**.
+  Wallet archetypes: HFT grinders (every window, entry ~11s, 10-14 tr/win, $34-50 clips
+  — UNMIRRORABLE scalping) vs specialists (10-30 win/day, entry ~120s median, px
+  0.36-0.61, $200+ clips — mirrorable at +3-5s). Walk-forward top-5 specialists-only
+  (pre-registered filter: <=210 win/7d, med clip>=$100, med entry>=60s, active<=48h;
+  selection strictly pre-day, UTC-aligned, +2c slip, $10):
+  **720t / 57.2% WR / +$1,116 / EV +$1.55/t (+15.5%)**, 14/23 days positive,
+  ALL 4 week-buckets positive (+$206/+$256/+$433/+$222), ~31 signals/day.
+  (All-wallets baseline was +$0.26/t — the specialist filter IS the edge.)
+  Remaining risk: fill realism (+2c modeled; real = poll data-api ~1.5s -> FAK at ask).
+  Next step: PAPER mirror runner (poll tape, log simulated entries, measure real
+  latency/slippage vs modeled) before any live deployment.
 - Top of tape (7d, real): False-Military +$56K/109win/63.8%, anon 0x0cb0 +$50K (grinder).
 - Pitfall log: data-api returns DESC — page cap drops EARLIEST trades of busy windows
   (MAX_PAGES=4). Mint/merge sellers create phantom SELL-only positions -> excluded via
