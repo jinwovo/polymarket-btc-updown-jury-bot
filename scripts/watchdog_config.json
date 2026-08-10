@@ -1,0 +1,61 @@
+{
+  "enabled": true,
+  "api_base": "http://127.0.0.1:8790",
+  "web_port": 3100,
+  "db_port": 3400,
+  "tick_stale_restart_sec": 180,
+  "collector_kill_cooldown_sec": 600,
+  "api_restart_cooldown_sec": 300,
+  "web_restart_cooldown_sec": 900,
+  "components": [
+    {
+      "name": "paper_btc5",
+      "enabled": true,
+      "status": "/api/control/paper",
+      "start": "/api/control/paper/start",
+      "payload": { "stake": 10, "interval": 2.0, "sizing_mode": "fixed" }
+    },
+    {
+      "name": "live_btc5",
+      "enabled": true,
+      "status": "/api/control/live",
+      "start": "/api/control/live/start",
+      "payload": { "stake": 10, "position_mode": "BOTH", "sizing_mode": "fixed" }
+    },
+    {
+      "name": "signal_eth5",
+      "enabled": true,
+      "status": "/api/control/eth5/signal",
+      "start": "/api/control/eth5/signal/start",
+      "payload": {}
+    },
+    {
+      "name": "paper_eth5",
+      "enabled": true,
+      "status": "/api/control/eth5/paper",
+      "start": "/api/control/eth5/paper/start",
+      "payload": { "stake": 10, "sizing_mode": "fixed" }
+    },
+    {
+      "name": "live_eth5",
+      "enabled": true,
+      "status": "/api/control/eth5/live",
+      "start": "/api/control/eth5/live/start",
+      "payload": { "stake": 10, "sizing_mode": "fixed", "dry_run": false }
+    },
+    {
+      "name": "signal_btc15",
+      "enabled": true,
+      "status": "/api/control/btc15/signal",
+      "start": "/api/control/btc15/signal/start",
+      "payload": {}
+    },
+    {
+      "name": "paper_btc15",
+      "enabled": true,
+      "status": "/api/control/btc15/paper",
+      "start": "/api/control/btc15/paper/start",
+      "payload": { "stake": 10, "sizing_mode": "fixed" }
+    }
+  ]
+}
