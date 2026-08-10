@@ -213,6 +213,33 @@ data_collector (single process, 0.1s tick)
 - BTC15: only 3 days of path_r2 data since the 7/04 fix — still untestable, keep collecting.
 - Only untested expansion: SOL5 + other alt 5m markets — needs collector support first
   (no SOL ticks/odds collected; liquidity viable per 2026-07-12 scan).
+  [SOL5 collection went live later the same day — see Data Collection section.]
+
+## Trade Tape (2026-08-10) — public wallet-level fills, two live leads
+- **Infra**: `scripts/tape_harvest.py` (data-api /trades + Gamma resolutions ->
+  poly_trades/tape_windows; server-side, uptime-independent, resumable, newest-first;
+  14d BTC5 = 4,032 windows / 7.5M prints in ~25min). `scripts/tape_leaderboard.py`
+  (recency-decay leaderboard hl=5d + walk-forward mirror + lottery study).
+- **LEAD 1 — late-lottery resting bids (STRONGEST)**: real fills at price<=0.05 in final
+  30s: 58,369 fills / $161K cost -> $194K payout = **+20.3% ROI**; p<=0.02: **+25.3%**
+  (p0.03-0.05 only +9%). Others harvest this NOW via resting GTC bids that catch
+  losers' salvage dumps. Win rate 1.55-2.3% = extreme variance; capacity ~$11.5K/day
+  turnover market-wide. GTC-entry ban does NOT apply (passive resting, latency-proof).
+  Next: fill-rate/queue sim from poly_odds, then micro pilot (both-side bids ~$0.5-1/window cap).
+- **LEAD 2 — specialist mirror**: wallets split into archetypes: HFT grinders (every
+  window, entry ~11s, 10-14 tr/win, $34-50 clips, $2-3M vol — UNMIRRORABLE scalping) vs
+  specialists (10-30 win/day, entry ~120s median, px 0.36-0.61, $200+ clips — same
+  time-zone as our funnel, +3-5s follow feasible). Walk-forward top-5 mirror (+2c slip,
+  selection strictly pre-day, UTC-aligned): all-wallets = +$0.26/t (1,798t); specialists-only
+  (pre-registered single variant: <=210 win/7d, med clip>=$100, med entry>=60s) =
+  **197t / 58.4% WR / +$1.46/t (+14.6%)**, 4/6 days positive, ~28 signals/day.
+  NOT yet deployable (6 test days, 2 days carry PnL, fill assumption optimistic).
+  Next: extend harvest to 30d for more walk-forward days before building a live poller.
+- Top of tape (7d, real): False-Military +$56K/109win/63.8%, anon 0x0cb0 +$50K (grinder).
+- Pitfall log: data-api returns DESC — page cap drops EARLIEST trades of busy windows
+  (MAX_PAGES=4). Mint/merge sellers create phantom SELL-only positions -> excluded via
+  negative-balance check (113K wallet-windows). Walk-forward day boundaries must be UTC
+  (local-tz day_start leaks 9h of test day into selection = lookahead).
 
 ## Current Strategy (2026-04-11)
 - **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
