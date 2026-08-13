@@ -2291,6 +2291,13 @@ _EXTRA_MARKETS = [
     {"slug_prefix": "eth-updown-5m", "interval": 300, "price_source": "eth", "label": "ETH5m"},
     {"slug_prefix": "sol-updown-5m", "interval": 300, "price_source": "sol", "label": "SOL5m"},
 ]
+# poly_odds PK is (ts, window_start) WITHOUT slug. eth/sol (and btc 5m main) share the
+# same window_start values, and Windows time.time() ticks at ~15.6ms, so same-tick rows
+# from different markets collide and ON DUPLICATE KEY UPDATE rewrites the slug -- the
+# earlier market's row "vanishes" (found 2026-08-13: sol erased eth rows since SOL5
+# launch 8/10). Tiny per-market ts offsets keep tuples distinct at negligible skew.
+# Clean fix = add slug to the PK (long ALTER on a huge table -- do it offline).
+_MKT_TS_OFFSET = {"btc-updown-15m": 0.0013, "eth-updown-5m": 0.0021, "sol-updown-5m": 0.0034}
 # ETH price from Binance (raw + Chainlink-calibrated)
 _eth_price = {"price": 0.0, "adjusted": 0.0, "ts": 0.0}
 # SOL price from Binance (raw + Chainlink-calibrated)
@@ -2375,6 +2382,9 @@ async def _extra_market_poll(self):
             self.db.commit()
         except Exception:
             pass
+    _fail_counts = {}   # throttled visibility for silent per-market failures
+    _last_odds = {}     # prefix -> last successful odds row ts
+    _stale_warned = {}
     while self._running:
         try:
             now = time.time()
@@ -2456,12 +2466,17 @@ async def _extra_market_poll(self):
                             """, (ws, ws + interval, slug, start_price))
                             self.db.commit()
                             logger.info("Extra market: %s window=%s start=$%.2f", mkt["label"], slug, start_price)
+                            _last_odds.setdefault(prefix, now)
                             # Scrape exact PTB via separate Playwright tab (~3s after window start)
                             asyncio.get_event_loop().create_task(
                                 self._scrape_extra_ptb(slug, ws, mkt["label"])
                             )
                     except Exception as e:
-                        logger.debug("Extra market discover %s: %s", prefix, e)
+                        _k = prefix + ":disc"
+                        _fail_counts[_k] = _fail_counts.get(_k, 0) + 1
+                        if _fail_counts[_k] % 15 == 1:
+                            logger.warning("Extra market discover %s failing (n=%d): %s",
+                                           prefix, _fail_counts[_k], e)
                         continue
 
                 info = _current.get(prefix)
@@ -2501,14 +2516,27 @@ async def _extra_market_poll(self):
                         _spread_dn = info["dn_ask"] - info.get("dn_bid", 0)
                         _overround = info["up_ask"] + info["dn_ask"] - 1.0
                         self._odds_buffer.append((
-                            now, ws, slug,
+                            now + _MKT_TS_OFFSET.get(prefix, 0.0), ws, slug,
                             info.get("up_mid", 0.5), info.get("dn_mid", 0.5),
                             info.get("up_bid", 0), info["up_ask"],
                             info.get("dn_bid", 0), info["dn_ask"],
                             _spread_up, _spread_dn, _overround,
                         ))
+                        _last_odds[prefix] = now
+                        _fail_counts.pop(prefix + ":poll", None)
                 except Exception as e:
-                    logger.debug("Extra market poll %s: %s", prefix, e)
+                    _k = prefix + ":poll"
+                    _fail_counts[_k] = _fail_counts.get(_k, 0) + 1
+                    if _fail_counts[_k] % 15 == 1:
+                        logger.warning("Extra market poll %s failing (n=%d): %s",
+                                       prefix, _fail_counts[_k], e)
+
+                # Visibility: odds stopped flowing for this market
+                if info and now - _last_odds.get(prefix, now) > 30 and \
+                        now - _stale_warned.get(prefix, 0) > 30:
+                    logger.warning("Extra market %s: no odds rows for %.0fs",
+                                   prefix, now - _last_odds.get(prefix, now))
+                    _stale_warned[prefix] = now
 
                 # Window end: record end price
                 elapsed = now - ws
@@ -2557,6 +2585,11 @@ async def _extra_markets_ws_loop(self):
         try:
             async with _ws.connect(url, ping_interval=None, close_timeout=5) as ws:
                 _reconnect_delay = 1.0
+                # Fresh socket knows nothing: drop old subscription state so current
+                # windows get re-subscribed (server idle-closes unsubscribed conns ~10s)
+                _subscribed_tokens.clear()
+                _token_map.clear()
+                _sent_sub = False
                 logger.info("Extra markets WS connected")
 
                 while self._running:
@@ -2565,22 +2598,36 @@ async def _extra_markets_ws_loop(self):
                         await ws.send("PING")
                         _last_ping = now
 
-                    # Check for new tokens to subscribe
+                    # Server allows ONE subscription payload per connection (a second
+                    # message gets 1008 "invalid subscription payload"). Batch all
+                    # current tokens into one message; if a new window appears later,
+                    # deliberately reconnect so the fresh socket subscribes everything.
+                    _pending = []
                     for prefix in list(_current.keys()):
                         info = _current[prefix]
                         up_t = info.get("up_token", "")
                         dn_t = info.get("down_token", "")
                         if up_t and up_t not in _subscribed_tokens:
-                            await ws.send(json.dumps({
-                                "assets_ids": [up_t, dn_t],
-                                "type": "market",
-                                "custom_feature_enabled": True,
-                            }))
+                            _pending.append((prefix, info, up_t, dn_t))
+                    if _pending:
+                        if _sent_sub:
+                            logger.info("Extra WS: new window tokens -> reconnect to resubscribe")
+                            break
+                        _all_ids = []
+                        for prefix, info, up_t, dn_t in _pending:
+                            _all_ids.extend([up_t, dn_t])
                             _subscribed_tokens.add(up_t)
                             _subscribed_tokens.add(dn_t)
-                            _token_map[up_t] = {"prefix": prefix, "side": "up"}
-                            _token_map[dn_t] = {"prefix": prefix, "side": "down"}
+                            # tag with window so events from rotated-out windows are ignored
+                            _token_map[up_t] = {"prefix": prefix, "side": "up", "ws": info.get("ws")}
+                            _token_map[dn_t] = {"prefix": prefix, "side": "down", "ws": info.get("ws")}
                             logger.info("Extra WS subscribed: %s", info.get("slug", prefix))
+                        await ws.send(json.dumps({
+                            "assets_ids": _all_ids,
+                            "type": "market",
+                            "custom_feature_enabled": True,
+                        }))
+                        _sent_sub = True
 
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
@@ -2606,6 +2653,8 @@ async def _extra_markets_ws_loop(self):
                         info = _current.get(prefix)
                         if not info:
                             continue
+                        if tinfo.get("ws") != info.get("ws"):
+                            continue  # stale token from a rotated-out window
 
                         if evt in ("book", "best_bid_ask"):
                             bb = ba = 0
@@ -2617,6 +2666,8 @@ async def _extra_markets_ws_loop(self):
                             else:
                                 bb = float(data.get("best_bid", 0))
                                 ba = float(data.get("best_ask", 1))
+                            if ba <= 0 or ba >= 1.0:
+                                continue  # empty/settling book -- same guard as REST path
                             if side == "up":
                                 info["up_bid"] = bb; info["up_ask"] = ba
                             else:
@@ -2625,7 +2676,7 @@ async def _extra_markets_ws_loop(self):
                             if "up_ask" in info and "dn_ask" in info:
                                 ws_val = info["ws"]
                                 self._odds_buffer.append((
-                                    now, ws_val, info.get("slug", ""),
+                                    now + _MKT_TS_OFFSET.get(prefix, 0.0), ws_val, info.get("slug", ""),
                                     (info.get("up_bid",0)+info["up_ask"])/2,
                                     (info.get("dn_bid",0)+info["dn_ask"])/2,
                                     info.get("up_bid",0), info["up_ask"],
@@ -2636,7 +2687,7 @@ async def _extra_markets_ws_loop(self):
                                 ))
 
         except Exception as e:
-            logger.debug("Extra WS error: %s (reconnect %.0fs)", e, _reconnect_delay)
+            logger.warning("Extra WS error: %s (reconnect %.0fs)", e, _reconnect_delay)
             await asyncio.sleep(_reconnect_delay)
             _reconnect_delay = min(_reconnect_delay * 2, 15.0)
 

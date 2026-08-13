@@ -62,7 +62,8 @@ else:
         "MAX_ASK": float(os.getenv("ETH5_MAX_ENTRY_PRICE", "0.55")),
         "MIN_MOVE_PCT": 0.0,
         "MAX_MOVE_PCT": 0.0,
-        "REQUIRE_GUARDS": 1,
+        # paper_sim_eth5 runtime SKIPS guards ("too strict for ETH") -- replay must match
+        "REQUIRE_GUARDS": 0,
     }
     SC_TABLE = "signal_cache_log_eth5"
     SLUG = "eth-updown-5m%"
