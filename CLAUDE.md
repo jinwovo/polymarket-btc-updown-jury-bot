@@ -97,6 +97,26 @@ data_collector (single process, 0.1s tick)
 - **polygon.llamarpc.com DNS failure** — removed from RPC list, added polygon-rpc.com
 - **Chainlink stale warning log spam** — fired every 0.1s tick, rate-limited to 30s
 - **Settlement verification too short** — 15/30s retries missed slow Polymarket API, extended to 15/30/60/120s
+- **ETH5 odds flapping/"--" (fixed 2026-08-13) — THREE stacked bugs in extra-markets path:**
+  1. **poly_odds PK collision erased ETH rows (ROOT CAUSE, live since SOL5 launch 8/10).**
+     PK is (ts, window_start) WITHOUT slug; eth-updown-5m and sol-updown-5m share identical
+     window_start values and Windows time.time() ticks at ~15.6ms, so same-tick writes collide
+     and `ON DUPLICATE KEY UPDATE slug=VALUES(slug)` rewrote eth rows into sol rows -- committed
+     eth rows literally vanished seconds later (sol is last in _EXTRA_MARKETS, so sol always
+     survived). Fix: per-market ts offsets `_MKT_TS_OFFSET` (1-3ms). Clean fix pending: ALTER
+     PK to (ts, window_start, slug) offline. Fingerprint: COUNT(*) for a slug DECREASES.
+  2. **WS resubscribe-on-reconnect missing**: `_subscribed_tokens` persisted across reconnects,
+     so a reconnected socket never re-sent subscriptions; server idle-closes unsubscribed conns
+     in ~10s -> infinite 10s reconnect loop, WS leg dead after ANY disconnect. Fix: clear
+     subscription state per connection. ALSO: server 1008s ("invalid subscription payload")
+     multi-message subscribes -- batch ALL tokens into ONE message per connection; on new-window
+     tokens, deliberately reconnect (subscribe-once semantics).
+  3. **Stale-token stomp + no empty-book guard**: rotated-out windows' settle events
+     (asks=[] -> ask=1.0/bid=0.0) were written under the CURRENT slug. Fix: tag _token_map with
+     window ws + ignore mismatches; skip ba<=0/ba>=1.0 events (same guard as REST path).
+  Silent-failure lesson: all these paths logged at DEBUG (invisible at INFO). Poll/discover
+  failures now WARN throttled (every 15th) + "no odds rows for 30s" watchdog warning.
+  Data damage note: eth-updown-5m poly_odds rows 8/10~8/13 have holes (erased by #1).
 - **RTDS silent stream stall** — socket stays open but price messages stop; `_rtds_price_loop` had no stall detection (recv timeout just sent text "PING" and waited), so reconnect only happened at the RTDS server's exactly-2h connection lifetime. Caused 47-min Playwright fallback 2026-08-10 and the 7/29 "12h RTDS outage" (log fingerprint: reconnects at exact 2h intervals). Fixed 2026-08-10: 30s no-price stall watchdog forces reconnect. Note: "Price MISMATCH" warnings with diff $10-30 while RTDS is alive are Playwright scrape lag noise, not a fault
 
 ## Data Collection
@@ -162,6 +182,12 @@ data_collector (single process, 0.1s tick)
   Old `_kill_existing` was pgrep-based = silent no-op on Windows.
 - Healthy-state checks after restart: signal_cache_log ~0.5-0.6 rows/s (single writer),
   BTC5 paper 1-3 trades per 12h.
+- **Rate fingerprint OBSOLETE since RTDS stall fix (2026-08-13 measurement)**: single
+  confirmed writer now logs ~2.0 rows/s (RTDS actually alive = more evaluations; the old
+  0.58 baseline was measured while RTDS silently stalled). Rows/s can no longer separate
+  single vs dual writer — check PROCESS COUNT (psutil: exactly one data_collector.py;
+  note an in-paper embedded collector would show as paper_trade_sim.py) and bb-interleave
+  instead. 8/10+8/12 data checked: no dup evidence (flap-rate same as single-writer day).
 
 ## Param Sweep on signal_cache_log (2026-08-01, Apr-01 ~ Jul-05, $10 stake)
 - Sweep engine reproduces oos_replay_signal_cache.py to the cent before sweeping
@@ -246,6 +272,60 @@ data_collector (single process, 0.1s tick)
   (MAX_PAGES=4). Mint/merge sellers create phantom SELL-only positions -> excluded via
   negative-balance check (113K wallet-windows). Walk-forward day boundaries must be UTC
   (local-tz day_start leaks 9h of test day into selection = lookahead).
+
+## BTC5 Direct Trigger SILENT Post-RTDS-Fix (2026-08-13) — diagnosis COMPLETE
+- Replay of 8/10-8/13 signal_cache_log (394 windows, collector up): **0 BTC5 entries**;
+  ETH5 (guards-off, matching runtime): 3 entries 2W1L +$4.34 = normal for its 1.5/day rate.
+- **The $60 binance_rtds_gap is REAL and HARMLESS — it is the USDT/USD basis, not a bug.**
+  Verified externally 8/13: Binance BTCUSDT $63,656 vs BTCUSDC $63,597 = +0.092%;
+  Kraken USDT/USD 0.9989; ETH gap identical +0.093% (quote-currency effect, hits all
+  USDT pairs equally). April gap $10 = USDT near-peg. Collector's offset calibration
+  absorbs it; "divergence guard" is boundary-distance, NOT a gap check — earlier note
+  blaming the gap was wrong. Watch: if USDT re-pegs, gap shrinks by itself.
+- **Real causes of 0 trades (guard autopsy, production evaluate_market_guards re-run
+  offline on 4,140 Aug full-filter survivor rows — reproduces logged 27 pass rows):**
+  1. **Dominant: opposite_too_high (~60%+ of fails, opp ask 0.83-0.97).** Crash-regime
+     vol -> CLOB prices windows to 0.9+ by 100-240s -> jury value-votes the cheap
+     opposite side (edge-vote fades the favorite) -> guard correctly blocks. The edge
+     state we harvest (move happened + book still 0.4-0.55 = underreaction) barely
+     existed 8/10-8/13. April: opp asks clustered 0.66-0.74, pass rate 1.7%; Aug: 0.5%.
+  2. **bb artifact lost selectivity** (RTDS fix): April entry-time rows 99.8% bb=None,
+     in-band 0.03% (needle trigger); now 30.3% in-band = passes half of all windows.
+     If guards were relaxed the recipe would fire ~50/day UNVALIDATED. Retune needs
+     1-2 weeks of post-fix rows.
+  3. Guards themselves behave the same as April (autopsy: same code, same thresholds).
+- **auto_defense guard is a NO-OP (latent bug)**: it sets result.passed=False but the
+  final `result.passed = (six _ok flags)` recomputation OVERWRITES it. Also its trigger
+  state is frozen on April's last-3 paper trades. Do not "fix" silently — behavior
+  change must be validated; documented here instead.
+- Parity fix applied 2026-08-13: oos_replay_signal_cache.py ETH5 REQUIRE_GUARDS default
+  1 -> 0 (paper_sim_eth5 runtime skips guards; replay was understating ETH5 trades).
+
+## Specialist Mirror Update (2026-08-13) — re-implemented, extended OOS, PAPER RUNNER LIVE
+- **Independent re-implementation** (`scripts/tape_specialist_mirror.py`, spec from docs):
+  same 23 test days -> 580t / 52.6% / +$1,156 / EV +$1.99. Fewer trades than the 8/10 run
+  (impl detail deltas) but SAME PnL — strategy-level confirmation, not knob-level.
+  Baseline (no specialist filter) re-confirmed: 7,465t at EV +$0.10/t = noise.
+- **Fresh OOS (8/10-8/13, harvested 8/13): FLAT/NEGATIVE — edge not confirmed on new days.**
+  Uncapped: 130t -$164. Root cause of 8/10 (-$180): ALL 96 mirrors that day came from ONE
+  wallet (top pick "Satisfied-Peripheral") that broke profile and traded ~every window;
+  filter only dropped it the NEXT day. Single-wallet concentration = the structural risk.
+- **Wallet-day activity cap 30 adopted** (profile-derived from specialist archetype 10-30
+  win/day, not tuned): full-period 603t / EV +$1.75 (vs +$1.54 uncapped), 8/10 loss
+  -$180 -> -$61. Cap counts the wallet's observable window entries today (no lookahead).
+- **Entry-price bands (full 27d)**: px<0.30 mirrors carry the PnL — 116t / 31.9% WR /
+  +$720 / EV +$6.21 (fresh days +$0.54/t on 12t). 0.60+ band NEGATIVE (-$1.03/t).
+  Candidate refinement for the runner phase; do NOT hard-code yet (post-hoc risk).
+- **ETH5 tape harvested (30d, 8,641 windows, 3.3M prints): NO specialist edge.**
+  412t / 76.7% WR / EV -$0.19/t — pool is favorite-buyers, WR==implied, fee eats it.
+  BTC5-specific edge. Do not mirror ETH5.
+- **`scripts/mirror_paper_runner.py` RUNNING since 2026-08-13** (hidden background proc):
+  polls data-api for current window ~1.2s, detects chosen-specialist first BUYs, logs
+  simulated entries to `mirror_paper_trades` with REAL detection latency + REAL book ask
+  (from poly_odds, <5s fresh) vs modeled px+2c. Re-harvests + re-selects at UTC rollover.
+  Startup selection takes ~3-4 min (40d GROUP BY). Log: bot_mirror_paper.log.
+  GO/NO-GO after ~1-2 weeks: compare realized sim entry vs modeled +2c, latency
+  distribution, and whether EV stays positive at realized fills.
 
 ## Current Strategy (2026-04-11)
 - **Entry**: judges direction + signal_cache gate_allow + BB/VWAP/drift filters
